@@ -194,10 +194,31 @@ def render():
         predicted = model.predict(fd)
     except Exception:
         predicted = {}
+
+    # If no trained model weights exist, the NN outputs random noise.
+    # Apply paper-aligned heuristic: adjust per-90 by relative ability
+    # change, with different rates for offensive vs defensive metrics.
+    _OFFENSIVE = {
+        "expected_goals", "expected_assists", "shots",
+        "successful_dribbles", "successful_crosses",
+        "touches_in_opposition_box", "chances_created",
+    }
+    _DEFENSIVE = {"clearances", "interceptions", "possession_won_final_3rd"}
+
+    if not predicted:
+        predicted = {}
         for m in CORE_METRICS:
             val = current_per90_clean.get(m, 0)
-            adjustment = 1.0 + (change_ra / 100.0) * 0.5
-            predicted[m] = val * adjustment
+            if m in _OFFENSIVE:
+                # Moving to relatively stronger position → offensive uplift
+                adj = 1.0 + (change_ra / 100.0) * 0.8
+            elif m in _DEFENSIVE:
+                # Stronger relative position → less defending needed
+                adj = 1.0 - (change_ra / 100.0) * 0.6
+            else:
+                # Passing metrics: moderate positive correlation
+                adj = 1.0 + (change_ra / 100.0) * 0.3
+            predicted[m] = val * max(adj, 0.2)  # floor at 20% to avoid negatives
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
     pct_changes = compute_percentage_changes(current_per90_clean, predicted)
