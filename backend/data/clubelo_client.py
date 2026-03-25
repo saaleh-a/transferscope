@@ -29,13 +29,20 @@ _HTTP_TIMEOUT = 15
 # ── soccerdata primary path ──────────────────────────────────────────────────
 
 _soccerdata_available: Optional[bool] = None  # lazy probe
+_soccerdata_disabled_at: float = 0.0  # timestamp when disabled
+_SOCCERDATA_RETRY_INTERVAL = 3600  # retry soccerdata every hour after failure
 
 
 def _try_soccerdata(date_str: str) -> Optional[pd.DataFrame]:
     """Try fetching via soccerdata.ClubElo.  Returns None on any failure."""
-    global _soccerdata_available
+    global _soccerdata_available, _soccerdata_disabled_at
     if _soccerdata_available is False:
-        return None
+        # Retry after the interval expires
+        import time
+        if (time.time() - _soccerdata_disabled_at) < _SOCCERDATA_RETRY_INTERVAL:
+            return None
+        _log.info("Retrying soccerdata after %.0fs cooldown", _SOCCERDATA_RETRY_INTERVAL)
+        _soccerdata_available = None  # reset for retry
     try:
         import soccerdata as sd
         ce = sd.ClubElo()
@@ -44,15 +51,20 @@ def _try_soccerdata(date_str: str) -> Optional[pd.DataFrame]:
         return df
     except Exception as exc:
         _log.info("soccerdata ClubElo unavailable, using HTTP fallback: %s", exc)
+        import time
         _soccerdata_available = False
+        _soccerdata_disabled_at = time.time()
         return None
 
 
 def _try_soccerdata_history(team_name: str) -> Optional[pd.DataFrame]:
     """Try fetching team history via soccerdata."""
-    global _soccerdata_available
+    global _soccerdata_available, _soccerdata_disabled_at
     if _soccerdata_available is False:
-        return None
+        import time
+        if (time.time() - _soccerdata_disabled_at) < _SOCCERDATA_RETRY_INTERVAL:
+            return None
+        _soccerdata_available = None  # reset for retry
     try:
         import soccerdata as sd
         ce = sd.ClubElo()
@@ -60,7 +72,9 @@ def _try_soccerdata_history(team_name: str) -> Optional[pd.DataFrame]:
         _soccerdata_available = True
         return df
     except Exception:
+        import time
         _soccerdata_available = False
+        _soccerdata_disabled_at = time.time()
         return None
 
 
@@ -68,10 +82,10 @@ def _try_soccerdata_history(team_name: str) -> Optional[pd.DataFrame]:
 
 _LEAGUE_NAMES: Dict[str, Dict[int, str]] = {
     "ENG": {1: "ENG-Premier League", 2: "ENG-Championship"},
-    "ESP": {1: "ESP-La Liga"},
-    "GER": {1: "GER-Bundesliga"},
-    "ITA": {1: "ITA-Serie A"},
-    "FRA": {1: "FRA-Ligue 1"},
+    "ESP": {1: "ESP-La Liga", 2: "ESP-Segunda División"},
+    "GER": {1: "GER-Bundesliga", 2: "GER-2. Bundesliga"},
+    "ITA": {1: "ITA-Serie A", 2: "ITA-Serie B"},
+    "FRA": {1: "FRA-Ligue 1", 2: "FRA-Ligue 2"},
     "NED": {1: "NED-Eredivisie"},
     "POR": {1: "POR-Liga Portugal"},
     "BEL": {1: "BEL-First Division A"},
@@ -90,6 +104,20 @@ _LEAGUE_NAMES: Dict[str, Dict[int, str]] = {
     "SWE": {1: "SWE-Allsvenskan"},
     "POL": {1: "POL-Ekstraklasa"},
     "ROM": {1: "ROM-Liga I"},
+    # ── Additional ClubElo countries ─────────────────────────────────────
+    "BUL": {1: "BUL-First League"},
+    "HUN": {1: "HUN-NB I"},
+    "SVK": {1: "SVK-Super Liga"},
+    "SLO": {1: "SLO-PrvaLiga"},
+    "BOS": {1: "BOS-Premier Liga"},
+    "CYP": {1: "CYP-First Division"},
+    "ISR": {1: "ISR-Premier League"},
+    "KAZ": {1: "KAZ-Premier League"},
+    "FIN": {1: "FIN-Veikkausliiga"},
+    "ISL": {1: "ISL-Úrvalsdeild"},
+    "IRL": {1: "IRL-Premier Division"},
+    "WAL": {1: "WAL-Premier League"},
+    "GEO": {1: "GEO-Erovnuli Liga"},
 }
 
 
