@@ -55,6 +55,16 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 
+# Clear cache button — useful after code updates or API issues
+if st.sidebar.button("🗑️ Clear Cache", help="Clear cached API data to force fresh fetches"):
+    try:
+        from backend.data import cache
+        cache.clear()
+        st.session_state.pop("cache_warmed", None)
+        st.sidebar.success("Cache cleared! Reload the page.")
+    except Exception as e:
+        st.sidebar.error(f"Failed to clear cache: {e}")
+
 if page == "Transfer Impact":
     from frontend.pages.transfer_impact import render
     render()

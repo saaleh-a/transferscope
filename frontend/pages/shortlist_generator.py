@@ -24,11 +24,6 @@ from backend.models.shortlist_scorer import (
     compute_percentage_changes,
     score_candidates,
 )
-from backend.models.transfer_portal import (
-    TransferPortalModel,
-    build_feature_dict,
-    FEATURE_DIM,
-)
 from backend.utils.league_registry import LEAGUES
 from frontend.theme import section_header, player_info_card
 
@@ -109,7 +104,9 @@ def render():
     current_per90 = player_stats.get("per90", {})
     position = player_stats.get("position", "Unknown")
     current_team = player_stats.get("team", "")
-    minutes_played = player_stats.get("minutes_played", 0) or 0
+    minutes_played = player_stats.get("minutes_played", 0)
+    if minutes_played is None:
+        minutes_played = 0
 
     player_info_card(
         f"Replacing: {player_name}", current_team, position, minutes_played
