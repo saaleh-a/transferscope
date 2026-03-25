@@ -938,19 +938,29 @@ def _parse_stats(stats: dict, minutes_played: int) -> Dict[str, Optional[float]]
     # provide this stat directly.  When missing, estimate from total
     # touches using a position-based ratio (attackers ~15-20% of touches
     # are in the box, midfielders ~8-12%, defenders ~3-5%).
+    #
+    # Estimation constants:
+    #   BOX_TOUCHES_PER_SHOT — each shot implies ~2.5 box touches on average
+    #   MAX_BOX_TOUCH_RATIO  — cap at 30% of total touches (realistic upper bound)
+    #   DEFAULT_BOX_RATIO    — generic fallback when no shots data available
+    _BOX_TOUCHES_PER_SHOT = 2.5
+    _MAX_BOX_TOUCH_RATIO = 0.30
+    _DEFAULT_BOX_RATIO = 0.10
+
     if per90.get("touches_in_opposition_box") is None and per90.get("touches") is not None:
         total_touches = per90["touches"]
         if total_touches is not None and total_touches > 0:
-            # Use shots as a proxy indicator for box presence
             shots = per90.get("shots")
             if shots is not None and shots > 0:
                 # Players who shoot more tend to be in the box more
-                # Estimate: each shot implies ~2-3 box touches
-                estimated_box_touches = round(shots * 2.5, 4)
-                per90["touches_in_opposition_box"] = min(estimated_box_touches, total_touches * 0.3)
+                estimated_box_touches = round(shots * _BOX_TOUCHES_PER_SHOT, 4)
+                per90["touches_in_opposition_box"] = min(
+                    estimated_box_touches, total_touches * _MAX_BOX_TOUCH_RATIO
+                )
             else:
-                # Generic fallback: ~10% of touches are in the box
-                per90["touches_in_opposition_box"] = round(total_touches * 0.10, 4)
+                per90["touches_in_opposition_box"] = round(
+                    total_touches * _DEFAULT_BOX_RATIO, 4
+                )
 
     return per90
 
