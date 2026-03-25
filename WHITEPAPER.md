@@ -6,9 +6,9 @@
 
 ## Abstract
 
-TransferScope is a football transfer intelligence platform that predicts how a player's statistical output will change when they move to a new club. The system implements and extends the methodology described in *Dinsdale & Gallagher (2022) — "The Transfer Portal"*, combining dynamic Elo-based Power Rankings, per-90 rolling feature windows, sklearn adjustment models, and a TensorFlow multi-head neural network to produce actionable transfer predictions across 20+ leagues worldwide. TransferScope surfaces these predictions through three tools — Transfer Impact analysis, multi-league Shortlist Generation, and a rapid rumour validator — delivered via a Streamlit interface designed for scouting workflows.
+TransferScope is a football transfer intelligence platform that predicts how a player's statistical output will change when they move to a new club. The system implements and extends the methodology described in *Dinsdale & Gallagher (2022) — "The Transfer Portal"*, combining dynamic Elo-based Power Rankings, per-90 rolling feature windows, sklearn adjustment models, and a TensorFlow multi-head neural network to produce actionable transfer predictions across 37+ leagues worldwide. TransferScope surfaces these predictions through three tools — Transfer Impact analysis, multi-league Shortlist Generation, and a rapid rumour validator — delivered via a Streamlit interface designed for scouting workflows.
 
-> **In plain English:** TransferScope is a tool that answers the question: "If we sign this player, what will they actually produce at our club?" It uses a combination of club strength ratings, recent player form, and machine learning to predict how every major stat — goals, assists, passes, defensive actions — will change when a player moves from one team to another. It covers 20+ leagues worldwide and comes with a web interface where you can search players, compare clubs, and evaluate transfer rumours.
+> **In plain English:** TransferScope is a tool that answers the question: "If we sign this player, what will they actually produce at our club?" It uses a combination of club strength ratings, recent player form, and machine learning to predict how every major stat — goals, assists, passes, defensive actions — will change when a player moves from one team to another. It covers 37+ leagues worldwide and comes with a web interface where you can search players, compare clubs, and evaluate transfer rumours.
 
 ---
 
@@ -98,7 +98,7 @@ This produces a Red / Amber / Green confidence indicator: Red (< 300 minutes), A
 
 ### 2.3 Prediction Models
 
-Two model tiers operate in sequence:
+Two model tiers operate in sequence, plus a heuristic fallback:
 
 **Adjustment Models (sklearn LinearRegression).** Thirteen linear regression models per metric handle the team-level and player-level adjustments:
 
@@ -107,6 +107,15 @@ Two model tiers operate in sequence:
 - *Player adjustment*: 13 models × position that use polynomial features (up to cubic) of the change in relative ability
 
 > **In plain English:** These are simpler "rule of thumb" models that answer questions like: "If a team is 15% stronger than their league average, how does that typically affect their strikers' goal output?" and "If a player moves to a team that's 20 points stronger in our ranking, how much does each stat typically change?" We have one of these for each of the 13 stats, and they're specific to each playing position — because moving to a stronger team affects a defender differently than it affects a winger.
+
+**Paper-Aligned Heuristic Fallback (`paper_heuristic_predict`).** When no trained TF model weights exist, this function produces predictions using the paper's structure with calibrated per-metric coefficients. Each metric has three independent weights:
+- `_TEAM_INFLUENCE` — how much the metric is team-dependent vs individual (0.15 for dribbles → 0.50 for passing)
+- `_ABILITY_SENSITIVITY` — how much league/team quality affects it (offensive positive, defensive negative)
+- `_LEAGUE_STYLE_COEFF` — estimated style shift when team-position data is unavailable
+
+This means a player at a worse team **can improve or decline** at a bigger team, per-metric, depending on whether the target team's style fits them. This is the key paper insight (Sections 4.2–4.3): stylistic differences between teams cause different metrics to move in different directions.
+
+> **In plain English:** Even without a trained neural network, the system makes smart per-metric predictions. A crossing winger joining a team that plays wide will see their crosses and assists go up, even if the league is harder. A dribbler will keep their dribbling numbers almost unchanged because that's an individual skill. A defender joining a dominant team will defend less. Each stat is predicted independently based on both ability and style.
 
 **Transfer Portal Neural Network (TensorFlow).** A 4-group multi-head neural network with 43 input features and 13 output heads:
 
@@ -133,14 +142,14 @@ The 43 input features are:
 
 A Streamlit application with three pages, styled with a custom "Tactical Noir" dark theme (deep charcoal, amber/gold data accents, JetBrains Mono for numbers, Outfit for headings):
 
-**Transfer Impact.** The user enters a player and a target club (with Sofascore autocomplete). The system fetches stats, computes Power Rankings, builds predictions, and displays:
+**Transfer Impact.** The user enters a player and a target club (with Sofascore autocomplete). The system fetches stats, computes Power Rankings, builds predictions via dual simulation (player simulated at both current and target clubs, per paper Section 4), and displays:
 - Metric bars showing predicted percentage changes for all 13 metrics
 - Power Ranking timeline comparing source and target clubs
 - RAG confidence indicator
 - Swarm plots showing the player's position in their current league distribution
-- A detailed predictions table
+- A detailed predictions table with "Simulated Current" vs "Predicted" columns
 
-**Shortlist Generator.** The user selects a player to replace and assigns weights to each metric. The system scans players across selected leagues (up to 20), scores them by weighted similarity, and returns a ranked table with filters for age, position, league, minutes played, and club Power Ranking cap.
+**Shortlist Generator.** The user selects a player to replace and assigns weights to each metric. The system scans players across selected leagues (defaulting to 11 major leagues for speed, expandable to all 37+), scores them by weighted similarity, and returns a ranked table with filters for age, position, league, minutes played, and club Power Ranking cap.
 
 **Hot or Not.** A rapid rumour validator. Enter a player and a target club; receive an instant HOT / TEPID / NOT verdict with the top 3 predicted metric changes, a summary of improving vs declining metrics, and the player's transfer history.
 
@@ -148,9 +157,9 @@ A Streamlit application with three pages, styled with a custom "Tactical Noir" d
 
 ## 3. Multi-League Coverage
 
-TransferScope covers 20 leagues across 4 continents:
+TransferScope covers 37+ leagues across 4 continents:
 
-**Europe (10):** Premier League, Championship, La Liga, Bundesliga, Serie A, Ligue 1, Eredivisie, Primeira Liga, Belgian Pro League, Süper Lig
+**Europe (30+):** Premier League, Championship, La Liga, La Liga 2, Bundesliga, 2. Bundesliga, Serie A, Serie B, Ligue 1, Ligue 2, Eredivisie, Primeira Liga, Belgian Pro League, Süper Lig, Scottish Premiership, Austrian Bundesliga, Swiss Super League, Greek Super League, Danish Superliga, and 15+ additional European leagues
 
 **South America (7):** Brasileirão Série A, Brasileirão Série B, Argentine Primera División, Colombian Primera A, Chilean Primera División, Uruguayan Primera División, Ecuadorian Serie A
 
@@ -158,7 +167,7 @@ TransferScope covers 20 leagues across 4 continents:
 
 **Asia (2):** Saudi Pro League, J-League
 
-> **In plain English:** The tool works across basically all the major leagues in the world. If you want to scout a player from the Chilean league and predict how they'd do at Arsenal, it can do that. If you want to compare players across the Bundesliga, Serie A, and the Brasileirão, it can do that too.
+> **In plain English:** The tool works across basically all the major leagues in the world — 37+ leagues total. If you want to scout a player from the Chilean league and predict how they'd do at Arsenal, it can do that. If you want to compare players across the Bundesliga, Serie A, and the Brasileirão, it can do that too.
 
 ---
 
@@ -167,7 +176,7 @@ TransferScope covers 20 leagues across 4 continents:
 While TransferScope faithfully implements the Dinsdale & Gallagher methodology, it extends the original work in several ways:
 
 ### 4.1 Multi-League Shortlist Search
-The original paper focused on predicting individual transfers. TransferScope adds the ability to scan players across all 20 registered leagues and rank candidates by weighted metric similarity — turning the model into a **scouting tool**, not just a prediction engine.
+The original paper focused on predicting individual transfers. TransferScope adds the ability to scan players across all 37+ registered leagues and rank candidates by weighted metric similarity — turning the model into a **scouting tool**, not just a prediction engine.
 
 > **In plain English:** The paper told you how to predict *one* transfer. We turned it into a tool that can search *thousands* of players and find the best fits.
 
@@ -190,6 +199,16 @@ Swarm plots in the Transfer Impact page are populated with actual league-wide pe
 
 > **In plain English:** When you see a chart showing "this player is in the 85th percentile for chances created in the Premier League," that's based on real data from every player in the Premier League that season — not a guess.
 
+### 4.7 Paper-Faithful Dual Simulation
+The Transfer Impact page simulates each player at **both** their current and target clubs, then compares the two model outputs — faithful to the paper's methodology (Section 4): "we generate performance predictions using Transfer Portal for players at their current club too." This ensures both sides of the comparison come from the same model process, reducing sensitivity to noise in observed data.
+
+> **In plain English:** Instead of comparing "what the player actually did" vs "what we predict at the new club," we compare two predictions: "what the model thinks they'd do at their current club" vs "what the model thinks they'd do at the new club." This is fairer because both numbers come from the same system.
+
+### 4.8 Per-Metric Style Differentiation
+Predictions use three per-metric coefficient tables — `_TEAM_INFLUENCE` (how team-dependent a stat is), `_ABILITY_SENSITIVITY` (how much league quality changes it), and `_LEAGUE_STYLE_COEFF` (estimated style shift when team data is unavailable). This means a player moving to a harder league **can see some metrics improve** if the target team's style suits them (e.g., a crossing winger joining a wide-play team), while other metrics decline. Dribbling is treated as near-irreducible (barely changes with team/league), while passing and defending are heavily system-dependent.
+
+> **In plain English:** The model doesn't just say "harder league = everything gets worse." It says "harder league AND this specific team's style = some things get better, others get worse." A creative passer joining Barcelona might see their passing numbers *increase* despite moving to a harder league, because Barcelona's system creates more passing opportunities. Meanwhile, their defensive stats might drop because Barcelona dominates possession and players defend less.
+
 ---
 
 ## 5. Technical Stack
@@ -205,7 +224,7 @@ Swarm plots in the Transfer Impact page are populated with actual league-wide pe
 | UI | Streamlit | The web interface you interact with |
 | Caching | diskcache (SQLite-backed) | Remembers API responses so we don't re-download |
 | Visualization | Plotly | Draws the interactive charts |
-| Testing | pytest + unittest (68 tests) | Makes sure nothing is broken |
+| Testing | pytest + unittest (97 tests) | Makes sure nothing is broken |
 
 ---
 
