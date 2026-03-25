@@ -1,6 +1,6 @@
 """Plotly line chart: before/after team Power Rankings.
 
-Both clubs on same axis with transfer date marked.
+Tactical Noir styled — dark background, amber source line, teal target line.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from typing import Dict, List, Optional, Tuple
 import plotly.graph_objects as go
 import streamlit as st
 
+from frontend.theme import COLORS, PLOTLY_LAYOUT
+
 
 def render_power_ranking_chart(
     source_club: str,
@@ -20,23 +22,7 @@ def render_power_ranking_chart(
     transfer_date: Optional[date] = None,
     title: str = "Team Power Rankings",
 ) -> go.Figure:
-    """Create a dual-line Power Rankings timeline.
-
-    Parameters
-    ----------
-    source_club, target_club : str
-        Club names.
-    source_history, target_history : list[(date, normalized_score)]
-        Historical normalized 0-100 scores over time.
-    transfer_date : date, optional
-        If given, a vertical line is drawn at this date.
-    title : str
-        Chart title.
-
-    Returns
-    -------
-    plotly Figure.
-    """
+    """Create a dual-line Power Rankings timeline."""
     fig = go.Figure()
 
     if source_history:
@@ -46,8 +32,10 @@ def render_power_ranking_chart(
             y=list(vals_s),
             name=source_club,
             mode="lines+markers",
-            line=dict(color="#3498db", width=2),
-            marker=dict(size=4),
+            line=dict(color=COLORS["accent_blue"], width=2.5),
+            marker=dict(size=5, color=COLORS["accent_blue"]),
+            fill="tozeroy",
+            fillcolor="rgba(88,166,255,0.06)",
         ))
 
     if target_history:
@@ -57,28 +45,44 @@ def render_power_ranking_chart(
             y=list(vals_t),
             name=target_club,
             mode="lines+markers",
-            line=dict(color="#e74c3c", width=2),
-            marker=dict(size=4),
+            line=dict(color=COLORS["accent_teal"], width=2.5),
+            marker=dict(size=5, color=COLORS["accent_teal"]),
+            fill="tozeroy",
+            fillcolor="rgba(57,210,192,0.06)",
         ))
 
     if transfer_date is not None:
         fig.add_vline(
             x=transfer_date.isoformat(),
-            line_dash="dash",
-            line_color="#2c3e50",
-            annotation_text="Transfer",
+            line_dash="dot",
+            line_color=COLORS["accent_gold"],
+            line_width=1.5,
+            annotation_text="TRANSFER",
             annotation_position="top",
+            annotation_font=dict(
+                family="'Outfit', sans-serif",
+                size=10,
+                color=COLORS["accent_gold"],
+            ),
         )
 
-    fig.update_layout(
-        title=title,
-        xaxis_title="Date",
-        yaxis_title="Power Ranking (0-100)",
-        yaxis=dict(range=[0, 100]),
-        height=400,
-        template="plotly_white",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    layout = dict(PLOTLY_LAYOUT)
+    layout.update(
+        title=dict(text=title, **PLOTLY_LAYOUT["title"]),
+        yaxis=dict(
+            range=[0, 100],
+            **PLOTLY_LAYOUT["yaxis"],
+        ),
+        xaxis_title="",
+        yaxis_title="Power Ranking",
+        height=380,
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02,
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color=COLORS["text_secondary"], size=11),
+        ),
     )
+    fig.update_layout(**layout)
 
     return fig
 

@@ -1,7 +1,6 @@
 """Plotly horizontal bar chart: predicted % change per metric.
 
-Current value vs predicted value side by side.
-Green for positive change, red for negative.
+Tactical Noir styled — dark background, amber/green/crimson accents.
 """
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from backend.data.sofascore_client import CORE_METRICS
+from frontend.theme import COLORS, PLOTLY_LAYOUT
 
 # Human-readable labels
 _LABELS: Dict[str, str] = {
@@ -37,30 +37,14 @@ def render_metric_bars(
     pct_changes: Dict[str, float],
     title: str = "Predicted Metric Changes",
 ) -> go.Figure:
-    """Create horizontal bar chart comparing current vs predicted per-90.
-
-    Parameters
-    ----------
-    current_per90 : dict
-        Current metric values.
-    predicted_per90 : dict
-        Predicted metric values at target club.
-    pct_changes : dict
-        Pre-computed percentage changes per metric.
-    title : str
-        Chart title.
-
-    Returns
-    -------
-    plotly Figure.
-    """
+    """Create horizontal bar chart comparing current vs predicted per-90."""
     metrics = [m for m in CORE_METRICS if m in current_per90 or m in predicted_per90]
     labels = [_LABELS.get(m, m) for m in metrics]
     current_vals = [current_per90.get(m, 0) or 0 for m in metrics]
     predicted_vals = [predicted_per90.get(m, 0) or 0 for m in metrics]
     changes = [pct_changes.get(m, 0) for m in metrics]
 
-    colors = ["#2ecc71" if c >= 0 else "#e74c3c" for c in changes]
+    colors = [COLORS["accent_green"] if c >= 0 else COLORS["accent_crimson"] for c in changes]
 
     fig = go.Figure()
 
@@ -69,8 +53,9 @@ def render_metric_bars(
         x=current_vals,
         name="Current",
         orientation="h",
-        marker_color="#95a5a6",
-        opacity=0.6,
+        marker_color=COLORS["text_muted"],
+        opacity=0.35,
+        marker_line_width=0,
     ))
 
     fig.add_trace(go.Bar(
@@ -79,20 +64,34 @@ def render_metric_bars(
         name="Predicted",
         orientation="h",
         marker_color=colors,
+        opacity=0.9,
         text=[f"{c:+.1f}%" for c in changes],
         textposition="outside",
+        textfont=dict(
+            family="'JetBrains Mono', monospace",
+            size=10,
+            color=[COLORS["accent_green"] if c >= 0 else COLORS["accent_crimson"] for c in changes],
+        ),
+        marker_line_width=0,
     ))
 
-    fig.update_layout(
-        title=title,
+    layout = dict(PLOTLY_LAYOUT)
+    layout.update(
+        title=dict(text=title, **PLOTLY_LAYOUT["title"]),
         barmode="group",
         xaxis_title="Per 90",
-        yaxis=dict(autorange="reversed"),
-        height=max(400, len(metrics) * 40),
-        margin=dict(l=120, r=80),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        template="plotly_white",
+        yaxis=dict(autorange="reversed", **PLOTLY_LAYOUT["yaxis"]),
+        height=max(420, len(metrics) * 42),
+        margin=dict(l=120, r=80, t=50, b=30),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02,
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(color=COLORS["text_secondary"], size=11),
+        ),
+        bargap=0.25,
+        bargroupgap=0.08,
     )
+    fig.update_layout(**layout)
 
     return fig
 
