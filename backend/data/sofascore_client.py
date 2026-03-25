@@ -226,8 +226,7 @@ def search_team(name: str) -> List[Dict[str, Any]]:
 
             entry: dict[str, Any] = {"id": team_id, "name": team_name}
 
-            tournament = entity.get("tournament") or {}
-            tournament_id = tournament.get("id")
+            tournament_id = _extract_unique_tournament_id(entity)
             if tournament_id:
                 entry["tournament_id"] = tournament_id
 
@@ -322,21 +321,29 @@ def get_league_player_stats(
         return cached
 
     # Sofascore provides a "top players" endpoint per tournament+season
-    # We query the "rating" accumulator which gives the broadest player list
+    # We query multiple stat types to get the broadest player coverage
     players_map: Dict[int, Dict[str, Any]] = {}
 
-    # Fetch multiple stat pages to get broad coverage
+    # Fetch multiple stat types to get broad coverage
     for stat_type in ("rating", "expectedGoals", "accuratePasses"):
         page = 1
         while page <= (limit // 100 + 1):
             raw = _get(
                 f"/unique-tournament/{tournament_id}/season/{season_id}"
-                f"/statistics?limit=100&order=-{stat_type}"
-                f"&accumulation=total&group=summary&page={page}"
+                f"/top-players/{stat_type}"
+                f"?accumulation=total&order=desc&group=overall&page={page}"
             )
             if not isinstance(raw, dict):
-                break
-            results = raw.get("results") or []
+                # Fall back to alternate endpoint format
+                raw = _get(
+                    f"/unique-tournament/{tournament_id}/season/{season_id}"
+                    f"/statistics?limit=100&order=-{stat_type}"
+                    f"&accumulation=total&group=summary&page={page}"
+                )
+                if not isinstance(raw, dict):
+                    break
+            # Response may use "results" or "players" depending on endpoint
+            results = raw.get("results") or raw.get("players") or []
             if not results:
                 break
             for item in results:
@@ -347,11 +354,21 @@ def get_league_player_stats(
                 if pid is None or pid in players_map:
                     continue
                 team_data = item.get("team") or player_data.get("team") or {}
-                minutes = int(item.get("minutesPlayed") or
-                              item.get("statistics", {}).get("minutesPlayed", 0) or 0)
-                # Build per90 from the statistics sub-dict
-                stats_dict = item.get("statistics") or item
-                per90 = _parse_stats(stats_dict, minutes)
+                # Stats may be nested under "statistics" or flat on the item
+                stats_dict = item.get("statistics") or {}
+                if not isinstance(stats_dict, dict):
+                    stats_dict = {}
+                # Minutes: try statistics sub-dict first, then top-level
+                mins_raw = stats_dict.get("minutesPlayed")
+                if mins_raw is None:
+                    mins_raw = item.get("minutesPlayed")
+                minutes = int(mins_raw) if mins_raw is not None else 0
+                # Merge item-level stat keys into stats_dict for _parse_stats
+                merged_stats = dict(stats_dict)
+                for k, v in item.items():
+                    if k not in ("player", "team", "statistics") and k not in merged_stats:
+                        merged_stats[k] = v
+                per90 = _parse_stats(merged_stats, minutes)
 
                 players_map[pid] = {
                     "id": pid,
@@ -513,8 +530,8 @@ def search_player(name: str) -> List[Dict[str, Any]]:
             team = entity.get("team") or {}
             if isinstance(team, dict) and team.get("name"):
                 entry["team_name"] = team["name"]
-            tournament = team.get("tournament") or {}
-            tournament_id = tournament.get("id")
+                entry["team_id"] = team.get("id")
+            tournament_id = _extract_unique_tournament_id(team, entity)
             if tournament_id:
                 entry["tournament_id"] = tournament_id
                 # Stash meta for get_player_stats fast-path
@@ -573,11 +590,12 @@ def get_player_stats(
                 result["team"] = team_data.get("name", "")
                 result["team_id"] = team_data.get("id")
 
-                # Tournament — stash for future calls
-                tournament = team_data.get("tournament") or {}
-                tournament_id = tournament.get("id")
-                if tournament_id:
-                    _cache_player_meta(player_id, tournament_id)
+            # Tournament — check multiple locations in Sofascore response
+            tournament_id = _extract_unique_tournament_id(
+                team_data, player_data, profile_raw,
+            )
+            if tournament_id:
+                _cache_player_meta(player_id, tournament_id)
 
             # Position
             position_data = player_data.get("position") or {}
@@ -587,6 +605,13 @@ def get_player_stats(
 
     # Step 2 — Discover current tournament + season
     tournament_id = _get_cached_tournament_id(player_id)
+
+    # Fallback: if no tournament_id found yet, try the team's tournaments endpoint
+    if not tournament_id and result.get("team_id"):
+        tournament_id = _discover_tournament_for_team(result["team_id"])
+        if tournament_id:
+            _cache_player_meta(player_id, tournament_id)
+
     season_id = None
     if tournament_id:
         season_id = _get_current_season_id(tournament_id)
@@ -656,6 +681,88 @@ def get_team_players_stats(
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+
+def _extract_unique_tournament_id(*dicts: Any) -> Optional[int]:
+    """Extract the unique tournament ID from Sofascore response dicts.
+
+    Sofascore nests tournament info in several places depending on endpoint:
+      - ``team.tournament.uniqueTournament.id`` (common in profiles)
+      - ``team.tournament.id`` (occasionally, but often the *tournament* id, not unique)
+      - ``uniqueTournament.id`` (top-level on stats responses)
+      - ``tournament.uniqueTournament.id``
+
+    Checks multiple dicts (team_data, player_data, profile_raw) in order.
+    Returns the first valid integer ID found, or None.
+    """
+    for d in dicts:
+        if not isinstance(d, dict):
+            continue
+        # Direct uniqueTournament at this level
+        ut = d.get("uniqueTournament")
+        if isinstance(ut, dict) and ut.get("id"):
+            return int(ut["id"])
+        # Nested under tournament.uniqueTournament
+        tournament = d.get("tournament")
+        if isinstance(tournament, dict):
+            ut2 = tournament.get("uniqueTournament")
+            if isinstance(ut2, dict) and ut2.get("id"):
+                return int(ut2["id"])
+            # Fallback: tournament.id itself (may be the unique tournament ID
+            # in some API versions / mock data)
+            tid = tournament.get("id")
+            if tid is not None:
+                return int(tid)
+    return None
+
+
+def _discover_tournament_for_team(team_id: int) -> Optional[int]:
+    """Fetch the primary unique tournament ID for a team via Sofascore API.
+
+    Uses ``/team/{team_id}/unique-tournaments`` and picks the first
+    domestic league tournament (highest userCount, non-international).
+    Falls back to the first result if none match.
+    """
+    key = cache.make_key("sofascore_team_tournament", str(team_id))
+    cached = cache.get(key, max_age=86400 * 7)
+    if cached is not None:
+        return cached
+
+    raw = _get(f"/team/{team_id}/unique-tournaments")
+    if not isinstance(raw, dict):
+        return None
+
+    tournaments = raw.get("uniqueTournaments") or []
+    if not tournaments:
+        return None
+
+    # Prefer domestic league (non-international, highest userCount)
+    best = None
+    best_count = -1
+    for t in tournaments:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id")
+        if tid is None:
+            continue
+        # Skip international tournaments (Champions League=7, Europa=679, etc.)
+        # Heuristic: domestic leagues have a "category" with a country
+        cat = t.get("category") or {}
+        is_domestic = cat.get("flag") is not None or cat.get("alpha2") is not None
+        user_count = t.get("userCount") or 0
+        if is_domestic and user_count > best_count:
+            best = int(tid)
+            best_count = user_count
+
+    # Fallback to first tournament if no domestic league found
+    if best is None:
+        first = tournaments[0]
+        if isinstance(first, dict) and first.get("id"):
+            best = int(first["id"])
+
+    if best is not None:
+        cache.set(key, best)
+    return best
 
 
 def _make_empty_result() -> Dict[str, Any]:

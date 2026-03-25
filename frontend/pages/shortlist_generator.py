@@ -16,18 +16,13 @@ import pandas as pd
 import streamlit as st
 
 from backend.data import sofascore_client
-from backend.data.sofascore_client import CORE_METRICS
+from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
 from backend.features import power_rankings
 from backend.models.shortlist_scorer import (
     Candidate,
     ShortlistFilters,
     compute_percentage_changes,
     score_candidates,
-)
-from backend.models.transfer_portal import (
-    TransferPortalModel,
-    build_feature_dict,
-    FEATURE_DIM,
 )
 from backend.utils.league_registry import LEAGUES
 from frontend.theme import section_header, player_info_card
@@ -47,6 +42,19 @@ _LABELS: Dict[str, str] = {
     "interceptions": "Def Mid 3rd",
     "possession_won_final_3rd": "Def Att 3rd",
 }
+
+_WEIGHTS_EXPLANATION = (
+    "Each weight controls how important a metric is when ranking candidates. "
+    "A weight of **1.0** means the metric is fully considered; **0.0** ignores it. "
+    "Candidates are scored by:\n\n"
+    "1. **Normalize** each metric across all candidates (z-score: how many "
+    "standard deviations above/below average)\n"
+    "2. **Multiply** each normalized score by its weight\n"
+    "3. **Sum** the weighted scores and divide by total weight\n\n"
+    "Higher final score = better overall match for your priorities. "
+    "For example, set xG and xA to 1.0 and everything else to 0.0 to find "
+    "the most prolific attackers."
+)
 
 
 def render():
@@ -96,7 +104,9 @@ def render():
     current_per90 = player_stats.get("per90", {})
     position = player_stats.get("position", "Unknown")
     current_team = player_stats.get("team", "")
-    minutes_played = player_stats.get("minutes_played", 0) or 0
+    minutes_played = player_stats.get("minutes_played", 0)
+    if minutes_played is None:
+        minutes_played = 0
 
     player_info_card(
         f"Replacing: {player_name}", current_team, position, minutes_played
@@ -104,6 +114,8 @@ def render():
 
     # ── Metric weight sliders ────────────────────────────────────────────
     section_header("Metric Weights", "Set importance of each metric — 0 = ignore, 1 = max")
+    with st.expander("ℹ️ How weights work", expanded=False):
+        st.markdown(_WEIGHTS_EXPLANATION)
 
     weights: Dict[str, float] = {}
     cols = st.columns(3)
@@ -211,22 +223,46 @@ def render():
                     continue
 
                 lp_per90 = lp.get("per90") or {}
-                if not any(lp_per90.get(m) for m in CORE_METRICS):
+                # Use `is not None` to avoid skipping legitimate 0.0 values
+                if not any(lp_per90.get(m) is not None for m in CORE_METRICS):
                     continue
 
+                lp_current = {}
+                for m in CORE_METRICS:
+                    v = lp_per90.get(m)
+                    lp_current[m] = v if v is not None else 0
+
+                # Apply heuristic transfer adjustment based on Power Rankings.
+                # Coefficients align with the paper's observation that:
+                # - Offensive output scales positively with relative team strength (0.8)
+                # - Defensive workload decreases at stronger clubs (-0.6)
+                # - Passing/other metrics see moderate positive correlation (0.3)
+                lp_team = lp.get("team", "")
+                lp_ranking = power_rankings.get_team_ranking(lp_team)
+                lp_norm = lp_ranking.normalized_score if lp_ranking else 50.0
+                lp_league = lp_ranking.league_mean_normalized if lp_ranking else 50.0
+                # Relative ability change if player moved to the source team
+                delta_ra = (source_norm - source_league) - (lp_norm - lp_league)
                 predicted = {}
                 for m in CORE_METRICS:
-                    predicted[m] = lp_per90.get(m, 0) or 0
+                    val = lp_current[m]
+                    if m in OFFENSIVE_METRICS:
+                        adj = 1.0 + (delta_ra / 100.0) * 0.8
+                    elif m in DEFENSIVE_METRICS:
+                        adj = 1.0 - (delta_ra / 100.0) * 0.6
+                    else:
+                        adj = 1.0 + (delta_ra / 100.0) * 0.3
+                    predicted[m] = val * max(adj, 0.2)
 
                 candidates.append(Candidate(
                     player_id=lp_id,
                     name=lp.get("name", "Unknown"),
-                    team=lp.get("team", ""),
+                    team=lp_team,
                     position=lp.get("position", "Unknown"),
                     minutes_played=lp.get("minutes_played"),
                     league=league_info.name,
                     predicted_per90=predicted,
-                    current_per90={m: (lp_per90.get(m) or 0) for m in CORE_METRICS},
+                    current_per90=lp_current,
                 ))
 
         league_progress.empty()
@@ -249,21 +285,23 @@ def render():
                 continue
 
             tp_per90 = tp_stats.get("per90", {})
-            if not any(tp_per90.get(m) for m in CORE_METRICS):
+            if not any(tp_per90.get(m) is not None for m in CORE_METRICS):
                 continue
 
-            predicted = {}
+            tp_current = {}
             for m in CORE_METRICS:
-                predicted[m] = tp_per90.get(m, 0) or 0
+                v = tp_per90.get(m)
+                tp_current[m] = v if v is not None else 0
 
+            # Teammates are already on the same team — no transfer adjustment
             candidates.append(Candidate(
                 player_id=tp_id,
                 name=tp_stats.get("name", tp.get("name", "Unknown")),
                 team=tp_stats.get("team", ""),
                 position=tp_stats.get("position", tp.get("position", "Unknown")),
                 minutes_played=tp_stats.get("minutes_played"),
-                predicted_per90=predicted,
-                current_per90={m: (tp_per90.get(m) or 0) for m in CORE_METRICS},
+                predicted_per90=tp_current.copy(),
+                current_per90=tp_current,
             ))
 
     if not candidates:

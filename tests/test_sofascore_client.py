@@ -23,7 +23,10 @@ MOCK_SEARCH_RESPONSE = {
                 "team": {
                     "id": 789,
                     "name": "Arsenal",
-                    "tournament": {"id": 17},
+                    "tournament": {
+                        "name": "Premier League",
+                        "uniqueTournament": {"id": 17, "name": "Premier League"},
+                    },
                 },
             }
         },
@@ -44,7 +47,10 @@ MOCK_PLAYER_PROFILE = {
         "team": {
             "id": 789,
             "name": "Arsenal",
-            "tournament": {"id": 17},
+            "tournament": {
+                "name": "Premier League",
+                "uniqueTournament": {"id": 17, "name": "Premier League"},
+            },
         },
         "positionDescription": "Right Winger",
     }
@@ -308,6 +314,107 @@ class TestSofascoreClient(unittest.TestCase):
             self.assertEqual(sid2, 61627)
             # Only one actual API call
             mock_get.assert_called_once()
+
+    def test_extract_unique_tournament_id_nested(self):
+        """uniqueTournament nested under tournament is found."""
+        team_data = {
+            "tournament": {
+                "name": "Premier League",
+                "uniqueTournament": {"id": 17},
+            }
+        }
+        self.assertEqual(sofascore_client._extract_unique_tournament_id(team_data), 17)
+
+    def test_extract_unique_tournament_id_direct(self):
+        """uniqueTournament at the top level is found."""
+        data = {"uniqueTournament": {"id": 42}}
+        self.assertEqual(sofascore_client._extract_unique_tournament_id(data), 42)
+
+    def test_extract_unique_tournament_id_fallback_tournament_id(self):
+        """Falls back to tournament.id when uniqueTournament is absent."""
+        data = {"tournament": {"id": 99}}
+        self.assertEqual(sofascore_client._extract_unique_tournament_id(data), 99)
+
+    def test_extract_unique_tournament_id_none(self):
+        """Returns None when no tournament info is present."""
+        self.assertIsNone(sofascore_client._extract_unique_tournament_id({}))
+        self.assertIsNone(sofascore_client._extract_unique_tournament_id({"team": {}}))
+
+    def test_extract_unique_tournament_id_multiple_dicts(self):
+        """Searches multiple dicts, returns first match."""
+        empty = {}
+        has_it = {"uniqueTournament": {"id": 55}}
+        self.assertEqual(
+            sofascore_client._extract_unique_tournament_id(empty, has_it), 55
+        )
+
+    @patch.object(sofascore_client, "_get")
+    def test_discover_tournament_for_team(self, mock_get):
+        mock_get.return_value = {
+            "uniqueTournaments": [
+                {
+                    "id": 17,
+                    "name": "Premier League",
+                    "userCount": 1000000,
+                    "category": {"flag": "england", "alpha2": "EN"},
+                },
+                {
+                    "id": 7,
+                    "name": "Champions League",
+                    "userCount": 5000000,
+                    "category": {},
+                },
+            ]
+        }
+        # Should prefer domestic (has flag/alpha2) over international
+        tid = sofascore_client._discover_tournament_for_team(789)
+        self.assertEqual(tid, 17)
+
+    @patch.object(sofascore_client, "_get")
+    def test_discover_tournament_for_team_fallback(self, mock_get):
+        """When no domestic league found, uses first tournament."""
+        mock_get.return_value = {
+            "uniqueTournaments": [
+                {"id": 7, "name": "Champions League", "category": {}},
+            ]
+        }
+        tid = sofascore_client._discover_tournament_for_team(999)
+        self.assertEqual(tid, 7)
+
+    @patch.object(sofascore_client, "_get")
+    def test_get_player_stats_discovers_tournament_from_team_endpoint(self, mock_get):
+        """get_player_stats falls back to team tournaments endpoint."""
+        profile_no_tournament = {
+            "player": {
+                "id": 961995,
+                "name": "Bukayo Saka",
+                "team": {"id": 789, "name": "Arsenal"},
+                "positionDescription": "Right Winger",
+            }
+        }
+
+        def side_effect(path):
+            if path == "/player/961995":
+                return profile_no_tournament
+            if path == "/team/789/unique-tournaments":
+                return {
+                    "uniqueTournaments": [
+                        {"id": 17, "name": "Premier League", "userCount": 1000,
+                         "category": {"flag": "england"}},
+                    ]
+                }
+            if "/seasons" in path:
+                return MOCK_SEASONS_RESPONSE
+            if "statistics" in path:
+                return MOCK_STATS_RESPONSE
+            return None
+
+        mock_get.side_effect = side_effect
+
+        stats = sofascore_client.get_player_stats(961995)
+        # Stats should be fetched correctly via fallback
+        self.assertEqual(stats["minutes_played"], 1650)
+        self.assertIsNotNone(stats["per90"]["expected_goals"])
 
 
 if __name__ == "__main__":

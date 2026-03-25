@@ -259,7 +259,8 @@ def build_feature_dict(
     fd: Dict[str, float] = {}
 
     for m in CORE_METRICS:
-        fd[f"player_{m}"] = player_per90.get(m, 0.0) or 0.0
+        v = player_per90.get(m)
+        fd[f"player_{m}"] = float(v) if v is not None else 0.0
 
     fd["team_ability_current"] = team_ability_current
     fd["team_ability_target"] = team_ability_target
@@ -267,9 +268,11 @@ def build_feature_dict(
     fd["league_ability_target"] = league_ability_target
 
     for m in CORE_METRICS:
-        fd[f"team_pos_current_{m}"] = team_pos_current.get(m, 0.0) or 0.0
+        v = team_pos_current.get(m)
+        fd[f"team_pos_current_{m}"] = float(v) if v is not None else 0.0
     for m in CORE_METRICS:
-        fd[f"team_pos_target_{m}"] = team_pos_target.get(m, 0.0) or 0.0
+        v = team_pos_target.get(m)
+        fd[f"team_pos_target_{m}"] = float(v) if v is not None else 0.0
 
     return fd
 

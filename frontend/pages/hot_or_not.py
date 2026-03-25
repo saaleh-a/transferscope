@@ -18,7 +18,6 @@ from backend.models.shortlist_scorer import compute_percentage_changes
 from backend.models.transfer_portal import (
     TransferPortalModel,
     build_feature_dict,
-    FEATURE_DIM,
 )
 from frontend.theme import (
     section_header, confidence_badge, verdict_display, player_info_card, COLORS,
@@ -142,9 +141,11 @@ def render():
     player_name = player_stats.get("name", "Unknown")
     current_team = player_stats.get("team", "Unknown")
     position = player_stats.get("position", "Unknown")
-    minutes = player_stats.get("minutes_played", 0) or 0
+    minutes = player_stats.get("minutes_played", 0)
+    if minutes is None:
+        minutes = 0
     current_per90 = player_stats.get("per90", {})
-    current_per90_clean = {m: (current_per90.get(m) or 0.0) for m in CORE_METRICS}
+    current_per90_clean = {m: (current_per90.get(m) if current_per90.get(m) is not None else 0.0) for m in CORE_METRICS}
 
     # ── Player info card ─────────────────────────────────────────────────
     player_info_card(player_name, current_team, position, minutes)
@@ -163,20 +164,22 @@ def render():
     # Confidence
     features = rolling_windows.compute_player_features(player_stats)
 
-    # Prediction
+    # Prediction — only use TF model if trained weights exist
+    predicted = {}
     try:
         model = TransferPortalModel()
-        model.build(FEATURE_DIM)
-        fd = build_feature_dict(
-            player_per90=current_per90_clean,
-            team_ability_current=source_norm,
-            team_ability_target=target_norm,
-            league_ability_current=source_league,
-            league_ability_target=target_league,
-            team_pos_current=current_per90_clean,
-            team_pos_target=current_per90_clean,
-        )
-        predicted = model.predict(fd)
+        model.load()
+        if model.fitted:
+            fd = build_feature_dict(
+                player_per90=current_per90_clean,
+                team_ability_current=source_norm,
+                team_ability_target=target_norm,
+                league_ability_current=source_league,
+                league_ability_target=target_league,
+                team_pos_current=current_per90_clean,
+                team_pos_target=current_per90_clean,
+            )
+            predicted = model.predict(fd)
     except Exception:
         predicted = {}
 
