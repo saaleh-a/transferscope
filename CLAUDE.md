@@ -12,15 +12,15 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 
 | Layer | Tool |
 |---|---|
-| Player stats | FotMob via `mobfot` Python package |
+| Player stats | Sofascore REST API via `backend/data/sofascore_client.py` |
 | Power Rankings (Europe) | ClubElo via `soccerdata` Python package |
 | Power Rankings (Global fallback) | WorldFootballElo (`eloratings.net`) via direct HTTP scrape |
 | Feature engineering | pandas rolling windows |
-| Adjustment models | sklearn LinearRegression |
-| Prediction model | TensorFlow multi-head neural network (4 model groups) |
+| Adjustment models | sklearn LinearRegression + paper-aligned heuristic (`paper_heuristic_predict`) |
+| Prediction model | TensorFlow multi-head neural network (4 model groups) — heuristic fallback when untrained |
 | UI | Streamlit |
 | Caching | diskcache (SQLite-backed) |
-| Python | 3.11+ |
+| Python | 3.12 |
 
 ---
 
@@ -29,12 +29,15 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 ```
 transferscope/
 ├── CLAUDE.md
+├── README.md
+├── METHODOLOGY.md
+├── WHITEPAPER.md
 ├── requirements.txt
-├── .env.example
+├── .python-version                     # Pins Python 3.12 for Streamlit Cloud
 ├── app.py                              # Streamlit entry point only
 ├── backend/
 │   ├── data/
-│   │   ├── fotmob_client.py            # FotMob API wrapper via mobfot
+│   │   ├── sofascore_client.py         # Sofascore REST API — player stats, search, transfers
 │   │   ├── clubelo_client.py           # ClubElo wrapper via soccerdata (Europe)
 │   │   ├── worldfootballelo_client.py  # WorldFootballElo scraper (global fallback)
 │   │   ├── elo_router.py               # Routes club to correct Elo source, merges scores
@@ -42,21 +45,23 @@ transferscope/
 │   ├── features/
 │   │   ├── rolling_windows.py          # 1000-min player rolling averages
 │   │   ├── power_rankings.py           # Dynamic league Elo + 0-100 normalization
-│   │   └── adjustment_models.py        # sklearn priors for low-data players and teams
+│   │   └── adjustment_models.py        # sklearn priors + paper_heuristic_predict fallback
 │   ├── models/
 │   │   ├── transfer_portal.py          # TensorFlow multi-head NN, 4 target groups
 │   │   └── shortlist_scorer.py         # Weighted similarity scoring for shortlist
 │   └── utils/
-│       └── league_registry.py          # League ID mappings for FotMob + Elo sources
+│       └── league_registry.py          # League ID mappings for Sofascore + Elo sources
 ├── frontend/
 │   ├── pages/
 │   │   ├── transfer_impact.py          # Fig 1 from paper: predicted perf change dashboard
 │   │   ├── shortlist_generator.py      # Fig 2 from paper: replacement shortlist
 │   │   └── hot_or_not.py              # Section 5: quick rumour validator
-│   └── components/
-│       ├── swarm_plot.py               # Player vs league/team context strip plots
-│       ├── power_ranking_chart.py      # Before/after team Power Rankings timeline
-│       └── metric_bar.py              # Horizontal bar: predicted % change per metric
+│   ├── components/
+│   │   ├── swarm_plot.py               # Player vs league/team context strip plots
+│   │   ├── power_ranking_chart.py      # Before/after team Power Rankings timeline
+│   │   └── metric_bar.py              # Horizontal bar: predicted % change per metric
+│   └── theme.py                        # "Tactical Noir" dark theme + shared UI components
+├── tests/                              # 97 tests across 8 files (all mocked, no network)
 └── data/
     ├── cache/                          # diskcache files — gitignored
     └── models/                         # Saved TF model weights — gitignored
@@ -110,29 +115,29 @@ This is a key input feature to the adjustment models.
 
 ---
 
-## The 13 core metrics (paper, mapped to FotMob)
+## The 13 core metrics (paper, mapped to Sofascore)
 
-| # | Paper Metric | FotMob Field |
+| # | Paper Metric | Sofascore Field(s) |
 |---|---|---|
-| 1 | xG | `expected_goals` |
-| 2 | xA | `expected_assists` |
-| 3 | Shots | `shots` |
-| 4 | Take-ons | `successful_dribbles` |
-| 5 | Crosses | `successful_crosses` |
-| 6 | Penalty area entries | `touches_in_opposition_box` |
-| 7 | Total passes | `successful_passes` |
-| 8 | Short passes | `pass_completion_pct` (proxy) |
-| 9 | Long passes | `accurate_long_balls` |
-| 10 | Passes in attacking third | `chances_created` |
+| 1 | xG | `expected_goals` (via `expectedGoals`, `xG`) |
+| 2 | xA | `expected_assists` (via `expectedAssists`, `xA`) |
+| 3 | Shots | `shots` (via `shots`, `totalShots`, `shotAttempts`) |
+| 4 | Take-ons | `successful_dribbles` (via `successfulDribbles`, `dribbles`) |
+| 5 | Crosses | `successful_crosses` (via `accurateCrosses`, `crossesAccurate`) |
+| 6 | Penalty area entries | `touches_in_opposition_box` (via 12+ Sofascore aliases; fallback: estimated from `shots * 2.5`, capped at 30% of `touches`) |
+| 7 | Total passes | `successful_passes` (via `accuratePasses`, `passesAccurate`) |
+| 8 | Short passes | `pass_completion_pct` (proxy — via `accuratePassesPercentage`, `passAccuracy`) |
+| 9 | Long passes | `accurate_long_balls` (via `accurateLongBalls`, `longBallsAccurate`) |
+| 10 | Passes in attacking third | `chances_created` (via `keyPasses`, `bigChancesCreated`, `chancesCreated`) |
 | 11 | Defensive actions own third | `clearances` |
 | 12 | Defensive actions mid third | `interceptions` |
-| 13 | Defensive actions att third | `possession_won_final_3rd` |
+| 13 | Defensive actions att third | `possession_won_final_3rd` (via `wonTackles`, `tacklesWon`, `successfulTackles`) |
 
 All metrics stored and displayed as per-90. Never raw totals.
 
-## Additional FotMob metrics (beyond paper)
+## Additional Sofascore metrics (beyond paper)
 
-| FotMob Field | Label |
+| Sofascore Field | Label |
 |---|---|
 | `xg_on_target` | xGOT |
 | `non_penalty_xg` | Non-penalty xG |
@@ -147,18 +152,23 @@ All metrics stored and displayed as per-90. Never raw totals.
 
 ---
 
-## FotMob league coverage (confirmed in scope)
+## Sofascore league coverage (confirmed in scope)
 
-**Europe:** Premier League, Bundesliga, La Liga, Serie A, Ligue 1, Eredivisie,
-Primeira Liga, Championship, Belgian Pro League, Super Lig, and more.
+**Europe (30+):** Premier League, Championship, Bundesliga, 2. Bundesliga,
+La Liga, La Liga 2, Serie A, Serie B, Ligue 1, Ligue 2, Eredivisie,
+Primeira Liga, Belgian Pro League, Super Lig, Scottish Premiership,
+Austrian Bundesliga, Swiss Super League, Greek Super League,
+Czech First League, Danish Superliga, Croatian 1. HNL, Serbian Super Liga,
+Norwegian Eliteserien, Swedish Allsvenskan, Polish Ekstraklasa,
+Romanian Liga I, Ukrainian/Russian Premier Leagues, Bulgarian/Hungarian/Cypriot/Finnish leagues.
 
 **South America:** Brasileirao Serie A + B, Argentine Primera División,
 Colombian Primera A, Chilean Primera División, Uruguayan Primera División,
 Ecuadorian Serie A.
 
-**Other:** MLS, Saudi Pro League, J-League, and more.
+**Other:** MLS, Saudi Pro League, J-League.
 
-If a league is on FotMob it is in scope for TransferScope.
+If a league is on Sofascore it is in scope for TransferScope. 37+ leagues registered.
 
 ---
 
@@ -227,6 +237,43 @@ target = intercept
        + error
 ```
 
+**Paper-aligned heuristic fallback (`paper_heuristic_predict`):**
+
+When no trained TF model weights exist, this function produces predictions
+using the paper's structure (Appendix A.3) with calibrated default coefficients.
+
+For each metric, two forces compete:
+1. **Style shift** — `team_influence * (target_pos_avg - source_pos_avg)`.
+   How much does the target team's tactical system differ from the source?
+   Per-metric `_TEAM_INFLUENCE` weights (0.15 for dribbles → 0.50 for passing).
+   When real team-position data is unavailable, per-metric `_LEAGUE_STYLE_COEFF`
+   values estimate style from the league quality gap so metrics produce
+   **different** percentage changes (not flat).
+2. **Ability factor** — polynomial in `change_relative_ability / 100`:
+   `1 + sensitivity*ra − 0.15*sensitivity*ra² + 0.02*sensitivity*ra³`.
+   Per-metric `_ABILITY_SENSITIVITY` (offensive positive, defensive negative).
+
+This means a player moving to a bigger team **can improve or decline**
+per-metric depending on whether the target team's style fits them:
+- Moving to a high-crossing team → crosses and xA may rise even if league is harder
+- Moving to a possession team → passing metrics rise, dribbling stays stable
+- Moving to a defensive team → clearances/interceptions may rise, attacking may fall
+
+**Dual simulation (paper Section 4):**
+
+The Transfer Impact page simulates the player at **both** their current
+and target clubs, then compares the two model outputs. This is faithful
+to the paper: "we generate performance predictions using Transfer Portal
+for players at their current club too — as opposed to using their actual
+observed performance measures at their current club." Both sides come from
+the same model process, reducing noise sensitivity.
+
+```
+predicted_current = predict(player, current_team → current_team, ra=0)
+predicted_target  = predict(player, current_team → target_team, ra=Δ)
+% change = (predicted_target - predicted_current) / predicted_current
+```
+
 ---
 
 ## Shortlist scoring
@@ -243,12 +290,15 @@ Available filters: age, market value, minutes played, position, league, club Pow
 
 ## Key decisions already made — do not revisit
 
-- FotMob not SofaScore: better per-90 coverage, xGOT, npxG, touches in box
+- Sofascore not FotMob: team search, transfer history, season selector, league-wide stats, team-position averages
 - ClubElo + WorldFootballElo not static tier table: dynamic, global, faithful to paper
 - Dynamic league Elo from team mean: updates automatically, no manual maintenance
 - Streamlit not FastAPI + React: speed of build, sufficient for personal tool
 - diskcache not Redis: local tool, SQLite is enough
 - All stats stored and displayed as per-90 — never raw totals in UI
+- Dual simulation for Transfer Impact: predict at both current and target clubs, compare model vs model (paper Section 4)
+- Per-metric style differentiation: `_TEAM_INFLUENCE`, `_ABILITY_SENSITIVITY`, `_LEAGUE_STYLE_COEFF` all keyed per-metric, not flat group multipliers
+- Position normalization to 4 categories (Forward, Midfielder, Defender, Goalkeeper) via `normalize_position()` — including Sofascore single-letter codes (F/M/D/G)
 
 ---
 

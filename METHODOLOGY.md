@@ -118,7 +118,7 @@ The 13 core metrics and their Sofascore sources:
 | `shots` | `shots`, `totalShots` | Per-90 |
 | `successful_dribbles` | `successfulDribbles`, `dribbles` | Per-90 |
 | `successful_crosses` | `accurateCrosses` | Per-90 |
-| `touches_in_opposition_box` | `penaltyAreaTouches`, `touchInBox` | Per-90 |
+| `touches_in_opposition_box` | `penaltyAreaTouches`, `touchInBox`, + 10 more aliases | Per-90 (fallback: estimated from shots×2.5, capped at 30% of touches) |
 | `successful_passes` | `accuratePasses` | Per-90 |
 | `pass_completion_pct` | `accuratePassesPercentage` | Percentage (as-is) |
 | `accurate_long_balls` | `accurateLongBalls` | Per-90 |
@@ -318,6 +318,35 @@ predicted_per90 = intercept
 
 > **In plain English:** The system can learn from real-world transfers. Give it a list of players who've changed clubs, and it will look at their stats before and after each move, then use that data to teach the adjustment models. The more transfers it learns from, the more accurate the adjustments become.
 
+### 7.6 Paper-Aligned Heuristic Fallback
+
+When no trained TF model weights exist, `paper_heuristic_predict()` produces predictions using the paper's structure (Appendix A.3) with calibrated default coefficients. For each metric, two forces compete:
+
+**1. Style shift** — weighted by per-metric `_TEAM_INFLUENCE` (0.15 for dribbles → 0.50 for passing):
+```python
+style_diff = target_pos_avg[metric] - source_pos_avg[metric]
+base = player_val + team_influence * style_diff
+```
+
+When real team-position data is unavailable (both position averages equal), per-metric `_LEAGUE_STYLE_COEFF` values estimate style from the league quality gap. This ensures that **different metrics produce different percentage changes** — not a flat decline or increase:
+```python
+# Each metric has a unique coefficient (e.g. xA=0.18, shots=0.08, dribbles=0.02)
+estimated_style_diff = source_avg * league_style_coeff * ra
+```
+
+**2. Ability factor** — polynomial (linear + quadratic + cubic) in `change_relative_ability / 100`, with per-metric `_ABILITY_SENSITIVITY`:
+```python
+ability_factor = 1 + sensitivity*ra − 0.15*sensitivity*ra² + 0.02*sensitivity*ra³
+```
+
+**The key paper insight:** A player at a worse team can do **better or worse** at a bigger team depending on style fit:
+- Moving to a high-crossing team → crosses and xA may **rise** even in a harder league
+- Moving to a possession team → passing metrics **rise**, dribbling stays stable
+- Moving to a counter-attacking team → take-ons **retained**, passing may **drop**
+- Defensive metrics at dominant teams → **drop** (less defending needed)
+
+> **In plain English:** The model doesn't just say "harder league = everything gets worse." It accounts for tactical fit. A creative winger joining Barcelona might see passing stats *increase* despite moving to a harder league, because Barcelona's system demands more passing. Meanwhile their defensive stats drop because Barcelona dominates the ball. And their dribbling stays roughly the same because that's an individual skill. Each of the 13 stats responds differently.
+
 ---
 
 ## 8. Transfer Portal Neural Network (TensorFlow)
@@ -474,20 +503,26 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
    → Arsenal Power Ranking: 85, league mean: 72
    → Real Madrid Power Ranking: 91, league mean: 68
 
-6. compute_player_features(player_stats)
+6. get_team_position_averages(source_team, position)
+   get_team_position_averages(target_team, position)
+   → Arsenal wingers avg per-90: {xG: 0.35, xA: 0.18, ...}
+   → Real Madrid wingers avg per-90: {xG: 0.42, xA: 0.22, ...}
+
+7. compute_player_features(player_stats)
    → Rolling average or season aggregate
    → Blend with prior if low minutes
    → RAG confidence: GREEN (weight=0.95, 2100 mins)
 
-7. build_feature_dict(...)
-   → 43-dimensional input vector
+8. Dual simulation (paper Section 4):
+   predicted_current = paper_heuristic_predict(
+       player_stats, source_pos_avg → source_pos_avg, ra=0)
+   predicted_target = paper_heuristic_predict(
+       player_stats, source_pos_avg → target_pos_avg, ra=Δ)
+   → Style differences AND ability differences are per-metric
 
-8. TransferPortalModel.predict(feature_dict)
-   → 4 group models each predict their targets
-   → Returns: {expected_goals: 0.52, shots: 2.8, ...}
-
-9. compute_percentage_changes(current, predicted)
-   → {expected_goals: +14.2%, shots: -3.1%, ...}
+9. compute_percentage_changes(predicted_current, predicted_target)
+   → {expected_goals: +14.2%, shots: -3.1%, crosses: +8.5%, ...}
+   → Note: some metrics UP, some DOWN — reflects style fit
 
 10. Render:
     → metric_bar.show(...)        # bar chart of changes
@@ -497,7 +532,7 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
     → predictions table           # full breakdown
 ```
 
-> **In plain English:** The system searches for the player and target club, fetches all their data, calculates how strong both teams/leagues are, crunches everything through the prediction models, and then draws it all on the screen — metric bars, power ranking charts, league comparison plots, confidence indicators, and a full table of predicted stat changes. The whole thing happens in a few seconds.
+> **In plain English:** The system searches for the player and target club, fetches all their data, calculates how strong both teams/leagues are, fetches what each team's position players typically produce (tactical style), simulates the player at both clubs using the same model, then draws everything on screen. The key is that the comparison is model-vs-model (not raw stats vs prediction), and different stats can go up or down depending on style fit.
 
 ---
 
@@ -505,21 +540,22 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
 
 ### 11.1 Unit Tests
 
-68 tests across 7 test files, all using `unittest` with `mock.patch` for external API calls:
+97 tests across 8 test files, all using `unittest` with `mock.patch` for external API calls:
 
 | Test File | What It Tests | Count |
 |---|---|---|
-| `test_sofascore_client.py` | Player search, stats parsing, per-90 computation, caching | 14 |
+| `test_sofascore_client.py` | Player search, stats parsing, per-90 computation, caching, tournament discovery | 21 |
 | `test_new_features.py` | Team search, transfer history, league stats, seasons, season-specific stats | 16 |
 | `test_adjustment_training.py` | Training data builder, auto-training, team-position scaling | 4 |
 | `test_cache.py` | Cache set/get, TTL expiry, namespace clearing | 8 |
 | `test_clubelo_client.py` | European Elo fetching, caching, league listing | 7 |
 | `test_elo_router.py` | Source routing, normalization, coverage detection | 10 |
-| `test_worldelo_client.py` | Non-European Elo fetching, HTML parsing, caching | 9 |
+| `test_improvements.py` | Historical rankings, league comparison, fuzzy matching | 13 |
+| `test_worldelo_client.py` | Non-European Elo fetching, HTML parsing, caching | 8 |
 
 All tests use mocked HTTP responses — no network access required. Temporary cache directories are created per test module and cleaned up in `tearDownModule()`.
 
-> **In plain English:** We have 68 automated checks that verify the system works correctly. They use fake data (so they don't need the internet), and they cover everything from "does the search work?" to "is the per-90 math right?" to "does the cache actually cache things?" If anyone changes the code and breaks something, these tests catch it immediately.
+> **In plain English:** We have 97 automated checks that verify the system works correctly. They use fake data (so they don't need the internet), and they cover everything from "does the search work?" to "is the per-90 math right?" to "does the cache actually cache things?" If anyone changes the code and breaks something, these tests catch it immediately.
 
 ### 11.2 Run Tests
 
