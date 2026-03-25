@@ -227,18 +227,18 @@ class TestSoccerdataRetryExpiration(unittest.TestCase):
         cache.clear_namespace("clubelo_date")
         # Reset state
         clubelo_client._soccerdata_available = None
-        clubelo_client._soccerdata_disabled_at = 0.0
+        clubelo_client._soccerdata_last_failure_at = 0.0
 
     def tearDown(self):
         cache.close()
         clubelo_client._soccerdata_available = None
-        clubelo_client._soccerdata_disabled_at = 0.0
+        clubelo_client._soccerdata_last_failure_at = 0.0
 
     def test_retry_after_interval(self):
         """soccerdata should be retried after the interval expires."""
         clubelo_client._soccerdata_available = False
         # Set disabled time to 2 hours ago (longer than 1-hour interval)
-        clubelo_client._soccerdata_disabled_at = time.time() - 7200
+        clubelo_client._soccerdata_last_failure_at = time.time() - 7200
 
         # It should attempt soccerdata again (reset _soccerdata_available)
         with patch("soccerdata.ClubElo") as mock_ce_class:
@@ -254,7 +254,7 @@ class TestSoccerdataRetryExpiration(unittest.TestCase):
     def test_no_retry_within_interval(self):
         """soccerdata should NOT be retried within the interval."""
         clubelo_client._soccerdata_available = False
-        clubelo_client._soccerdata_disabled_at = time.time()  # just now
+        clubelo_client._soccerdata_last_failure_at = time.time()  # just now
 
         result = clubelo_client._try_soccerdata("2025-01-01")
         self.assertIsNone(result)
@@ -306,7 +306,7 @@ class TestPowerRankingsMatchType(unittest.TestCase):
 
 # ── Power Rankings compare_leagues ──────────────────────────────────────────
 
-class TestComparLeagues(unittest.TestCase):
+class TestCompareLeagues(unittest.TestCase):
     def setUp(self):
         cache.close()
         os.environ["CACHE_DIR"] = _TEMP_DIR

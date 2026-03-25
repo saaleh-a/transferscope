@@ -177,7 +177,7 @@ def _get(path: str) -> Optional[dict]:
         try:
             resp = requests.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
             if resp.status_code in _RETRYABLE_STATUS_CODES:
-                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                delay = _RETRY_BASE_DELAY * (2 ** attempt)  # 1s, 2s, 4s
                 _log.info(
                     "Sofascore %d on %s — retry %d/%d in %.1fs",
                     resp.status_code, path, attempt + 1, _MAX_RETRIES, delay,

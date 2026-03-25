@@ -221,9 +221,9 @@ def render():
     except Exception:
         predicted = {}
 
-    # If no trained model weights exist, the NN outputs random noise.
-    # Apply paper-aligned heuristic: adjust per-90 by relative ability
-    # change, with different rates for offensive vs defensive metrics.
+    # If no trained model weights exist, fall back to paper-aligned heuristics.
+    # Adjust per-90 by relative ability change, with different rates for
+    # offensive vs defensive metrics.
     if not predicted:
         predicted = {}
         for m in CORE_METRICS:
