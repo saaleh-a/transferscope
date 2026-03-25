@@ -149,6 +149,33 @@ def verdict_display(verdict: str, player: str, source: str, target: str) -> None
     )
 
 
+def player_info_card(
+    name: str,
+    team: str = "",
+    position: str = "",
+    minutes: int = 0,
+    season_label: str = "Current",
+) -> None:
+    """Render a consistent player info card across all pages."""
+    parts = []
+    if team:
+        parts.append(f'<span><span class="ts-gold">◆</span> {team}</span>')
+    if position:
+        parts.append(f"<span>{position}</span>")
+    if minutes:
+        parts.append(f"<span>{minutes:,} mins</span>")
+    if season_label:
+        parts.append(f"<span>{season_label}</span>")
+    meta = '<span style="opacity:0.3; margin:0 0.3em;">·</span>'.join(parts)
+    st.markdown(
+        f'<div class="ts-player-header">'
+        f'<div class="ts-player-name">{name}</div>'
+        f'<div class="ts-player-meta">{meta}</div>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
 # ── Master CSS ───────────────────────────────────────────────────────────────
 
 _CSS = """

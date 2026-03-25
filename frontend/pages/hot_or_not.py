@@ -12,7 +12,7 @@ from typing import Dict, Optional
 import streamlit as st
 
 from backend.data import sofascore_client
-from backend.data.sofascore_client import CORE_METRICS
+from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
 from backend.features import power_rankings, rolling_windows
 from backend.models.shortlist_scorer import compute_percentage_changes
 from backend.models.transfer_portal import (
@@ -21,7 +21,7 @@ from backend.models.transfer_portal import (
     FEATURE_DIM,
 )
 from frontend.theme import (
-    section_header, confidence_badge, verdict_display, COLORS,
+    section_header, confidence_badge, verdict_display, player_info_card, COLORS,
 )
 
 _LABELS: Dict[str, str] = {
@@ -66,6 +66,30 @@ def render():
         st.info("Enter a player and target club to validate the rumour.")
         return
 
+    # ── Player search + dropdown ─────────────────────────────────────────
+    with st.spinner("Searching for player..."):
+        try:
+            search_results = sofascore_client.search_player(player_query)
+        except Exception as e:
+            st.error(f"Search failed: {e}")
+            return
+
+    if not search_results:
+        st.warning(f"No player found for '{player_query}'.")
+        return
+
+    player_options = {
+        f"{p['name']}"
+        + (f" · Age {p['age']}" if p.get("age") else "")
+        + (f" · {p['nationality']}" if p.get("nationality") else "")
+        + (f" · {p['team_name']}" if p.get("team_name") else "")
+        : p for p in search_results
+    }
+    selected_player = st.selectbox(
+        "Select player", list(player_options.keys()), key="hon_player_select"
+    )
+    player_info = player_options[selected_player]
+
     # ── Target club autocomplete ─────────────────────────────────────────
     try:
         club_results = sofascore_client.search_team(target_club_query)
@@ -84,28 +108,33 @@ def render():
         target_club = club_options[selected_club]["name"]
 
     # ── Season selector ──────────────────────────────────────────────────
-    # We need to search the player first to get tournament_id for seasons
+    tournament_id = player_info.get("tournament_id")
     selected_season_id: Optional[int] = None
+
+    if tournament_id:
+        seasons = sofascore_client.get_season_list(tournament_id)
+        if seasons:
+            season_labels = {s["name"]: s["id"] for s in seasons}
+            chosen_season = st.selectbox(
+                "Season",
+                ["Current"] + list(season_labels.keys()),
+                key="hon_season",
+            )
+            if chosen_season != "Current":
+                selected_season_id = season_labels[chosen_season]
 
     if not st.button("Validate Rumour", type="primary"):
         return
 
-    # ── Search & fetch ───────────────────────────────────────────────────
+    # ── Fetch stats ──────────────────────────────────────────────────────
     with st.spinner("Analysing transfer rumour..."):
         try:
-            results = sofascore_client.search_player(player_query)
-        except Exception as e:
-            st.error(f"Search failed: {e}")
-            return
-
-        if not results:
-            st.warning(f"No player found for '{player_query}'.")
-            return
-
-        # Auto-select best match
-        player_info = results[0]
-        try:
-            player_stats = sofascore_client.get_player_stats(player_info["id"])
+            if selected_season_id and tournament_id:
+                player_stats = sofascore_client.get_player_stats_for_season(
+                    player_info["id"], tournament_id, selected_season_id
+                )
+            else:
+                player_stats = sofascore_client.get_player_stats(player_info["id"])
         except Exception as e:
             st.error(f"Failed to fetch stats: {e}")
             return
@@ -116,6 +145,9 @@ def render():
     minutes = player_stats.get("minutes_played", 0) or 0
     current_per90 = player_stats.get("per90", {})
     current_per90_clean = {m: (current_per90.get(m) or 0.0) for m in CORE_METRICS}
+
+    # ── Player info card ─────────────────────────────────────────────────
+    player_info_card(player_name, current_team, position, minutes)
 
     # Power Rankings
     source_ranking = power_rankings.get_team_ranking(current_team)
@@ -147,10 +179,19 @@ def render():
         predicted = model.predict(fd)
     except Exception:
         predicted = {}
+
+    # If no trained model weights exist, apply paper-aligned heuristic.
+    if not predicted:
+        predicted = {}
         for m in CORE_METRICS:
             val = current_per90_clean.get(m, 0)
-            adjustment = 1.0 + (change_ra / 100.0) * 0.5
-            predicted[m] = val * adjustment
+            if m in OFFENSIVE_METRICS:
+                adj = 1.0 + (change_ra / 100.0) * 0.8
+            elif m in DEFENSIVE_METRICS:
+                adj = 1.0 - (change_ra / 100.0) * 0.6
+            else:
+                adj = 1.0 + (change_ra / 100.0) * 0.3
+            predicted[m] = val * max(adj, 0.2)
 
     pct_changes = compute_percentage_changes(current_per90_clean, predicted)
 

@@ -16,6 +16,21 @@ st.set_page_config(
 from frontend.theme import inject_css
 inject_css()
 
+# ── Cache warmup — run once per session so the first query is fast ───────────
+if "cache_warmed" not in st.session_state:
+    import threading
+
+    def _warmup():
+        """Pre-load ClubElo data and Power Rankings in the background."""
+        try:
+            from backend.features import power_rankings
+            power_rankings.compute_daily_rankings()
+        except Exception:
+            pass  # non-critical — user queries will still work
+
+    threading.Thread(target=_warmup, daemon=True).start()
+    st.session_state["cache_warmed"] = True
+
 # Sidebar brand + navigation
 st.sidebar.markdown(
     '<div class="ts-brand">TransferScope</div>'

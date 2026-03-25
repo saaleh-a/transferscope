@@ -7,9 +7,15 @@ Compute relative_ability = team_score - league_mean_score.
 
 from __future__ import annotations
 
+import logging
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
+from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Tuple
+
+_log = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -49,6 +55,7 @@ class TeamRanking:
     normalized_score: float  # 0-100
     league_mean_normalized: float
     relative_ability: float  # team - league_mean
+    match_type: str = "exact"  # "exact" or "fuzzy"
 
 
 def compute_daily_rankings(
@@ -84,8 +91,11 @@ def compute_daily_rankings(
                 league_code = _clubelo_to_code(ce_league)
                 if league_code:
                     all_teams[team_name] = (elo_val, league_code)
-    except Exception:
-        pass
+            _log.info("ClubElo loaded %d teams", len([t for t in all_teams]))
+        else:
+            _log.warning("ClubElo returned empty DataFrame for %s", query_date)
+    except Exception as exc:
+        _log.exception("ClubElo data fetch failed: %s", exc)
 
     # Non-European clubs from WorldFootballElo
     for code, info in LEAGUES.items():
@@ -98,8 +108,8 @@ def compute_daily_rankings(
             for t in teams:
                 if t.get("elo") and t.get("name"):
                     all_teams[t["name"]] = (t["elo"], code)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("WorldElo fetch failed for %s: %s", info.worldelo_slug, exc)
 
     if not all_teams:
         return {}, {}
@@ -161,9 +171,41 @@ def get_team_ranking(
     team_name: str,
     query_date: Optional[date] = None,
 ) -> Optional[TeamRanking]:
-    """Get a single team's Power Ranking."""
+    """Get a single team's Power Ranking.
+
+    Uses fuzzy matching to handle name differences between data sources.
+    For example, ClubElo returns ``"RealMadrid"`` while Sofascore returns
+    ``"Real Madrid"``.
+
+    The returned ``TeamRanking.match_type`` is ``"exact"`` for direct
+    hits or ``"fuzzy"`` when the name was resolved via similarity.
+    """
     teams, _ = compute_daily_rankings(query_date)
-    return teams.get(team_name)
+
+    if not teams:
+        _log.warning(
+            "Power Rankings empty — no teams loaded from any Elo source"
+        )
+        return None
+
+    # 1. Exact match
+    if team_name in teams:
+        ranking = teams[team_name]
+        ranking.match_type = "exact"
+        return ranking
+
+    # 2. Build normalized lookup and try fuzzy match
+    match = _fuzzy_find_team(team_name, teams)
+    if match is not None:
+        _log.info("Fuzzy matched '%s' → '%s'", team_name, match)
+        ranking = teams[match]
+        ranking.match_type = "fuzzy"
+        return ranking
+
+    _log.warning(
+        "No Power Ranking match for '%s' among %d teams", team_name, len(teams)
+    )
+    return None
 
 
 def get_league_snapshot(
@@ -202,6 +244,72 @@ def get_change_in_relative_ability(
     return ra_to - ra_from
 
 
+def get_historical_rankings(
+    team_name: str,
+    months: int = 6,
+) -> List[Tuple[date, float]]:
+    """Return a team's normalized Power Ranking over the past *months* months.
+
+    Returns a list of ``(date, normalized_score)`` tuples, one per month,
+    oldest first.  Falls back to the current score for months where data
+    is unavailable.
+    """
+    from datetime import timedelta
+
+    today = date.today()
+    history: List[Tuple[date, float]] = []
+
+    for i in range(months, -1, -1):
+        # Approximate month offsets (30-day intervals)
+        query_date = today - timedelta(days=30 * i)
+        ranking = get_team_ranking(team_name, query_date)
+        if ranking is not None:
+            history.append((query_date, ranking.normalized_score))
+
+    return history
+
+
+def compare_leagues(
+    league_codes: List[str],
+    query_date: Optional[date] = None,
+) -> List[Dict[str, Any]]:
+    """Compare multiple leagues by their Power Ranking statistics.
+
+    Parameters
+    ----------
+    league_codes : list[str]
+        List of league codes (e.g. ``["ENG1", "ESP1", "GER1"]``).
+    query_date : date, optional
+        Defaults to today.
+
+    Returns
+    -------
+    list[dict] — sorted by ``mean_normalized`` descending.  Each dict:
+      ``code``, ``name``, ``mean_normalized``, ``std_elo``, ``team_count``,
+      ``p10``, ``p25``, ``p50``, ``p75``, ``p90``.
+    """
+    _, snapshots = compute_daily_rankings(query_date)
+    result = []
+    for code in league_codes:
+        snap = snapshots.get(code)
+        if snap is None:
+            continue
+        result.append({
+            "code": code,
+            "name": snap.league_name,
+            "mean_normalized": round(snap.mean_normalized, 1),
+            "std_elo": round(snap.std_elo, 1),
+            "team_count": snap.team_count,
+            "p10": round(snap.p10, 1),
+            "p25": round(snap.p25, 1),
+            "p50": round(snap.p50, 1),
+            "p75": round(snap.p75, 1),
+            "p90": round(snap.p90, 1),
+        })
+    result.sort(key=lambda x: x["mean_normalized"], reverse=True)
+    return result
+
+
 # ── Internal ─────────────────────────────────────────────────────────────────
 
 def _clubelo_to_code(clubelo_league: Optional[str]) -> Optional[str]:
@@ -212,4 +320,126 @@ def _clubelo_to_code(clubelo_league: Optional[str]) -> Optional[str]:
         if info.clubelo_league == clubelo_league:
             return code
     # Unknown European league — still track it with the raw string
+    return None
+
+
+# ── Fuzzy team name matching ─────────────────────────────────────────────────
+
+# Only strip short abbreviation suffixes that never form the core name.
+_STRIP_ABBREVS = re.compile(
+    r"\b(FC|CF|SC|AC|AS|SS|SK|FK|BK|IF|SV|VfB|VfL|TSG|BSC|"
+    r"1\.\s*FC|Calcio|Club|Futbol)\b",
+    re.IGNORECASE,
+)
+
+# Minimum similarity ratio (0-1) for SequenceMatcher to accept a match.
+# 0.65 avoids false positives like "Arsenal" matching "Marseille" (0.625)
+# while still catching most legitimate matches.
+_FUZZY_THRESHOLD = 0.65
+
+# Tiny abbreviation map ONLY for extreme cases where SequenceMatcher
+# mathematically fails (ratio < 0.5).  These are ClubElo-specific
+# abbreviations with no string similarity to the full name.
+# Everything else is handled automatically by SequenceMatcher.
+_EXTREME_ABBREVS: Dict[str, List[str]] = {
+    "manchesterunited": ["manutd", "manunited"],
+    "manutd": ["manchesterunited"],
+    "parissaintgermain": ["psg"],
+    "psg": ["parissaintgermain"],
+    "wolverhamptonwanderers": ["wolves"],
+    "wolves": ["wolverhamptonwanderers", "wolverhampton"],
+}
+
+
+def _normalize_team_name(name: str) -> str:
+    """Reduce a team name to a canonical key for matching.
+
+    Steps:
+    - NFKD-decompose accented characters (ü → u, é → e)
+    - Lowercase
+    - Strip short abbreviations (FC, CF, SC, etc.)
+    - Remove all non-alphanumeric characters
+    """
+    name = unicodedata.normalize("NFKD", name)
+    name = "".join(c for c in name if not unicodedata.combining(c))
+    name = name.lower()
+    name = _STRIP_ABBREVS.sub("", name)
+    name = re.sub(r"[^a-z0-9]", "", name)
+    return name
+
+
+def _fuzzy_find_team(
+    query: str,
+    teams: Dict[str, TeamRanking],
+) -> Optional[str]:
+    """Find the best-matching team name from *teams* for *query*.
+
+    Uses automatic fuzzy matching that scales to any number of teams
+    from any league — no hardcoded alias list.
+
+    Matching strategy (in priority order):
+    1. Exact normalized match (fast path)
+    2. Substring containment (one name contains the other)
+    3. SequenceMatcher similarity ratio (handles abbreviations,
+       reorderings, and partial names across all leagues)
+
+    Returns the original key from *teams*, or None if no match.
+    """
+    q = _normalize_team_name(query)
+    if not q:
+        return None
+
+    # Build normalised → original key map
+    candidates: Dict[str, str] = {}
+    for team_name in teams:
+        norm = _normalize_team_name(team_name)
+        if norm:
+            candidates[norm] = team_name
+
+    # 1. Exact normalised match
+    if q in candidates:
+        return candidates[q]
+
+    # 2. Substring containment — one name fully inside the other
+    #    e.g. "bayern" in "bayernmunich", "tottenham" in "tottenhamhotspur"
+    #    Prefer longest overlap to avoid false positives.
+    best_sub: Optional[str] = None
+    best_sub_len = 0
+    for norm, orig in candidates.items():
+        if len(norm) < 4 or len(q) < 4:
+            continue
+        if q in norm or norm in q:
+            overlap = min(len(q), len(norm))
+            if overlap > best_sub_len:
+                best_sub = orig
+                best_sub_len = overlap
+    if best_sub is not None:
+        return best_sub
+
+    # 3. Extreme abbreviation lookup — only for the handful of cases where
+    #    SequenceMatcher fails (ManUtd ↔ Manchester United, PSG, Wolves)
+    q_aliases = _EXTREME_ABBREVS.get(q, [])
+    for alias in q_aliases:
+        if alias in candidates:
+            return candidates[alias]
+    # Reverse: check if any candidate has an alias matching q
+    for norm, orig in candidates.items():
+        for alias in _EXTREME_ABBREVS.get(norm, []):
+            if alias == q:
+                return orig
+
+    # 4. SequenceMatcher fuzzy matching — works for any team, any league
+    #    Handles "ManCity" ↔ "manchestercity", "Flamengo" ↔ "Flamengo RJ",
+    #    "São Paulo" ↔ "SaoPaulo", etc.
+    best_match: Optional[str] = None
+    best_ratio = 0.0
+    for norm, orig in candidates.items():
+        ratio = SequenceMatcher(None, q, norm).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_match = orig
+
+    if best_ratio >= _FUZZY_THRESHOLD:
+        return best_match
+
     return None
