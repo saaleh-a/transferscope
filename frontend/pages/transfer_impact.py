@@ -32,7 +32,7 @@ from backend.models.transfer_portal import (
 )
 from backend.utils.league_registry import LEAGUES
 from frontend.components import metric_bar, power_ranking_chart, swarm_plot
-from frontend.theme import section_header, confidence_badge
+from frontend.theme import section_header, confidence_badge, player_info_card
 
 
 def render():
@@ -129,17 +129,7 @@ def render():
     minutes = player_stats.get("minutes_played", 0) or 0
     current_per90 = player_stats.get("per90", {})
 
-    st.markdown(
-        f'<div class="ts-player-header">'
-        f'<div class="ts-player-name">{player_name}</div>'
-        f'<div class="ts-player-meta">'
-        f'<span><span class="ts-gold">◆</span> {current_team}</span>'
-        f'<span>{position}</span>'
-        f'<span>{minutes:,} mins</span>'
-        f'<span>{selected_season_label}</span>'
-        f'</div></div>',
-        unsafe_allow_html=True,
-    )
+    player_info_card(player_name, current_team, position, minutes, selected_season_label)
 
     # ── Power Rankings ───────────────────────────────────────────────────
     with st.spinner("Computing Power Rankings..."):
