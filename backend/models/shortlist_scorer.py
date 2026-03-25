@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from backend.data.fotmob_client import CORE_METRICS
+from backend.data.sofascore_client import CORE_METRICS
 
 
 @dataclass
