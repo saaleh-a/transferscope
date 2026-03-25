@@ -15,8 +15,8 @@ from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
 
-from backend.data import fotmob_client, elo_router
-from backend.data.fotmob_client import CORE_METRICS
+from backend.data import sofascore_client, elo_router
+from backend.data.sofascore_client import CORE_METRICS
 from backend.features import power_rankings, rolling_windows
 from backend.features.adjustment_models import (
     PlayerAdjustmentModel,
@@ -51,9 +51,9 @@ def render():
     # ── Player search ────────────────────────────────────────────────────
     with st.spinner("Searching for player..."):
         try:
-            search_results = fotmob_client.search_player(player_query)
+            search_results = sofascore_client.search_player(player_query)
         except Exception as e:
-            st.error(f"FotMob search failed: {e}")
+            st.error(f"Sofascore search failed: {e}")
             return
 
     if not search_results:
@@ -68,7 +68,7 @@ def render():
     # ── Fetch player stats ───────────────────────────────────────────────
     with st.spinner("Fetching player stats..."):
         try:
-            player_stats = fotmob_client.get_player_stats(player_id)
+            player_stats = sofascore_client.get_player_stats(player_id)
         except Exception as e:
             st.error(f"Failed to fetch player stats: {e}")
             return
@@ -184,12 +184,12 @@ def render():
 
     if team_id:
         try:
-            team_players = fotmob_client.get_team_players_stats(team_id)
+            team_players = sofascore_client.get_team_players_stats(team_id)
             # For each teammate, fetch their stats
             for tp in team_players[:10]:  # Limit to avoid too many API calls
                 if tp.get("id") and tp["id"] != player_id:
                     try:
-                        tp_stats = fotmob_client.get_player_stats(tp["id"])
+                        tp_stats = sofascore_client.get_player_stats(tp["id"])
                         if tp_stats.get("per90"):
                             teammate_per90s.append(tp_stats["per90"])
                     except Exception:

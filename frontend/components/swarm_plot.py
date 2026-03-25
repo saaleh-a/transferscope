@@ -119,7 +119,7 @@ def show_swarm_grid(
     metrics : list of metric keys to show (defaults to all available).
     labels : dict mapping metric key to display label.
     """
-    from backend.data.fotmob_client import CORE_METRICS
+    from backend.data.sofascore_client import CORE_METRICS
 
     if metrics is None:
         metrics = [m for m in CORE_METRICS if player_per90.get(m) is not None]

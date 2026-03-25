@@ -13,8 +13,8 @@ from typing import Dict, List
 import pandas as pd
 import streamlit as st
 
-from backend.data import fotmob_client
-from backend.data.fotmob_client import CORE_METRICS
+from backend.data import sofascore_client
+from backend.data.sofascore_client import CORE_METRICS
 from backend.features import power_rankings
 from backend.models.shortlist_scorer import (
     Candidate,
@@ -63,7 +63,7 @@ def render():
 
     with st.spinner("Searching..."):
         try:
-            results = fotmob_client.search_player(player_query)
+            results = sofascore_client.search_player(player_query)
         except Exception as e:
             st.error(f"Search failed: {e}")
             return
@@ -78,7 +78,7 @@ def render():
 
     with st.spinner("Fetching stats..."):
         try:
-            player_stats = fotmob_client.get_player_stats(player["id"])
+            player_stats = sofascore_client.get_player_stats(player["id"])
         except Exception as e:
             st.error(f"Failed to fetch stats: {e}")
             return
@@ -141,7 +141,7 @@ def render():
 
         # Get candidates from the same team and comparable teams
         try:
-            team_players = fotmob_client.get_team_players_stats(team_id)
+            team_players = sofascore_client.get_team_players_stats(team_id)
         except Exception:
             team_players = []
 
@@ -161,7 +161,7 @@ def render():
                 continue  # Skip the player being replaced
 
             try:
-                tp_stats = fotmob_client.get_player_stats(tp["id"])
+                tp_stats = sofascore_client.get_player_stats(tp["id"])
             except Exception:
                 continue
 
