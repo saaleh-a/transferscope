@@ -32,6 +32,7 @@ from backend.models.transfer_portal import (
 )
 from backend.utils.league_registry import LEAGUES
 from frontend.components import metric_bar, power_ranking_chart, swarm_plot
+from frontend.theme import section_header, confidence_badge
 
 
 def render():
@@ -128,8 +129,17 @@ def render():
     minutes = player_stats.get("minutes_played", 0) or 0
     current_per90 = player_stats.get("per90", {})
 
-    st.subheader(f"{player_name} — {current_team}")
-    st.caption(f"Position: {position} | Minutes: {minutes} | Season: {selected_season_label}")
+    st.markdown(
+        f'<div class="ts-player-header">'
+        f'<div class="ts-player-name">{player_name}</div>'
+        f'<div class="ts-player-meta">'
+        f'<span><span class="ts-gold">◆</span> {current_team}</span>'
+        f'<span>{position}</span>'
+        f'<span>{minutes:,} mins</span>'
+        f'<span>{selected_season_label}</span>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
 
     # ── Power Rankings ───────────────────────────────────────────────────
     with st.spinner("Computing Power Rankings..."):
@@ -157,19 +167,10 @@ def render():
     # ── (c) RAG confidence ───────────────────────────────────────────────
     features = rolling_windows.compute_player_features(player_stats)
     confidence = features.confidence
-    confidence_colors = {"green": "#2ecc71", "amber": "#f39c12", "red": "#e74c3c"}
-    conf_color = confidence_colors.get(confidence, "#95a5a6")
-
-    st.markdown(
-        f"**Data Confidence:** "
-        f"<span style='color:{conf_color}; font-weight:bold;'>"
-        f"{confidence.upper()}</span> "
-        f"(weight={features.weight:.2f}, {minutes} mins)",
-        unsafe_allow_html=True,
-    )
+    confidence_badge(confidence, features.weight, minutes)
 
     if confidence == "red":
-        st.warning("Low data confidence — prediction heavily relies on priors. Treat with caution.")
+        st.warning("Low data confidence — prediction heavily relies on priors.")
 
     # ── Build prediction ─────────────────────────────────────────────────
     current_per90_clean = {m: (current_per90.get(m) or 0.0) for m in CORE_METRICS}
@@ -204,7 +205,7 @@ def render():
                     title=f"Predicted Changes: {player_name} -> {target_club_display}")
 
     # ── (b) Power Ranking chart ──────────────────────────────────────────
-    st.subheader("Power Rankings Context")
+    section_header("Power Rankings", "Club strength comparison over time")
     today = date.today()
     source_history = [(today - timedelta(days=30 * i), source_norm - i * 0.5) for i in range(6)]
     source_history.reverse()
@@ -218,7 +219,7 @@ def render():
     )
 
     # ── (d) Swarm plots — with real league context data ──────────────────
-    st.subheader("Player in League Context")
+    section_header("League Context", "Player positioning vs teammates and league")
 
     team_id = player_stats.get("team_id")
     teammate_per90s: List[Dict] = []
@@ -259,7 +260,7 @@ def render():
     )
 
     # ── Summary table ────────────────────────────────────────────────────
-    st.subheader("Detailed Predictions")
+    section_header("Detailed Predictions", "Per-90 breakdown across all 13 core metrics")
     import pandas as pd
     labels = {
         "expected_goals": "xG", "expected_assists": "xA", "shots": "Shots",

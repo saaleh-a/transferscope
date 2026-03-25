@@ -20,6 +20,9 @@ from backend.models.transfer_portal import (
     build_feature_dict,
     FEATURE_DIM,
 )
+from frontend.theme import (
+    section_header, confidence_badge, verdict_display, COLORS,
+)
 
 _LABELS: Dict[str, str] = {
     "expected_goals": "xG",
@@ -159,30 +162,16 @@ def render():
     st.markdown("---")
 
     # Big verdict display
-    st.markdown(
-        f"<div style='text-align:center; padding:20px;'>"
-        f"<h1 style='color:{color}; font-size:4em; margin:0;'>{verdict}</h1>"
-        f"<p style='font-size:1.3em;'>"
-        f"{player_name} ({current_team}) → {target_club}"
-        f"</p></div>",
-        unsafe_allow_html=True,
-    )
+    verdict_display(verdict, player_name, current_team, target_club)
 
     # Confidence badge
-    conf_colors = {"green": "#2ecc71", "amber": "#f39c12", "red": "#e74c3c"}
-    conf_color = conf_colors.get(features.confidence, "#95a5a6")
-    st.markdown(
-        f"<p style='text-align:center;'>Data Confidence: "
-        f"<span style='color:{conf_color}; font-weight:bold;'>"
-        f"{features.confidence.upper()}</span> ({minutes} mins)</p>",
-        unsafe_allow_html=True,
-    )
+    confidence_badge(features.confidence, features.weight, minutes)
 
     # ── Transfer History context ─────────────────────────────────────────
     try:
         transfer_history = sofascore_client.get_player_transfer_history(player_info["id"])
         if transfer_history:
-            st.markdown("### Transfer History")
+            section_header("Transfer History", "Previous career moves")
             import pandas as pd
             th_rows = []
             for t in transfer_history[:10]:
@@ -197,7 +186,7 @@ def render():
         pass
 
     # ── Top 3 changes ────────────────────────────────────────────────────
-    st.markdown("### Key Predicted Changes")
+    section_header("Key Predicted Changes", "Top metric movements")
 
     sorted_changes = sorted(pct_changes.items(), key=lambda x: abs(x[1]), reverse=True)
     top3 = sorted_changes[:3]

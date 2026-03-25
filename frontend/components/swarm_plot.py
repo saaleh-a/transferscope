@@ -1,7 +1,7 @@
 """Plotly strip plot: player vs league/team context.
 
-Target player in red. Teammates in orange. Rest of league in grey.
-League percentile shown as header.
+Tactical Noir styled — dark background, amber player marker,
+teal teammates, muted league scatter.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from typing import Dict, List, Optional
 import numpy as np
 import plotly.graph_objects as go
 import streamlit as st
+
+from frontend.theme import COLORS, PLOTLY_LAYOUT
 
 
 def render_swarm_plot(
@@ -22,80 +24,72 @@ def render_swarm_plot(
     player_name: str = "Target Player",
     percentile: Optional[float] = None,
 ) -> go.Figure:
-    """Create a strip plot showing player in context of team and league.
-
-    Parameters
-    ----------
-    metric_name : str
-        Internal metric key.
-    metric_label : str
-        Human-readable label for display.
-    player_value : float
-        The target player's per-90 value.
-    teammate_values : list[float]
-        Per-90 values for teammates (same team).
-    league_values : list[float]
-        Per-90 values for rest of league (excluding teammates).
-    player_name : str
-        Name to show in legend.
-    percentile : float, optional
-        Player's league percentile for this metric.
-
-    Returns
-    -------
-    plotly Figure.
-    """
+    """Create a strip plot showing player in context of team and league."""
     fig = go.Figure()
 
-    # League (grey)
+    # League (muted)
     if league_values:
         fig.add_trace(go.Box(
             x=league_values,
             name="League",
-            marker_color="#bdc3c7",
+            marker_color="#30363D",
             boxpoints="all",
             jitter=0.5,
             pointpos=0,
-            marker_size=4,
+            marker_size=3,
+            marker_opacity=0.4,
             line_width=0,
             fillcolor="rgba(0,0,0,0)",
         ))
 
-    # Teammates (orange)
+    # Teammates (teal)
     if teammate_values:
         fig.add_trace(go.Box(
             x=teammate_values,
             name="Teammates",
-            marker_color="#f39c12",
+            marker_color=COLORS["accent_teal"],
             boxpoints="all",
             jitter=0.5,
             pointpos=0,
-            marker_size=6,
+            marker_size=5,
+            marker_opacity=0.7,
             line_width=0,
             fillcolor="rgba(0,0,0,0)",
         ))
 
-    # Target player (red)
+    # Target player (gold diamond)
     fig.add_trace(go.Scatter(
         x=[player_value],
         y=["League" if league_values else "Teammates"],
         mode="markers",
         name=player_name,
-        marker=dict(color="#e74c3c", size=14, symbol="diamond"),
+        marker=dict(
+            color=COLORS["accent_gold"],
+            size=14,
+            symbol="diamond",
+            line=dict(width=1.5, color=COLORS["accent_amber"]),
+        ),
     ))
 
-    title = f"{metric_label}"
+    title = f"<b>{metric_label}</b>"
     if percentile is not None:
-        title += f" — {percentile:.0f}th percentile"
+        pct_color = COLORS["accent_green"] if percentile >= 75 else (
+            COLORS["accent_amber"] if percentile >= 50 else COLORS["accent_crimson"]
+        )
+        title += (
+            f'  <span style="color:{pct_color}; font-size:0.85em;">'
+            f'{percentile:.0f}th</span>'
+        )
 
-    fig.update_layout(
-        title=title,
+    layout = dict(PLOTLY_LAYOUT)
+    layout.update(
+        title=dict(text=title, **PLOTLY_LAYOUT["title"]),
         xaxis_title="Per 90",
-        showlegend=True,
-        height=200,
-        margin=dict(l=10, r=10, t=40, b=30),
-        template="plotly_white",
+        showlegend=False,
+        height=190,
+        margin=dict(l=10, r=10, t=45, b=25),
     )
+    fig.update_layout(**layout)
 
     return fig
 
@@ -108,17 +102,7 @@ def show_swarm_grid(
     metrics: Optional[List[str]] = None,
     labels: Optional[Dict[str, str]] = None,
 ) -> None:
-    """Render a grid of swarm plots in Streamlit (2 columns).
-
-    Parameters
-    ----------
-    player_name : str
-    player_per90 : dict of per-90 values for the player.
-    teammate_per90s : list of per-90 dicts for teammates.
-    league_per90s : list of per-90 dicts for league players.
-    metrics : list of metric keys to show (defaults to all available).
-    labels : dict mapping metric key to display label.
-    """
+    """Render a grid of swarm plots in Streamlit (2 columns)."""
     from backend.data.sofascore_client import CORE_METRICS
 
     if metrics is None:

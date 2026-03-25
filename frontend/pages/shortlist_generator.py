@@ -30,6 +30,7 @@ from backend.models.transfer_portal import (
     FEATURE_DIM,
 )
 from backend.utils.league_registry import LEAGUES
+from frontend.theme import section_header
 
 _LABELS: Dict[str, str] = {
     "expected_goals": "xG",
@@ -89,11 +90,17 @@ def render():
     current_per90 = player_stats.get("per90", {})
     position = player_stats.get("position", "Unknown")
 
-    st.subheader(f"Replacing: {player_name} ({position})")
+    st.markdown(
+        f'<div class="ts-player-header">'
+        f'<div class="ts-player-name">Replacing: {player_name}</div>'
+        f'<div class="ts-player-meta">'
+        f'<span>{position}</span>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
 
     # ── Metric weight sliders ────────────────────────────────────────────
-    st.markdown("### Metric Weights")
-    st.caption("Set importance of each metric (0 = ignore, 1 = maximum weight)")
+    section_header("Metric Weights", "Set importance of each metric — 0 = ignore, 1 = max")
 
     weights: Dict[str, float] = {}
     cols = st.columns(3)
@@ -105,7 +112,7 @@ def render():
             )
 
     # ── Filters ──────────────────────────────────────────────────────────
-    st.markdown("### Filters")
+    section_header("Filters", "Narrow the candidate pool")
     fcol1, fcol2, fcol3 = st.columns(3)
     with fcol1:
         max_age = st.number_input("Max age", 16, 45, 30, key="f_age")
@@ -268,7 +275,7 @@ def render():
         return
 
     # ── Display results ──────────────────────────────────────────────────
-    st.subheader(f"Top {min(len(scored), 20)} Candidates")
+    section_header(f"Top {min(len(scored), 20)} Candidates", "Ranked by weighted similarity")
 
     rows = []
     for c in scored[:20]:
