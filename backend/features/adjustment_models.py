@@ -323,67 +323,65 @@ def build_training_data_from_transfers(
     team_rows: List[Dict[str, Any]] = []
     player_rows: List[Dict[str, Any]] = []
 
-    # Walk consecutive pairs: at club A (before) → club B (after)
-    for i in range(len(transfers) - 1):
-        to_transfer = transfers[i]       # newer (arrival at new club)
-        from_transfer = transfers[i + 1] # older (was at previous club)
+    # We need at least two entries (a departure and an arrival) to build a pair
+    if len(transfers) < 2:
+        return [], []
 
-        new_team = to_transfer.get("to_team") or {}
-        old_team = from_transfer.get("to_team") or from_transfer.get("from_team") or {}
+    # Use the most recent transfer: transfers[0] = arrival at new club,
+    # transfers[1] = previous club context.
+    to_transfer = transfers[0]
+    from_transfer = transfers[1]
 
-        new_team_id = new_team.get("id")
-        old_team_id = old_team.get("id")
-        new_team_name = new_team.get("name", "")
-        old_team_name = old_team.get("name", "")
+    new_team = to_transfer.get("to_team") or {}
+    old_team = from_transfer.get("to_team") or from_transfer.get("from_team") or {}
 
-        if not new_team_id or not old_team_id:
+    new_team_id = new_team.get("id")
+    old_team_id = old_team.get("id")
+    new_team_name = new_team.get("name", "")
+    old_team_name = old_team.get("name", "")
+
+    if not new_team_id or not old_team_id:
+        return [], []
+
+    try:
+        new_stats = sofascore_client.get_player_stats(player_id)
+    except Exception:
+        return [], []
+
+    # Power rankings for relative ability
+    new_ranking = power_rankings.get_team_ranking(new_team_name)
+    old_ranking = power_rankings.get_team_ranking(old_team_name)
+
+    if new_ranking is None or old_ranking is None:
+        return [], []
+
+    change_ra = new_ranking.relative_ability - old_ranking.relative_ability
+    new_per90 = new_stats.get("per90") or {}
+    position = new_stats.get("position", "Unknown")
+
+    for metric in CORE_METRICS:
+        actual = new_per90.get(metric)
+        if actual is None:
             continue
 
-        # Try to get the player's stats at both clubs.  We use the
-        # current-season stats as a proxy (best available without
-        # historical season resolution).
-        try:
-            new_stats = sofascore_client.get_player_stats(player_id)
-        except Exception:
-            continue
+        # Team adjustment row
+        team_rows.append({
+            "metric": metric,
+            "team_relative_feature": new_ranking.relative_ability,
+            "naive_league_expectation": new_ranking.league_mean_normalized,
+            "actual": actual,
+        })
 
-        # Power rankings for relative ability
-        new_ranking = power_rankings.get_team_ranking(new_team_name)
-        old_ranking = power_rankings.get_team_ranking(old_team_name)
-
-        if new_ranking is None or old_ranking is None:
-            continue
-
-        change_ra = new_ranking.relative_ability - old_ranking.relative_ability
-        new_per90 = new_stats.get("per90") or {}
-        position = new_stats.get("position", "Unknown")
-
-        for metric in CORE_METRICS:
-            actual = new_per90.get(metric)
-            if actual is None:
-                continue
-
-            # Team adjustment row
-            team_rows.append({
-                "metric": metric,
-                "team_relative_feature": new_ranking.relative_ability,
-                "naive_league_expectation": new_ranking.league_mean_normalized,
-                "actual": actual,
-            })
-
-            # Player adjustment row
-            player_rows.append({
-                "position": position,
-                "metric": metric,
-                "player_previous_per90": actual,  # approximation
-                "avg_position_feature_new_team": actual,
-                "diff_avg_position_old_vs_new": 0.0,
-                "change_relative_ability": change_ra,
-                "actual": actual,
-            })
-
-        # Only use the most recent transfer for now
-        break
+        # Player adjustment row
+        player_rows.append({
+            "position": position,
+            "metric": metric,
+            "player_previous_per90": actual,  # approximation
+            "avg_position_feature_new_team": actual,
+            "diff_avg_position_old_vs_new": 0.0,
+            "change_relative_ability": change_ra,
+            "actual": actual,
+        })
 
     return team_rows, player_rows
 

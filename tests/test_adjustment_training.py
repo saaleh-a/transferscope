@@ -17,6 +17,13 @@ from backend.features.adjustment_models import (
     auto_train_from_player_history,
     scale_team_position_features,
 )
+from backend.data import cache
+
+
+def tearDownModule():
+    """Clean up the temp cache directory after all tests."""
+    cache.close()
+    shutil.rmtree(_TEMP_DIR, ignore_errors=True)
 
 
 class TestBuildTrainingData(unittest.TestCase):
