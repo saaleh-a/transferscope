@@ -12,11 +12,15 @@ All external calls are routed through backend.data.cache.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
 
 from backend.data import cache
+
+_log = logging.getLogger(__name__)
 
 # ── Metric definitions (unchanged — canonical names are source-agnostic) ─────
 
@@ -156,20 +160,40 @@ _HEADERS: dict[str, str] = {
 }
 
 _REQUEST_TIMEOUT = 10  # seconds
+_MAX_RETRIES = 3  # total attempts for retryable errors
+_RETRY_BASE_DELAY = 1.0  # seconds — doubles each attempt (1, 2, 4)
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def _get(path: str) -> Optional[dict]:
-    """Execute a GET request against the Sofascore API.
+    """Execute a GET request against the Sofascore API with retry.
 
-    Returns the parsed JSON dict, or None on any error.
+    Retries up to ``_MAX_RETRIES`` times with exponential backoff for
+    transient HTTP errors (429 rate-limit, 5xx server errors).
+    Returns the parsed JSON dict, or None on any permanent error.
     """
     url = f"{_BASE_URL}{path}"
-    try:
-        resp = requests.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return None
+    for attempt in range(_MAX_RETRIES):
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
+            if resp.status_code in _RETRYABLE_STATUS_CODES:
+                delay = _RETRY_BASE_DELAY * (2 ** attempt)
+                _log.info(
+                    "Sofascore %d on %s — retry %d/%d in %.1fs",
+                    resp.status_code, path, attempt + 1, _MAX_RETRIES, delay,
+                )
+                time.sleep(delay)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.ConnectionError:
+            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            _log.info("Sofascore connection error on %s — retry in %.1fs", path, delay)
+            time.sleep(delay)
+        except Exception:
+            return None
+    _log.warning("Sofascore request failed after %d retries: %s", _MAX_RETRIES, path)
+    return None
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -441,7 +465,9 @@ def search_player(name: str) -> List[Dict[str, Any]]:
     """Search Sofascore for a player by name.
 
     Returns a list of dicts, each with at least ``id`` and ``name``.
-    Also caches ``tournament_id`` and ``season_id`` per player for use
+    Also includes ``age``, ``nationality``, and ``team_name`` when
+    available from the search response.
+    Caches ``tournament_id`` and ``season_id`` per player for use
     by ``get_player_stats``.
     """
     key = cache.make_key("sofascore_search", name.lower().strip())
@@ -465,8 +491,28 @@ def search_player(name: str) -> List[Dict[str, Any]]:
 
             entry: dict[str, Any] = {"id": player_id, "name": player_name}
 
+            # Age — Sofascore may return dateOfBirthTimestamp
+            dob_ts = entity.get("dateOfBirthTimestamp")
+            if dob_ts is not None:
+                try:
+                    from datetime import datetime, timezone
+                    born = datetime.fromtimestamp(int(dob_ts), tz=timezone.utc)
+                    now = datetime.now(tz=timezone.utc)
+                    entry["age"] = now.year - born.year - (
+                        (now.month, now.day) < (born.month, born.day)
+                    )
+                except (ValueError, TypeError, OSError):
+                    pass
+
+            # Nationality
+            country = entity.get("country") or {}
+            if isinstance(country, dict) and country.get("name"):
+                entry["nationality"] = country["name"]
+
             # Extract and cache tournament/season info when available
             team = entity.get("team") or {}
+            if isinstance(team, dict) and team.get("name"):
+                entry["team_name"] = team["name"]
             tournament = team.get("tournament") or {}
             tournament_id = tournament.get("id")
             if tournament_id:
@@ -700,22 +746,22 @@ def _unix_to_iso(ts: Any) -> Optional[str]:
 
 
 def _get_current_season_id(tournament_id: int) -> Optional[int]:
-    """Return the current (most recent) season ID for a Sofascore tournament."""
+    """Return the current (most recent) season ID for a Sofascore tournament.
+
+    Reuses the ``get_season_list`` cache when available so the same
+    ``/seasons`` endpoint is not fetched twice.
+    """
     key = cache.make_key("sofascore_seasons", str(tournament_id))
     cached = cache.get(key, max_age=86400)  # refresh daily
     if cached is not None:
         return cached
 
-    raw = _get(f"/unique-tournament/{tournament_id}/seasons")
-    if not isinstance(raw, dict):
-        return None
+    # Try the season_list cache first (populated by get_season_list)
+    seasons = get_season_list(tournament_id)
+    if seasons:
+        season_id = seasons[0].get("id")
+        if season_id is not None:
+            cache.set(key, season_id)
+        return season_id
 
-    seasons = raw.get("seasons") or []
-    if not seasons:
-        return None
-
-    # Sofascore returns seasons newest-first
-    season_id = seasons[0].get("id")
-    if season_id is not None:
-        cache.set(key, season_id)
-    return season_id
+    return None
