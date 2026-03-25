@@ -759,11 +759,17 @@ def get_team_position_averages(
         if normalize_position(p.get("position", "")) == target_cat
     ]
     if not matching:
-        # Fallback: use all outfield players
-        matching = [
-            p for p in squad
-            if normalize_position(p.get("position", "")) != "Goalkeeper"
-        ]
+        # No exact position match — return empty averages rather than
+        # mixing unrelated positions which would produce misleading data.
+        import logging
+        logging.getLogger(__name__).info(
+            "No %s players found for team %s; returning empty position averages",
+            target_cat, team_id,
+        )
+        empty_avg: Dict[str, float] = {m: 0.0 for m in CORE_METRICS}
+        result_empty = (empty_avg, [])
+        cache.set(cache_key, result_empty)
+        return result_empty
 
     # Fetch individual stats (limited to avoid too many API calls)
     player_data: List[Dict[str, Any]] = []
