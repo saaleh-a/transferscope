@@ -144,7 +144,7 @@ def render():
     position = player_stats.get("position", "Unknown")
     minutes = player_stats.get("minutes_played", 0) or 0
     current_per90 = player_stats.get("per90", {})
-    current_per90_clean = {m: (current_per90.get(m) or 0.0) for m in CORE_METRICS}
+    current_per90_clean = {m: (current_per90.get(m) if current_per90.get(m) is not None else 0.0) for m in CORE_METRICS}
 
     # ── Player info card ─────────────────────────────────────────────────
     player_info_card(player_name, current_team, position, minutes)

@@ -199,9 +199,18 @@ def render():
         st.warning("Low data confidence — prediction heavily relies on priors.")
 
     # ── Build prediction ─────────────────────────────────────────────────
-    current_per90_clean = {m: (current_per90.get(m) or 0.0) for m in CORE_METRICS}
+    # Replace None with 0.0 for model input; track which metrics have data
+    current_per90_clean = {m: (current_per90.get(m) if current_per90.get(m) is not None else 0.0) for m in CORE_METRICS}
+    has_real_data = any(current_per90.get(m) is not None for m in CORE_METRICS)
     team_pos_current = current_per90_clean.copy()
     team_pos_target = current_per90_clean.copy()
+
+    if not has_real_data:
+        st.warning(
+            "⚠️ No per-90 stats available for this player/season. "
+            "Stats may not have loaded from Sofascore — try a different season "
+            "or check that the player has played enough minutes."
+        )
 
     try:
         model = TransferPortalModel()

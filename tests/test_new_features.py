@@ -73,6 +73,7 @@ MOCK_SEASONS_RESPONSE = {
 }
 
 MOCK_LEAGUE_STATS_RESPONSE = {
+    # Sofascore may return data under "results" or "players" depending on endpoint
     "results": [
         {
             "player": {"id": 961995, "name": "Bukayo Saka", "position": "F"},
@@ -96,14 +97,43 @@ MOCK_LEAGUE_STATS_RESPONSE = {
                 "accuratePassesPercentage": 82.0,
             },
         },
-    ]
+    ],
+    "players": [
+        {
+            "player": {"id": 961995, "name": "Bukayo Saka", "position": "F"},
+            "team": {"id": 42, "name": "Arsenal"},
+            "statistics": {
+                "minutesPlayed": 1800,
+                "expectedGoals": 9.0,
+                "accuratePasses": 500,
+                "accuratePassesPercentage": 85.0,
+            },
+        },
+        {
+            "player": {"id": 111111, "name": "Mohamed Salah", "position": "F"},
+            "team": {"id": 44, "name": "Liverpool"},
+            "statistics": {
+                "minutesPlayed": 2100,
+                "expectedGoals": 12.3,
+                "accuratePasses": 600,
+                "accuratePassesPercentage": 82.0,
+            },
+        },
+    ],
 }
 
 MOCK_PLAYER_PROFILE = {
     "player": {
         "id": 961995,
         "name": "Bukayo Saka",
-        "team": {"id": 42, "name": "Arsenal", "tournament": {"id": 17}},
+        "team": {
+            "id": 42,
+            "name": "Arsenal",
+            "tournament": {
+                "name": "Premier League",
+                "uniqueTournament": {"id": 17},
+            },
+        },
         "positionDescription": "Right Winger",
     }
 }
@@ -205,7 +235,8 @@ class TestLeaguePlayerStats(unittest.TestCase):
         def side_effect(path):
             if "/seasons" in path:
                 return MOCK_SEASONS_RESPONSE
-            if "/statistics" in path:
+            # The code tries top-players endpoint first, then statistics fallback
+            if "/top-players/" in path or "/statistics" in path:
                 return MOCK_LEAGUE_STATS_RESPONSE
             return None
 
