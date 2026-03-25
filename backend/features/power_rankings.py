@@ -55,6 +55,7 @@ class TeamRanking:
     normalized_score: float  # 0-100
     league_mean_normalized: float
     relative_ability: float  # team - league_mean
+    match_type: str = "exact"  # "exact" or "fuzzy"
 
 
 def compute_daily_rankings(
@@ -175,6 +176,9 @@ def get_team_ranking(
     Uses fuzzy matching to handle name differences between data sources.
     For example, ClubElo returns ``"RealMadrid"`` while Sofascore returns
     ``"Real Madrid"``.
+
+    The returned ``TeamRanking.match_type`` is ``"exact"`` for direct
+    hits or ``"fuzzy"`` when the name was resolved via similarity.
     """
     teams, _ = compute_daily_rankings(query_date)
 
@@ -186,13 +190,17 @@ def get_team_ranking(
 
     # 1. Exact match
     if team_name in teams:
-        return teams[team_name]
+        ranking = teams[team_name]
+        ranking.match_type = "exact"
+        return ranking
 
     # 2. Build normalized lookup and try fuzzy match
     match = _fuzzy_find_team(team_name, teams)
     if match is not None:
         _log.info("Fuzzy matched '%s' → '%s'", team_name, match)
-        return teams[match]
+        ranking = teams[match]
+        ranking.match_type = "fuzzy"
+        return ranking
 
     _log.warning(
         "No Power Ranking match for '%s' among %d teams", team_name, len(teams)
@@ -234,6 +242,72 @@ def get_change_in_relative_ability(
     if ra_from is None or ra_to is None:
         return None
     return ra_to - ra_from
+
+
+def get_historical_rankings(
+    team_name: str,
+    months: int = 6,
+) -> List[Tuple[date, float]]:
+    """Return a team's normalized Power Ranking over the past *months* months.
+
+    Returns a list of ``(date, normalized_score)`` tuples, one per month,
+    oldest first.  Falls back to the current score for months where data
+    is unavailable.
+    """
+    from datetime import timedelta
+
+    today = date.today()
+    history: List[Tuple[date, float]] = []
+
+    for i in range(months, -1, -1):
+        # Approximate month offsets (30-day intervals)
+        query_date = today - timedelta(days=30 * i)
+        ranking = get_team_ranking(team_name, query_date)
+        if ranking is not None:
+            history.append((query_date, ranking.normalized_score))
+
+    return history
+
+
+def compare_leagues(
+    league_codes: List[str],
+    query_date: Optional[date] = None,
+) -> List[Dict[str, Any]]:
+    """Compare multiple leagues by their Power Ranking statistics.
+
+    Parameters
+    ----------
+    league_codes : list[str]
+        List of league codes (e.g. ``["ENG1", "ESP1", "GER1"]``).
+    query_date : date, optional
+        Defaults to today.
+
+    Returns
+    -------
+    list[dict] — sorted by ``mean_normalized`` descending.  Each dict:
+      ``code``, ``name``, ``mean_normalized``, ``std_elo``, ``team_count``,
+      ``p10``, ``p25``, ``p50``, ``p75``, ``p90``.
+    """
+    _, snapshots = compute_daily_rankings(query_date)
+    result = []
+    for code in league_codes:
+        snap = snapshots.get(code)
+        if snap is None:
+            continue
+        result.append({
+            "code": code,
+            "name": snap.league_name,
+            "mean_normalized": round(snap.mean_normalized, 1),
+            "std_elo": round(snap.std_elo, 1),
+            "team_count": snap.team_count,
+            "p10": round(snap.p10, 1),
+            "p25": round(snap.p25, 1),
+            "p50": round(snap.p50, 1),
+            "p75": round(snap.p75, 1),
+            "p90": round(snap.p90, 1),
+        })
+    result.sort(key=lambda x: x["mean_normalized"], reverse=True)
+    return result
 
 
 # ── Internal ─────────────────────────────────────────────────────────────────

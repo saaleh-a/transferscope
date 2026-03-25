@@ -75,7 +75,13 @@ def render():
         st.warning("No players found.")
         return
 
-    options = {f"{p['name']} (ID: {p['id']})": p for p in results}
+    options = {
+        f"{p['name']}"
+        + (f" · Age {p['age']}" if p.get("age") else "")
+        + (f" · {p['nationality']}" if p.get("nationality") else "")
+        + (f" · {p['team_name']}" if p.get("team_name") else "")
+        : p for p in results
+    }
     selected = st.selectbox("Select player", list(options.keys()), key="shortlist_select")
     player = options[selected]
 
