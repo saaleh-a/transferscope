@@ -161,15 +161,18 @@ def compute_percentage_changes(
 
     Returns dict[metric -> percentage change].
     Positive = improvement, negative = decline.
+    When current is zero/missing, uses absolute difference as proxy
+    instead of reporting a misleading 100%.
     """
     changes = {}
     for metric in CORE_METRICS:
-        current = current_per90.get(metric, 0)
-        predicted = predicted_per90.get(metric, 0)
-        if current and current != 0:
+        current = current_per90.get(metric)
+        current = current if current is not None else 0
+        predicted = predicted_per90.get(metric)
+        predicted = predicted if predicted is not None else 0
+        if current != 0:
             changes[metric] = ((predicted - current) / abs(current)) * 100
-        elif predicted:
-            changes[metric] = 100.0
         else:
+            # Can't compute meaningful percentage from zero base
             changes[metric] = 0.0
     return changes

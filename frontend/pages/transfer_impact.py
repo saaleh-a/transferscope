@@ -28,7 +28,6 @@ from backend.models.shortlist_scorer import compute_percentage_changes
 from backend.models.transfer_portal import (
     TransferPortalModel,
     build_feature_dict,
-    FEATURE_DIM,
 )
 from backend.utils.league_registry import LEAGUES
 from frontend.components import metric_bar, power_ranking_chart, swarm_plot
@@ -136,7 +135,9 @@ def render():
     player_name = player_stats.get("name", "Unknown")
     current_team = player_stats.get("team", "Unknown")
     position = player_stats.get("position", "Unknown")
-    minutes = player_stats.get("minutes_played", 0) or 0
+    minutes = player_stats.get("minutes_played", 0)
+    if minutes is None:
+        minutes = 0
     current_per90 = player_stats.get("per90", {})
 
     player_info_card(player_name, current_team, position, minutes, selected_season_label)
@@ -199,29 +200,39 @@ def render():
         st.warning("Low data confidence — prediction heavily relies on priors.")
 
     # ── Build prediction ─────────────────────────────────────────────────
-    current_per90_clean = {m: (current_per90.get(m) or 0.0) for m in CORE_METRICS}
+    # Replace None with 0.0 for model input; track which metrics have data
+    current_per90_clean = {m: (current_per90.get(m) if current_per90.get(m) is not None else 0.0) for m in CORE_METRICS}
+    has_real_data = any(current_per90.get(m) is not None for m in CORE_METRICS)
     team_pos_current = current_per90_clean.copy()
     team_pos_target = current_per90_clean.copy()
 
-    try:
-        model = TransferPortalModel()
-        model.build(FEATURE_DIM)
-
-        fd = build_feature_dict(
-            player_per90=current_per90_clean,
-            team_ability_current=source_norm,
-            team_ability_target=target_norm,
-            league_ability_current=source_league_mean,
-            league_ability_target=target_league_mean,
-            team_pos_current=team_pos_current,
-            team_pos_target=team_pos_target,
+    if not has_real_data:
+        st.warning(
+            "⚠️ No per-90 stats available for this player/season. "
+            "Stats may not have loaded from Sofascore — try a different season "
+            "or check that the player has played enough minutes."
         )
 
-        predicted = model.predict(fd)
+    # Only use the TF model if trained weights have been saved to disk.
+    predicted = {}
+    try:
+        model = TransferPortalModel()
+        model.load()  # load() sets self.fitted = True only if files exist
+        if model.fitted:
+            fd = build_feature_dict(
+                player_per90=current_per90_clean,
+                team_ability_current=source_norm,
+                team_ability_target=target_norm,
+                league_ability_current=source_league_mean,
+                league_ability_target=target_league_mean,
+                team_pos_current=team_pos_current,
+                team_pos_target=team_pos_target,
+            )
+            predicted = model.predict(fd)
     except Exception:
         predicted = {}
 
-    # If no trained model weights exist, fall back to paper-aligned heuristics.
+    # If no trained model, fall back to paper-aligned heuristics.
     # Adjust per-90 by relative ability change, with different rates for
     # offensive vs defensive metrics.
     if not predicted:

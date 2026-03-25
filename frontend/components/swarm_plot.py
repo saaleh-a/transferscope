@@ -122,9 +122,9 @@ def show_swarm_grid(
 
     cols = st.columns(2)
     for i, metric in enumerate(metrics):
-        player_val = player_per90.get(metric, 0) or 0
-        tm_vals = [d.get(metric, 0) or 0 for d in teammate_per90s if d.get(metric) is not None]
-        lg_vals = [d.get(metric, 0) or 0 for d in league_per90s if d.get(metric) is not None]
+        player_val = pv if (pv := player_per90.get(metric)) is not None else 0
+        tm_vals = [tv if (tv := d.get(metric)) is not None else 0 for d in teammate_per90s if d.get(metric) is not None]
+        lg_vals = [lv if (lv := d.get(metric)) is not None else 0 for d in league_per90s if d.get(metric) is not None]
 
         # Compute percentile
         all_vals = lg_vals + tm_vals + [player_val]
