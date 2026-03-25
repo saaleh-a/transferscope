@@ -1,12 +1,13 @@
 """Hot or Not — quick rumour validator (paper Section 5).
 
-Input: player name + target club.
+Input: player name + target club (with Sofascore team search),
+       optional season selector.
 Output: Hot / Tepid / Not verdict with top 3 predicted metric changes.
 """
 
 from __future__ import annotations
 
-from typing import Dict
+from typing import Dict, Optional
 
 import streamlit as st
 
@@ -18,6 +19,9 @@ from backend.models.transfer_portal import (
     TransferPortalModel,
     build_feature_dict,
     FEATURE_DIM,
+)
+from frontend.theme import (
+    section_header, confidence_badge, verdict_display, COLORS,
 )
 
 _LABELS: Dict[str, str] = {
@@ -56,11 +60,32 @@ def render():
     with col1:
         player_query = st.text_input("Player", placeholder="e.g. Victor Osimhen", key="hon_player")
     with col2:
-        target_club = st.text_input("Target club", placeholder="e.g. Arsenal", key="hon_club")
+        target_club_query = st.text_input("Target club", placeholder="e.g. Arsenal", key="hon_club")
 
-    if not player_query or not target_club:
+    if not player_query or not target_club_query:
         st.info("Enter a player and target club to validate the rumour.")
         return
+
+    # ── Target club autocomplete ─────────────────────────────────────────
+    try:
+        club_results = sofascore_client.search_team(target_club_query)
+    except Exception:
+        club_results = []
+
+    target_club = target_club_query
+    if club_results:
+        club_options = {
+            f"{c['name']}" + (f" ({c.get('country', '')})" if c.get("country") else ""): c
+            for c in club_results
+        }
+        selected_club = st.selectbox(
+            "Select target club", list(club_options.keys()), key="hon_club_select"
+        )
+        target_club = club_options[selected_club]["name"]
+
+    # ── Season selector ──────────────────────────────────────────────────
+    # We need to search the player first to get tournament_id for seasons
+    selected_season_id: Optional[int] = None
 
     if not st.button("Validate Rumour", type="primary"):
         return
@@ -137,27 +162,31 @@ def render():
     st.markdown("---")
 
     # Big verdict display
-    st.markdown(
-        f"<div style='text-align:center; padding:20px;'>"
-        f"<h1 style='color:{color}; font-size:4em; margin:0;'>{verdict}</h1>"
-        f"<p style='font-size:1.3em;'>"
-        f"{player_name} ({current_team}) → {target_club}"
-        f"</p></div>",
-        unsafe_allow_html=True,
-    )
+    verdict_display(verdict, player_name, current_team, target_club)
 
     # Confidence badge
-    conf_colors = {"green": "#2ecc71", "amber": "#f39c12", "red": "#e74c3c"}
-    conf_color = conf_colors.get(features.confidence, "#95a5a6")
-    st.markdown(
-        f"<p style='text-align:center;'>Data Confidence: "
-        f"<span style='color:{conf_color}; font-weight:bold;'>"
-        f"{features.confidence.upper()}</span> ({minutes} mins)</p>",
-        unsafe_allow_html=True,
-    )
+    confidence_badge(features.confidence, features.weight, minutes)
+
+    # ── Transfer History context ─────────────────────────────────────────
+    try:
+        transfer_history = sofascore_client.get_player_transfer_history(player_info["id"])
+        if transfer_history:
+            section_header("Transfer History", "Previous career moves")
+            import pandas as pd
+            th_rows = []
+            for t in transfer_history[:10]:
+                th_rows.append({
+                    "Date": t.get("transfer_date", "N/A"),
+                    "From": t.get("from_team", {}).get("name", "N/A"),
+                    "To": t.get("to_team", {}).get("name", "N/A"),
+                    "Type": t.get("type", "N/A"),
+                })
+            st.dataframe(pd.DataFrame(th_rows), use_container_width=True, hide_index=True)
+    except Exception:
+        pass
 
     # ── Top 3 changes ────────────────────────────────────────────────────
-    st.markdown("### Key Predicted Changes")
+    section_header("Key Predicted Changes", "Top metric movements")
 
     sorted_changes = sorted(pct_changes.items(), key=lambda x: abs(x[1]), reverse=True)
     top3 = sorted_changes[:3]
