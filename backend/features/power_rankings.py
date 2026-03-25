@@ -7,12 +7,15 @@ Compute relative_ability = team_score - league_mean_score.
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
 from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Tuple
+
+_log = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
@@ -87,8 +90,11 @@ def compute_daily_rankings(
                 league_code = _clubelo_to_code(ce_league)
                 if league_code:
                     all_teams[team_name] = (elo_val, league_code)
-    except Exception:
-        pass
+            _log.info("ClubElo loaded %d teams", len([t for t in all_teams]))
+        else:
+            _log.warning("ClubElo returned empty DataFrame for %s", query_date)
+    except Exception as exc:
+        _log.exception("ClubElo data fetch failed: %s", exc)
 
     # Non-European clubs from WorldFootballElo
     for code, info in LEAGUES.items():
@@ -101,8 +107,8 @@ def compute_daily_rankings(
             for t in teams:
                 if t.get("elo") and t.get("name"):
                     all_teams[t["name"]] = (t["elo"], code)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.warning("WorldElo fetch failed for %s: %s", info.worldelo_slug, exc)
 
     if not all_teams:
         return {}, {}
@@ -172,6 +178,12 @@ def get_team_ranking(
     """
     teams, _ = compute_daily_rankings(query_date)
 
+    if not teams:
+        _log.warning(
+            "Power Rankings empty — no teams loaded from any Elo source"
+        )
+        return None
+
     # 1. Exact match
     if team_name in teams:
         return teams[team_name]
@@ -179,8 +191,12 @@ def get_team_ranking(
     # 2. Build normalized lookup and try fuzzy match
     match = _fuzzy_find_team(team_name, teams)
     if match is not None:
+        _log.info("Fuzzy matched '%s' → '%s'", team_name, match)
         return teams[match]
 
+    _log.warning(
+        "No Power Ranking match for '%s' among %d teams", team_name, len(teams)
+    )
     return None
 
 

@@ -152,6 +152,25 @@ def render():
         target_norm = target_ranking.normalized_score
         target_league_mean = target_ranking.league_mean_normalized
 
+    # Show data source status in a compact expander
+    with st.expander("ℹ️ Data source status", expanded=False):
+        all_teams, all_snapshots = power_rankings.compute_daily_rankings()
+        n_teams = len(all_teams)
+        n_leagues = len(all_snapshots)
+        src_match = "exact" if current_team in all_teams else (
+            "fuzzy" if source_ranking else "not found"
+        )
+        tgt_match = "exact" if target_club_display in all_teams else (
+            "fuzzy" if target_ranking else "not found"
+        )
+        st.markdown(
+            f"**Elo teams loaded:** {n_teams} across {n_leagues} leagues  \n"
+            f"**{current_team}:** {src_match} match"
+            f" → score {source_norm:.1f}  \n"
+            f"**{target_club_display}:** {tgt_match} match"
+            f" → score {target_norm:.1f}"
+        )
+
     change_ra = (target_norm - target_league_mean) - (source_norm - source_league_mean)
 
     # ── (c) RAG confidence ───────────────────────────────────────────────
@@ -208,6 +227,40 @@ def render():
     metric_bar.show(current_per90_clean, predicted, pct_changes,
                     title=f"Predicted Changes: {player_name} -> {target_club_display}")
 
+    # ── Summary table — right after metric bars for easy comparison ──────
+    _LABELS = {
+        "expected_goals": "xG", "expected_assists": "xA", "shots": "Shots",
+        "successful_dribbles": "Take-ons", "successful_crosses": "Crosses",
+        "touches_in_opposition_box": "Pen. Area Entries",
+        "successful_passes": "Total Passes", "pass_completion_pct": "Short Pass %",
+        "accurate_long_balls": "Long Passes", "chances_created": "Passes Att 3rd",
+        "clearances": "Def Own 3rd", "interceptions": "Def Mid 3rd",
+        "possession_won_final_3rd": "Def Att 3rd",
+    }
+
+    section_header("Detailed Predictions", "Per-90 breakdown across all 13 core metrics")
+    import pandas as pd
+    rows = []
+    for m in CORE_METRICS:
+        change = pct_changes.get(m, 0)
+        rows.append({
+            "Metric": _LABELS.get(m, m),
+            "Current (per 90)": round(current_per90_clean.get(m, 0), 3),
+            "Predicted (per 90)": round(predicted.get(m, 0), 3),
+            "Change %": round(change, 1),
+            "Direction": "📈" if change > 2 else ("📉" if change < -2 else "➡️"),
+        })
+    df_table = pd.DataFrame(rows)
+    st.dataframe(
+        df_table.style.map(
+            lambda v: "color: #3FB950" if isinstance(v, (int, float)) and v > 0
+            else ("color: #DA3633" if isinstance(v, (int, float)) and v < 0 else ""),
+            subset=["Change %"],
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
     # ── (b) Power Ranking chart ──────────────────────────────────────────
     section_header("Power Rankings", "Club strength comparison over time")
     today = date.today()
@@ -262,25 +315,3 @@ def render():
         teammate_per90s=teammate_per90s,
         league_per90s=league_per90s,
     )
-
-    # ── Summary table ────────────────────────────────────────────────────
-    section_header("Detailed Predictions", "Per-90 breakdown across all 13 core metrics")
-    import pandas as pd
-    labels = {
-        "expected_goals": "xG", "expected_assists": "xA", "shots": "Shots",
-        "successful_dribbles": "Take-ons", "successful_crosses": "Crosses",
-        "touches_in_opposition_box": "Pen. Area Entries",
-        "successful_passes": "Total Passes", "pass_completion_pct": "Short Pass %",
-        "accurate_long_balls": "Long Passes", "chances_created": "Passes Att 3rd",
-        "clearances": "Def Own 3rd", "interceptions": "Def Mid 3rd",
-        "possession_won_final_3rd": "Def Att 3rd",
-    }
-    rows = []
-    for m in CORE_METRICS:
-        rows.append({
-            "Metric": labels.get(m, m),
-            "Current": f"{current_per90_clean.get(m, 0):.3f}",
-            "Predicted": f"{predicted.get(m, 0):.3f}",
-            "Change": f"{pct_changes.get(m, 0):+.1f}%",
-        })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
