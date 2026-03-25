@@ -245,12 +245,14 @@ def render():
         target_pos_avg = current_per90_clean.copy()
 
     # Only use the TF model if trained weights have been saved to disk.
-    predicted = {}
+    predicted_target = {}
+    predicted_current = {}
     try:
         model = TransferPortalModel()
         model.load()  # load() sets self.fitted = True only if files exist
         if model.fitted:
-            fd = build_feature_dict(
+            # Paper Section 4: simulate at TARGET club
+            fd_target = build_feature_dict(
                 player_per90=current_per90_clean,
                 team_ability_current=source_norm,
                 team_ability_target=target_norm,
@@ -259,24 +261,53 @@ def render():
                 team_pos_current=source_pos_avg,
                 team_pos_target=target_pos_avg,
             )
-            predicted = model.predict(fd)
+            predicted_target = model.predict(fd_target)
+            # Paper Section 4: simulate at CURRENT club as baseline
+            # "we generate performance predictions using Transfer Portal
+            # for players at their current club too"
+            fd_current = build_feature_dict(
+                player_per90=current_per90_clean,
+                team_ability_current=source_norm,
+                team_ability_target=source_norm,
+                league_ability_current=source_league_mean,
+                league_ability_target=source_league_mean,
+                team_pos_current=source_pos_avg,
+                team_pos_target=source_pos_avg,
+            )
+            predicted_current = model.predict(fd_current)
     except Exception:
-        predicted = {}
+        predicted_target = {}
+        predicted_current = {}
 
     # Paper-aligned heuristic fallback: uses team-position style data +
     # relative ability polynomial to give per-metric predictions
     # (not flat group adjustments).
-    if not predicted:
-        predicted = paper_heuristic_predict(
+    if not predicted_target:
+        predicted_target = paper_heuristic_predict(
             player_per90=current_per90_clean,
             source_pos_avg=source_pos_avg,
             target_pos_avg=target_pos_avg,
             change_relative_ability=change_ra,
         )
+        # Paper Section 4: baseline = simulate at current club (ra=0, same team)
+        predicted_current = paper_heuristic_predict(
+            player_per90=current_per90_clean,
+            source_pos_avg=source_pos_avg,
+            target_pos_avg=source_pos_avg,
+            change_relative_ability=0.0,
+        )
+
+    # Use "predicted" as the target prediction for downstream display
+    predicted = predicted_target
+
+    # Paper-faithful baseline: compare predicted-at-target vs predicted-at-current
+    # (not raw stats vs predicted). This makes both sides come from the same
+    # model process, reducing noise sensitivity (paper Section 4).
+    baseline = predicted_current if predicted_current else current_per90_clean
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
-    pct_changes = compute_percentage_changes(current_per90_clean, predicted)
-    metric_bar.show(current_per90_clean, predicted, pct_changes,
+    pct_changes = compute_percentage_changes(baseline, predicted)
+    metric_bar.show(baseline, predicted, pct_changes,
                     title=f"Predicted Changes: {player_name} -> {target_club_display}")
 
     # ── Summary table — right after metric bars for easy comparison ──────
@@ -297,7 +328,7 @@ def render():
         change = pct_changes.get(m, 0)
         rows.append({
             "Metric": _LABELS.get(m, m),
-            "Current (per 90)": round(current_per90_clean.get(m, 0), 3),
+            "Simulated Current": round(baseline.get(m, 0), 3),
             "Predicted (per 90)": round(predicted.get(m, 0), 3),
             "Change %": round(change, 1),
             "Direction": "📈" if change > 2 else ("📉" if change < -2 else "➡️"),
