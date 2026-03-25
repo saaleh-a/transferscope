@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import tensorflow as tf
 
-from backend.data.fotmob_client import CORE_METRICS
+from backend.data.sofascore_client import CORE_METRICS
 
 # ── Target group definitions ─────────────────────────────────────────────────
 

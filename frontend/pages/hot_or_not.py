@@ -10,8 +10,8 @@ from typing import Dict
 
 import streamlit as st
 
-from backend.data import fotmob_client
-from backend.data.fotmob_client import CORE_METRICS
+from backend.data import sofascore_client
+from backend.data.sofascore_client import CORE_METRICS
 from backend.features import power_rankings, rolling_windows
 from backend.models.shortlist_scorer import compute_percentage_changes
 from backend.models.transfer_portal import (
@@ -68,7 +68,7 @@ def render():
     # ── Search & fetch ───────────────────────────────────────────────────
     with st.spinner("Analysing transfer rumour..."):
         try:
-            results = fotmob_client.search_player(player_query)
+            results = sofascore_client.search_player(player_query)
         except Exception as e:
             st.error(f"Search failed: {e}")
             return
@@ -80,7 +80,7 @@ def render():
         # Auto-select best match
         player_info = results[0]
         try:
-            player_stats = fotmob_client.get_player_stats(player_info["id"])
+            player_stats = sofascore_client.get_player_stats(player_info["id"])
         except Exception as e:
             st.error(f"Failed to fetch stats: {e}")
             return

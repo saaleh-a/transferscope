@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
-from backend.data.fotmob_client import CORE_METRICS
+from backend.data.sofascore_client import CORE_METRICS
 
 _MODELS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
