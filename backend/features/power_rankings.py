@@ -234,56 +234,31 @@ def _clubelo_to_code(clubelo_league: Optional[str]) -> Optional[str]:
 
 import re
 import unicodedata
+from difflib import SequenceMatcher
 
 # Only strip short abbreviation suffixes that never form the core name.
-# Do NOT strip "City", "United", etc. — these are meaningful in names like
-# "ManCity", "Man City", "Manchester City".
 _STRIP_ABBREVS = re.compile(
     r"\b(FC|CF|SC|AC|AS|SS|SK|FK|BK|IF|SV|VfB|VfL|TSG|BSC|"
     r"1\.\s*FC|Calcio|Club|Futbol)\b",
     re.IGNORECASE,
 )
 
-# Curated alias map for ClubElo abbreviated names ↔ common full names.
-# Keys and values are both lowercased-and-stripped forms.
-_TEAM_ALIASES: Dict[str, str] = {
-    "mancity": "manchestercity",
-    "manchestercity": "mancity",
-    "manutd": "manchesterunited",
-    "manchesterunited": "manutd",
-    "manunited": "manchesterunited",
-    "atletico": "atleticomadrid",
-    "atleticomadrid": "atletico",
-    "spurs": "tottenhamhotspur",
-    "tottenham": "tottenhamhotspur",
-    "tottenhamhotspur": "tottenham",
-    "intermilan": "inter",
-    "inter": "intermilan",
-    "acmilan": "milan",
-    "milan": "acmilan",
-    "psg": "parissaintgermain",
-    "parissaintgermain": "psg",
-    "realsociedad": "rsociedad",
-    "realbetis": "betis",
-    "betis": "realbetis",
-    "westham": "westhamunited",
-    "westhamunited": "westham",
-    "newcastle": "newcastleunited",
-    "newcastleunited": "newcastle",
-    "astonvilla": "avilla",
-    "wolverhampton": "wolves",
-    "wolves": "wolverhampton",
-    "wolverhamptonwanderers": "wolves",
-    "nottingham": "nottinghamforest",
-    "nottinghamforest": "nottingham",
-    "leverkusen": "bayerleverkusen",
-    "bayerleverkusen": "leverkusen",
-    "dortmund": "borussiadortmund",
-    "borussiadortmund": "dortmund",
-    "gladbach": "borussiamgladbach",
-    "borussiamgladbach": "gladbach",
-    "leipzig": "rbleipzig",
-    "rbleipzig": "leipzig",
+# Minimum similarity ratio (0-1) for SequenceMatcher to accept a match.
+# 0.65 avoids false positives like "Arsenal" matching "Marseille" (0.625)
+# while still catching most legitimate matches.
+_FUZZY_THRESHOLD = 0.65
+
+# Tiny abbreviation map ONLY for extreme cases where SequenceMatcher
+# mathematically fails (ratio < 0.5).  These are ClubElo-specific
+# abbreviations with no string similarity to the full name.
+# Everything else is handled automatically by SequenceMatcher.
+_EXTREME_ABBREVS: Dict[str, List[str]] = {
+    "manchesterunited": ["manutd", "manunited"],
+    "manutd": ["manchesterunited"],
+    "parissaintgermain": ["psg"],
+    "psg": ["parissaintgermain"],
+    "wolverhamptonwanderers": ["wolves"],
+    "wolves": ["wolverhamptonwanderers", "wolverhampton"],
 }
 
 
@@ -291,19 +266,15 @@ def _normalize_team_name(name: str) -> str:
     """Reduce a team name to a canonical key for matching.
 
     Steps:
-    - NFKD-decompose accented characters
+    - NFKD-decompose accented characters (ü → u, é → e)
     - Lowercase
-    - Strip short abbreviations (FC, CF, SC, etc.) but NOT meaningful
-      words like City, United, Town
+    - Strip short abbreviations (FC, CF, SC, etc.)
     - Remove all non-alphanumeric characters
     """
-    # Decompose accents (ü → u, é → e)
     name = unicodedata.normalize("NFKD", name)
     name = "".join(c for c in name if not unicodedata.combining(c))
     name = name.lower()
-    # Strip only short abbreviation suffixes
     name = _STRIP_ABBREVS.sub("", name)
-    # Remove non-alphanumeric
     name = re.sub(r"[^a-z0-9]", "", name)
     return name
 
@@ -314,10 +285,14 @@ def _fuzzy_find_team(
 ) -> Optional[str]:
     """Find the best-matching team name from *teams* for *query*.
 
+    Uses automatic fuzzy matching that scales to any number of teams
+    from any league — no hardcoded alias list.
+
     Matching strategy (in priority order):
-    1. Direct normalized match
-    2. Alias lookup (ManCity ↔ Manchester City, etc.)
-    3. Substring containment (longer overlap wins)
+    1. Exact normalized match (fast path)
+    2. Substring containment (one name contains the other)
+    3. SequenceMatcher similarity ratio (handles abbreviations,
+       reorderings, and partial names across all leagues)
 
     Returns the original key from *teams*, or None if no match.
     """
@@ -329,35 +304,53 @@ def _fuzzy_find_team(
     candidates: Dict[str, str] = {}
     for team_name in teams:
         norm = _normalize_team_name(team_name)
-        candidates[norm] = team_name
+        if norm:
+            candidates[norm] = team_name
 
-    # 1. Direct normalised match
+    # 1. Exact normalised match
     if q in candidates:
         return candidates[q]
 
-    # 2. Alias lookup: check if query has a known alias in the candidates
-    alias = _TEAM_ALIASES.get(q)
-    if alias and alias in candidates:
-        return candidates[alias]
-
-    # Also check reverse: does any candidate have an alias matching query?
-    for norm, orig in candidates.items():
-        candidate_alias = _TEAM_ALIASES.get(norm)
-        if candidate_alias == q:
-            return orig
-
-    # 3. Substring match: query contains candidate or vice-versa
-    # Prefer the longest overlapping match to avoid false positives
-    # Require minimum 4 chars overlap to avoid spurious matches
-    best: Optional[str] = None
-    best_len = 0
+    # 2. Substring containment — one name fully inside the other
+    #    e.g. "bayern" in "bayernmunich", "tottenham" in "tottenhamhotspur"
+    #    Prefer longest overlap to avoid false positives.
+    best_sub: Optional[str] = None
+    best_sub_len = 0
     for norm, orig in candidates.items():
         if len(norm) < 4 or len(q) < 4:
             continue
         if q in norm or norm in q:
             overlap = min(len(q), len(norm))
-            if overlap > best_len:
-                best = orig
-                best_len = overlap
+            if overlap > best_sub_len:
+                best_sub = orig
+                best_sub_len = overlap
+    if best_sub is not None:
+        return best_sub
 
-    return best
+    # 3. Extreme abbreviation lookup — only for the handful of cases where
+    #    SequenceMatcher fails (ManUtd ↔ Manchester United, PSG, Wolves)
+    q_aliases = _EXTREME_ABBREVS.get(q, [])
+    for alias in q_aliases:
+        if alias in candidates:
+            return candidates[alias]
+    # Reverse: check if any candidate has an alias matching q
+    for norm, orig in candidates.items():
+        for alias in _EXTREME_ABBREVS.get(norm, []):
+            if alias == q:
+                return orig
+
+    # 4. SequenceMatcher fuzzy matching — works for any team, any league
+    #    Handles "ManCity" ↔ "manchestercity", "Flamengo" ↔ "Flamengo RJ",
+    #    "São Paulo" ↔ "SaoPaulo", etc.
+    best_match: Optional[str] = None
+    best_ratio = 0.0
+    for norm, orig in candidates.items():
+        ratio = SequenceMatcher(None, q, norm).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_match = orig
+
+    if best_ratio >= _FUZZY_THRESHOLD:
+        return best_match
+
+    return None
