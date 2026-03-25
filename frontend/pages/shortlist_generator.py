@@ -48,6 +48,19 @@ _LABELS: Dict[str, str] = {
     "possession_won_final_3rd": "Def Att 3rd",
 }
 
+_WEIGHTS_EXPLANATION = (
+    "Each weight controls how important a metric is when ranking candidates. "
+    "A weight of **1.0** means the metric is fully considered; **0.0** ignores it. "
+    "Candidates are scored by:\n\n"
+    "1. **Normalize** each metric across all candidates (z-score: how many "
+    "standard deviations above/below average)\n"
+    "2. **Multiply** each normalized score by its weight\n"
+    "3. **Sum** the weighted scores and divide by total weight\n\n"
+    "Higher final score = better overall match for your priorities. "
+    "For example, set xG and xA to 1.0 and everything else to 0.0 to find "
+    "the most prolific attackers."
+)
+
 
 def render():
     st.header("Shortlist Generator")
@@ -105,18 +118,7 @@ def render():
     # ── Metric weight sliders ────────────────────────────────────────────
     section_header("Metric Weights", "Set importance of each metric — 0 = ignore, 1 = max")
     with st.expander("ℹ️ How weights work", expanded=False):
-        st.markdown(
-            "Each weight controls how important a metric is when ranking candidates. "
-            "A weight of **1.0** means the metric is fully considered; **0.0** ignores it. "
-            "Candidates are scored by:\n\n"
-            "1. **Normalize** each metric across all candidates (z-score: how many "
-            "standard deviations above/below average)\n"
-            "2. **Multiply** each normalized score by its weight\n"
-            "3. **Sum** the weighted scores and divide by total weight\n\n"
-            "Higher final score = better overall match for your priorities. "
-            "For example, set xG and xA to 1.0 and everything else to 0.0 to find "
-            "the most prolific attackers."
-        )
+        st.markdown(_WEIGHTS_EXPLANATION)
 
     weights: Dict[str, float] = {}
     cols = st.columns(3)
@@ -233,7 +235,11 @@ def render():
                     v = lp_per90.get(m)
                     lp_current[m] = v if v is not None else 0
 
-                # Apply heuristic transfer adjustment based on Power Rankings
+                # Apply heuristic transfer adjustment based on Power Rankings.
+                # Coefficients align with the paper's observation that:
+                # - Offensive output scales positively with relative team strength (0.8)
+                # - Defensive workload decreases at stronger clubs (-0.6)
+                # - Passing/other metrics see moderate positive correlation (0.3)
                 lp_team = lp.get("team", "")
                 lp_ranking = power_rankings.get_team_ranking(lp_team)
                 lp_norm = lp_ranking.normalized_score if lp_ranking else 50.0
