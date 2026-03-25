@@ -51,6 +51,19 @@ ADDITIONAL_METRICS: list[str] = [
 
 ALL_METRICS: list[str] = CORE_METRICS + ADDITIONAL_METRICS
 
+# ── Metric category sets (paper-aligned) ─────────────────────────────────────
+# Used by prediction fallbacks to apply different adjustment rates.
+
+OFFENSIVE_METRICS: frozenset[str] = frozenset({
+    "expected_goals", "expected_assists", "shots",
+    "successful_dribbles", "successful_crosses",
+    "touches_in_opposition_box", "chances_created",
+})
+
+DEFENSIVE_METRICS: frozenset[str] = frozenset({
+    "clearances", "interceptions", "possession_won_final_3rd",
+})
+
 # ── Sofascore stat key → canonical name ──────────────────────────────────────
 # Sofascore returns a flat dict of raw totals.  Multiple aliases are listed
 # to guard against minor API key variations across seasons/versions.

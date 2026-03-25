@@ -7,8 +7,11 @@ Compute relative_ability = team_score - league_mean_score.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import date
+from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -231,10 +234,6 @@ def _clubelo_to_code(clubelo_league: Optional[str]) -> Optional[str]:
 
 
 # ── Fuzzy team name matching ─────────────────────────────────────────────────
-
-import re
-import unicodedata
-from difflib import SequenceMatcher
 
 # Only strip short abbreviation suffixes that never form the core name.
 _STRIP_ABBREVS = re.compile(
