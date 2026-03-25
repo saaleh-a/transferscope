@@ -106,7 +106,9 @@ def player_rolling_average(
     minutes_accumulated = 0.0
 
     for log in match_logs:
-        mins = log.get("minutes", 0) or 0
+        mins = log.get("minutes", 0)
+        if mins is None:
+            mins = 0
         if minutes_accumulated >= window_minutes:
             break
         minutes_accumulated += mins
@@ -171,7 +173,9 @@ def compute_player_features(
         If provided, compute rolling average from match logs instead
         of using the season aggregate from player_stats.
     """
-    minutes = player_stats.get("minutes_played", 0) or 0
+    minutes = player_stats.get("minutes_played", 0)
+    if minutes is None:
+        minutes = 0
 
     if match_logs:
         raw = player_rolling_average(match_logs)

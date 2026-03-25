@@ -40,8 +40,8 @@ def render_metric_bars(
     """Create horizontal bar chart comparing current vs predicted per-90."""
     metrics = [m for m in CORE_METRICS if m in current_per90 or m in predicted_per90]
     labels = [_LABELS.get(m, m) for m in metrics]
-    current_vals = [current_per90.get(m, 0) or 0 for m in metrics]
-    predicted_vals = [predicted_per90.get(m, 0) or 0 for m in metrics]
+    current_vals = [v if (v := current_per90.get(m)) is not None else 0 for m in metrics]
+    predicted_vals = [v if (v := predicted_per90.get(m)) is not None else 0 for m in metrics]
     changes = [pct_changes.get(m, 0) for m in metrics]
 
     colors = [COLORS["accent_green"] if c >= 0 else COLORS["accent_crimson"] for c in changes]

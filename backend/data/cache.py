@@ -73,6 +73,12 @@ def clear_namespace(namespace: str) -> int:
     return count
 
 
+def clear() -> None:
+    """Delete all cached data."""
+    cache = _get_cache()
+    cache.clear()
+
+
 def close() -> None:
     """Close the underlying cache (useful in tests)."""
     global _cache

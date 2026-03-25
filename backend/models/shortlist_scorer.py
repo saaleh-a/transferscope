@@ -170,10 +170,9 @@ def compute_percentage_changes(
         current = current if current is not None else 0
         predicted = predicted_per90.get(metric)
         predicted = predicted if predicted is not None else 0
-        if current and current != 0:
+        if current != 0:
             changes[metric] = ((predicted - current) / abs(current)) * 100
         else:
-            # Can't compute percentage from zero base — report absolute diff
-            # scaled to make it readable (treat small absolute diffs as small %)
-            changes[metric] = (predicted - current) * 10  # rough scaling
+            # Can't compute meaningful percentage from zero base
+            changes[metric] = 0.0
     return changes
