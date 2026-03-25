@@ -30,7 +30,7 @@ from backend.models.transfer_portal import (
     FEATURE_DIM,
 )
 from backend.utils.league_registry import LEAGUES
-from frontend.theme import section_header
+from frontend.theme import section_header, player_info_card
 
 _LABELS: Dict[str, str] = {
     "expected_goals": "xG",
@@ -75,7 +75,13 @@ def render():
         st.warning("No players found.")
         return
 
-    options = {f"{p['name']} (ID: {p['id']})": p for p in results}
+    options = {
+        f"{p['name']}"
+        + (f" · Age {p['age']}" if p.get("age") else "")
+        + (f" · {p['nationality']}" if p.get("nationality") else "")
+        + (f" · {p['team_name']}" if p.get("team_name") else "")
+        : p for p in results
+    }
     selected = st.selectbox("Select player", list(options.keys()), key="shortlist_select")
     player = options[selected]
 
@@ -89,14 +95,11 @@ def render():
     player_name = player_stats.get("name", "Unknown")
     current_per90 = player_stats.get("per90", {})
     position = player_stats.get("position", "Unknown")
+    current_team = player_stats.get("team", "")
+    minutes_played = player_stats.get("minutes_played", 0) or 0
 
-    st.markdown(
-        f'<div class="ts-player-header">'
-        f'<div class="ts-player-name">Replacing: {player_name}</div>'
-        f'<div class="ts-player-meta">'
-        f'<span>{position}</span>'
-        f'</div></div>',
-        unsafe_allow_html=True,
+    player_info_card(
+        f"Replacing: {player_name}", current_team, position, minutes_played
     )
 
     # ── Metric weight sliders ────────────────────────────────────────────

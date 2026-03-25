@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import streamlit as st
 
 from backend.data import sofascore_client, elo_router
-from backend.data.sofascore_client import CORE_METRICS
+from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
 from backend.features import power_rankings, rolling_windows
 from backend.features.adjustment_models import (
     PlayerAdjustmentModel,
@@ -32,7 +32,7 @@ from backend.models.transfer_portal import (
 )
 from backend.utils.league_registry import LEAGUES
 from frontend.components import metric_bar, power_ranking_chart, swarm_plot
-from frontend.theme import section_header, confidence_badge
+from frontend.theme import section_header, confidence_badge, player_info_card
 
 
 def render():
@@ -63,7 +63,17 @@ def render():
         st.warning(f"No players found for '{player_query}'.")
         return
 
-    player_options = {f"{p['name']} (ID: {p['id']})": p for p in search_results}
+    def _player_label(p: dict) -> str:
+        parts = [p["name"]]
+        if p.get("age"):
+            parts.append(f"Age {p['age']}")
+        if p.get("nationality"):
+            parts.append(p["nationality"])
+        if p.get("team_name"):
+            parts.append(p["team_name"])
+        return " · ".join(parts)
+
+    player_options = {_player_label(p): p for p in search_results}
     selected = st.selectbox("Select player", list(player_options.keys()))
     player_info = player_options[selected]
     player_id = player_info["id"]
@@ -129,17 +139,7 @@ def render():
     minutes = player_stats.get("minutes_played", 0) or 0
     current_per90 = player_stats.get("per90", {})
 
-    st.markdown(
-        f'<div class="ts-player-header">'
-        f'<div class="ts-player-name">{player_name}</div>'
-        f'<div class="ts-player-meta">'
-        f'<span><span class="ts-gold">◆</span> {current_team}</span>'
-        f'<span>{position}</span>'
-        f'<span>{minutes:,} mins</span>'
-        f'<span>{selected_season_label}</span>'
-        f'</div></div>',
-        unsafe_allow_html=True,
-    )
+    player_info_card(player_name, current_team, position, minutes, selected_season_label)
 
     # ── Power Rankings ───────────────────────────────────────────────────
     with st.spinner("Computing Power Rankings..."):
@@ -153,6 +153,11 @@ def render():
     else:
         source_norm = source_ranking.normalized_score
         source_league_mean = source_ranking.league_mean_normalized
+        if source_ranking.match_type == "fuzzy":
+            st.info(
+                f"⚠️ Approximate match: '{current_team}' → "
+                f"'{source_ranking.team_name}' (fuzzy)"
+            )
 
     if target_ranking is None:
         st.warning(f"Could not find Power Ranking for {target_club_display}. Using defaults.")
@@ -161,6 +166,27 @@ def render():
     else:
         target_norm = target_ranking.normalized_score
         target_league_mean = target_ranking.league_mean_normalized
+        if target_ranking.match_type == "fuzzy":
+            st.info(
+                f"⚠️ Approximate match: '{target_club_display}' → "
+                f"'{target_ranking.team_name}' (fuzzy)"
+            )
+
+    # Show data source status in a compact expander
+    with st.expander("ℹ️ Data source status", expanded=False):
+        # Reuses the cached result from get_team_ranking() calls above
+        all_teams, all_snapshots = power_rankings.compute_daily_rankings()
+        n_teams = len(all_teams)
+        n_leagues = len(all_snapshots)
+        src_match = source_ranking.match_type if source_ranking else "not found"
+        tgt_match = target_ranking.match_type if target_ranking else "not found"
+        st.markdown(
+            f"**Elo teams loaded:** {n_teams} across {n_leagues} leagues  \n"
+            f"**{current_team}:** {src_match} match"
+            f" → score {source_norm:.1f}  \n"
+            f"**{target_club_display}:** {tgt_match} match"
+            f" → score {target_norm:.1f}"
+        )
 
     change_ra = (target_norm - target_league_mean) - (source_norm - source_league_mean)
 
@@ -194,29 +220,117 @@ def render():
         predicted = model.predict(fd)
     except Exception:
         predicted = {}
+
+    # If no trained model weights exist, fall back to paper-aligned heuristics.
+    # Adjust per-90 by relative ability change, with different rates for
+    # offensive vs defensive metrics.
+    if not predicted:
+        predicted = {}
         for m in CORE_METRICS:
             val = current_per90_clean.get(m, 0)
-            adjustment = 1.0 + (change_ra / 100.0) * 0.5
-            predicted[m] = val * adjustment
+            if m in OFFENSIVE_METRICS:
+                # Moving to relatively stronger position → offensive uplift
+                adj = 1.0 + (change_ra / 100.0) * 0.8
+            elif m in DEFENSIVE_METRICS:
+                # Stronger relative position → less defending needed
+                adj = 1.0 - (change_ra / 100.0) * 0.6
+            else:
+                # Passing metrics: moderate positive correlation
+                adj = 1.0 + (change_ra / 100.0) * 0.3
+            predicted[m] = val * max(adj, 0.2)  # floor at 20% to avoid negatives
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
     pct_changes = compute_percentage_changes(current_per90_clean, predicted)
     metric_bar.show(current_per90_clean, predicted, pct_changes,
                     title=f"Predicted Changes: {player_name} -> {target_club_display}")
 
+    # ── Summary table — right after metric bars for easy comparison ──────
+    _LABELS = {
+        "expected_goals": "xG", "expected_assists": "xA", "shots": "Shots",
+        "successful_dribbles": "Take-ons", "successful_crosses": "Crosses",
+        "touches_in_opposition_box": "Pen. Area Entries",
+        "successful_passes": "Total Passes", "pass_completion_pct": "Short Pass %",
+        "accurate_long_balls": "Long Passes", "chances_created": "Passes Att 3rd",
+        "clearances": "Def Own 3rd", "interceptions": "Def Mid 3rd",
+        "possession_won_final_3rd": "Def Att 3rd",
+    }
+
+    section_header("Detailed Predictions", "Per-90 breakdown across all 13 core metrics")
+    import pandas as pd
+    rows = []
+    for m in CORE_METRICS:
+        change = pct_changes.get(m, 0)
+        rows.append({
+            "Metric": _LABELS.get(m, m),
+            "Current (per 90)": round(current_per90_clean.get(m, 0), 3),
+            "Predicted (per 90)": round(predicted.get(m, 0), 3),
+            "Change %": round(change, 1),
+            "Direction": "📈" if change > 2 else ("📉" if change < -2 else "➡️"),
+        })
+    df_table = pd.DataFrame(rows)
+    st.dataframe(
+        df_table.style.map(
+            lambda v: "color: #3FB950" if isinstance(v, (int, float)) and v > 0
+            else ("color: #DA3633" if isinstance(v, (int, float)) and v < 0 else ""),
+            subset=["Change %"],
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+
     # ── (b) Power Ranking chart ──────────────────────────────────────────
     section_header("Power Rankings", "Club strength comparison over time")
     today = date.today()
-    source_history = [(today - timedelta(days=30 * i), source_norm - i * 0.5) for i in range(6)]
-    source_history.reverse()
-    target_history = [(today - timedelta(days=30 * i), target_norm + i * 0.3) for i in range(6)]
-    target_history.reverse()
+
+    # Use real historical power rankings when available
+    source_history = power_rankings.get_historical_rankings(current_team, months=6)
+    target_history = power_rankings.get_historical_rankings(target_club_display, months=6)
+
+    # Fallback to synthetic trend if history is empty
+    if not source_history:
+        source_history = [(today - timedelta(days=30 * i), source_norm) for i in range(6)]
+        source_history.reverse()
+    if not target_history:
+        target_history = [(today - timedelta(days=30 * i), target_norm) for i in range(6)]
+        target_history.reverse()
 
     power_ranking_chart.show(
         current_team, target_club_display,
         source_history, target_history,
         transfer_date=today,
     )
+
+    # ── League comparison panel ──────────────────────────────────────────
+    section_header("League Comparison", "How do the source and target leagues compare?")
+
+    src_league = source_ranking.league_code if source_ranking else None
+    tgt_league = target_ranking.league_code if target_ranking else None
+    comparison_codes = list(dict.fromkeys(
+        [c for c in [src_league, tgt_league] if c]
+    ))
+    # Always include the big five for context
+    for big5 in ["ENG1", "ESP1", "GER1", "ITA1", "FRA1"]:
+        if big5 not in comparison_codes:
+            comparison_codes.append(big5)
+
+    comparison = power_rankings.compare_leagues(comparison_codes)
+    if comparison:
+        import pandas as pd
+        df_leagues = pd.DataFrame(comparison)
+        df_leagues = df_leagues.rename(columns={
+            "name": "League",
+            "mean_normalized": "Avg Rating",
+            "team_count": "Teams",
+            "p50": "Median",
+            "p10": "P10 (Weakest)",
+            "p90": "P90 (Strongest)",
+        })
+        cols_to_show = ["League", "Avg Rating", "Teams", "Median", "P10 (Weakest)", "P90 (Strongest)"]
+        st.dataframe(
+            df_leagues[[c for c in cols_to_show if c in df_leagues.columns]],
+            use_container_width=True,
+            hide_index=True,
+        )
 
     # ── (d) Swarm plots — with real league context data ──────────────────
     section_header("League Context", "Player positioning vs teammates and league")
@@ -258,25 +372,3 @@ def render():
         teammate_per90s=teammate_per90s,
         league_per90s=league_per90s,
     )
-
-    # ── Summary table ────────────────────────────────────────────────────
-    section_header("Detailed Predictions", "Per-90 breakdown across all 13 core metrics")
-    import pandas as pd
-    labels = {
-        "expected_goals": "xG", "expected_assists": "xA", "shots": "Shots",
-        "successful_dribbles": "Take-ons", "successful_crosses": "Crosses",
-        "touches_in_opposition_box": "Pen. Area Entries",
-        "successful_passes": "Total Passes", "pass_completion_pct": "Short Pass %",
-        "accurate_long_balls": "Long Passes", "chances_created": "Passes Att 3rd",
-        "clearances": "Def Own 3rd", "interceptions": "Def Mid 3rd",
-        "possession_won_final_3rd": "Def Att 3rd",
-    }
-    rows = []
-    for m in CORE_METRICS:
-        rows.append({
-            "Metric": labels.get(m, m),
-            "Current": f"{current_per90_clean.get(m, 0):.3f}",
-            "Predicted": f"{predicted.get(m, 0):.3f}",
-            "Change": f"{pct_changes.get(m, 0):+.1f}%",
-        })
-    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)

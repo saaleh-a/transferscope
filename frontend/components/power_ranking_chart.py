@@ -57,9 +57,14 @@ def render_power_ranking_chart(
             line_dash="dot",
             line_color=COLORS["accent_gold"],
             line_width=1.5,
-            annotation_text="TRANSFER",
-            annotation_position="top",
-            annotation_font=dict(
+        )
+        fig.add_annotation(
+            x=transfer_date.isoformat(),
+            y=1.05,
+            yref="paper",
+            text="TRANSFER",
+            showarrow=False,
+            font=dict(
                 family="'Outfit', sans-serif",
                 size=10,
                 color=COLORS["accent_gold"],
