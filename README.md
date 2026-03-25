@@ -4,7 +4,7 @@
 
 Built on the methodology from *Dinsdale & Gallagher (2022) — "The Transfer Portal"*. Designed for Arsenal scouting, but works for any player, any club, any league — including South America, MLS, and Asia.
 
-> **In plain English:** You type in a player's name and the club you want to send them to. TransferScope tells you how their stats will change — will they score more? Create fewer chances? Defend better? It also finds replacement players across 20+ leagues and gives you a quick "hot or not" verdict on transfer rumours. Think of it like a football version of a "what if?" simulator, powered by maths instead of guesswork.
+> **In plain English:** You type in a player's name and the club you want to send them to. TransferScope tells you how their stats will change — will they score more? Create fewer chances? Defend better? It also finds replacement players across 37+ leagues and gives you a quick "hot or not" verdict on transfer rumours. Think of it like a football version of a "what if?" simulator, powered by maths instead of guesswork.
 
 ---
 
@@ -20,15 +20,15 @@ TransferScope answers three questions every sporting director asks:
 
 ### Transfer Impact
 
-Enter a player and a target club. TransferScope predicts how each of 13 core per-90 metrics will shift based on the difference in team strength, league quality, and playing style. Displays confidence indicators (Red / Amber / Green) based on data availability.
+Enter a player and a target club. TransferScope predicts how each of 13 core per-90 metrics will shift based on the difference in team strength, league quality, and playing style. The system simulates the player at **both** their current and target clubs (per the paper), then compares the two model outputs. Displays confidence indicators (Red / Amber / Green) based on data availability.
 
-> **In plain English:** Pick a player (say, a winger from Ajax) and pick a club (say, Arsenal). The tool calculates: "If this guy moves to Arsenal, his expected goals will go up by 15%, his chance creation will drop by 8%..." and so on for 13 different stats. It also shows you a traffic light — green means "we have plenty of data, trust this", red means "this player hasn't played much, take it with a pinch of salt."
+> **In plain English:** Pick a player (say, a winger from Ajax) and pick a club (say, Arsenal). The tool simulates the player at both clubs using the same model, then calculates: "If this guy moves to Arsenal, his expected goals will go up by 15%, his chance creation will drop by 8%..." and so on for 13 different stats. Crucially, some stats **can go up even when moving to a harder league** if the target team's style suits the player — e.g., a crossing winger moving to a team that plays wide will see crosses increase. It also shows you a traffic light — green means "we have plenty of data, trust this", red means "this player hasn't played much, take it with a pinch of salt."
 
 ### Shortlist Generator
 
-Select a player to replace and weight the metrics that matter. TransferScope scans players across 20+ leagues, scores them by weighted similarity against predicted performance, and returns a ranked shortlist with filters for age, position, league, minutes played, and club power ranking.
+Select a player to replace and weight the metrics that matter. TransferScope scans players across 37+ leagues (defaulting to 11 major leagues for speed), scores them by weighted similarity against predicted performance, and returns a ranked shortlist with filters for age, position, league, minutes played, and club power ranking.
 
-> **In plain English:** Say Saka gets injured and you need a replacement right winger. You tell TransferScope which stats matter most to you (e.g. "I care a lot about chance creation and dribbling, less about defensive work"). It then searches through thousands of players across 20 leagues worldwide and ranks them: "Here are the 20 best fits, sorted by how closely they match what you need." You can filter by age, league, how much they've played, etc.
+> **In plain English:** Say Saka gets injured and you need a replacement right winger. You tell TransferScope which stats matter most to you (e.g. "I care a lot about chance creation and dribbling, less about defensive work"). It then searches through thousands of players across major leagues worldwide and ranks them: "Here are the 20 best fits, sorted by how closely they match what you need." You can filter by age, league, how much they've played, etc.
 
 ### Hot or Not
 
@@ -103,7 +103,7 @@ transferscope/
 ├── app.py                              # Streamlit entry point
 ├── backend/
 │   ├── data/                           # Talks to external data sources
-│   │   ├── sofascore_client.py         # Player stats, search, transfers, seasons
+│   │   ├── sofascore_client.py         # Player stats, search, transfers, seasons, team-position averages
 │   │   ├── clubelo_client.py           # European club Elo ratings
 │   │   ├── worldfootballelo_client.py  # Global club Elo ratings (non-Europe)
 │   │   ├── elo_router.py              # Picks the right Elo source for each club
@@ -111,12 +111,12 @@ transferscope/
 │   ├── features/                       # Turns raw data into model-ready numbers
 │   │   ├── rolling_windows.py          # Recent-form averages (last ~11 games)
 │   │   ├── power_rankings.py           # "How good is this team/league?" scores
-│   │   └── adjustment_models.py        # Adjusts predictions for league/team differences
+│   │   └── adjustment_models.py        # Paper-aligned heuristic + sklearn adjustment models
 │   ├── models/                         # The prediction engines
 │   │   ├── transfer_portal.py          # Neural network that predicts post-transfer stats
 │   │   └── shortlist_scorer.py         # Ranks replacement candidates by similarity
 │   └── utils/
-│       └── league_registry.py          # Master list of all 20 leagues and their IDs
+│       └── league_registry.py          # Master list of all 37+ leagues and their IDs
 ├── frontend/
 │   ├── pages/                          # The three main screens
 │   │   ├── transfer_impact.py          # "What happens if this player moves here?"
@@ -127,7 +127,7 @@ transferscope/
 │   │   ├── power_ranking_chart.py      # Before/after club strength timeline
 │   │   └── metric_bar.py              # Bar chart of predicted stat changes
 │   └── theme.py                        # The dark "Tactical Noir" visual design
-├── tests/                              # 68 automated tests (no internet needed)
+├── tests/                              # 97 automated tests (no internet needed)
 ├── data/
 │   ├── cache/                          # Saved API responses (not in git)
 │   └── models/                         # Saved model weights (not in git)
@@ -143,7 +143,7 @@ transferscope/
 
 ### Requirements
 
-- Python 3.11+
+- Python 3.12
 - ~2 GB disk for dependencies (TensorFlow is big)
 
 ### Installation
@@ -172,7 +172,7 @@ The app opens at `http://localhost:8501`. No API keys required — all data sour
 python -m pytest tests/ -v
 ```
 
-All 68 tests use mocked API responses, so they run offline with no network calls.
+All 97 tests use mocked API responses, so they run offline with no network calls.
 
 ---
 
@@ -218,12 +218,12 @@ Plus 10 additional metrics: xGOT, npxG, dispossessed, duels won %, aerial duels 
 
 ## League Coverage
 
-**20 leagues across 4 continents:**
+**37+ leagues across 4 continents:**
 
-- **Europe:** Premier League, Championship, La Liga, Bundesliga, Serie A, Ligue 1, Eredivisie, Primeira Liga, Belgian Pro League, Süper Lig
-- **South America:** Brasileirão Série A & B, Argentine Primera, Colombian Primera A, Chilean Primera, Uruguayan Primera, Ecuadorian Serie A
-- **North America:** MLS
-- **Asia:** Saudi Pro League, J-League
+- **Europe (30+):** Premier League, Championship, La Liga, La Liga 2, Bundesliga, 2. Bundesliga, Serie A, Serie B, Ligue 1, Ligue 2, Eredivisie, Primeira Liga, Belgian Pro League, Süper Lig, Scottish Premiership, Austrian Bundesliga, Swiss Super League, Greek Super League, Czech First League, Danish Superliga, Croatian 1. HNL, Serbian Super Liga, Norwegian Eliteserien, Swedish Allsvenskan, Polish Ekstraklasa, Romanian Liga I, Ukrainian Premier League, Russian Premier League, Bulgarian/Hungarian/Cypriot/Finnish leagues
+- **South America (7):** Brasileirão Série A & B, Argentine Primera, Colombian Primera A, Chilean Primera, Uruguayan Primera, Ecuadorian Serie A
+- **North America (1):** MLS
+- **Asia (2):** Saudi Pro League, J-League
 
 Any league available on Sofascore can be added by extending the league registry.
 
@@ -233,9 +233,11 @@ Any league available on Sofascore can be added by extending the league registry.
 
 | Decision | Why | Plain English |
 |---|---|---|
-| Sofascore over FotMob | Team search, transfer history, season selector, league-wide stats | Sofascore has more features we need |
+| Sofascore over FotMob | Team search, transfer history, season selector, league-wide stats, team-position averages | Sofascore has more features we need |
 | ClubElo + WorldFootballElo | Dynamic, global, faithful to the paper | Two data sources cover the whole world |
 | Dynamic league Elo from team mean | Updates automatically, no manual maintenance | League quality is calculated fresh every day, not hard-coded |
+| Dual simulation | Predict at both current and target clubs, compare model-vs-model (paper Section 4) | Both predictions use the same model, reducing noise |
+| Per-metric style weights | `_TEAM_INFLUENCE`, `_ABILITY_SENSITIVITY`, `_LEAGUE_STYLE_COEFF` keyed per-metric | Different stats respond differently to team/league changes |
 | Streamlit | Fast to build; sufficient for a personal tool | Web app framework that gets us a UI without a separate frontend team |
 | diskcache | Local tool, SQLite is enough | Simple on-disk cache, no need for a database server |
 | All stats per-90 | Consistent, comparable, position-agnostic | Fair comparisons regardless of minutes played |

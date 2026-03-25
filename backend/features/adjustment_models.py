@@ -462,6 +462,30 @@ _ABILITY_SENSITIVITY: Dict[str, float] = {
 }
 
 
+# Per-metric coefficients for estimating how team-position averages vary
+# with relative ability when real team-position data is unavailable.
+# Used by paper_heuristic_predict() (line ~552) as a fallback style estimator.
+# Derived from the paper's observations (Sections 4.2, 4.3):
+# - Stronger teams: higher attacking outputs, lower defensive workload
+# - Different metrics respond to team quality at different rates
+# - Individual skills (dribbling) barely change between leagues
+_LEAGUE_STYLE_COEFF: Dict[str, float] = {
+    "expected_goals": 0.12,           # Team creates more chances
+    "expected_assists": 0.18,         # Better passing systems produce more xA
+    "shots": 0.08,                    # More attacking play at stronger teams
+    "successful_dribbles": 0.02,      # Near-pure individual skill
+    "successful_crosses": 0.11,       # Depends on team's width of play
+    "touches_in_opposition_box": 0.14,  # More box presence at attacking teams
+    "successful_passes": 0.07,        # More possession at stronger teams
+    "pass_completion_pct": 0.03,      # Slightly better pass accuracy
+    "accurate_long_balls": -0.04,     # Direct teams use MORE long balls (often weaker)
+    "chances_created": 0.16,          # Team attacking quality drives this
+    "clearances": -0.14,              # Less defending at stronger teams
+    "interceptions": -0.09,           # Less defensive work needed
+    "possession_won_final_3rd": 0.09,  # More high pressing at stronger teams
+}
+
+
 def paper_heuristic_predict(
     player_per90: Dict[str, float],
     source_pos_avg: Dict[str, float],
@@ -476,7 +500,11 @@ def paper_heuristic_predict(
     For each metric the prediction uses:
 
     1. **Style shift** — difference between target and source team's position
-       averages, weighted by how team-influenced the metric is.
+       averages, weighted by how team-influenced the metric is.  When real
+       team-position data is unavailable (both averages are the same),
+       estimates per-metric style differences from the league quality gap
+       so that metrics respond differently rather than changing by the same
+       flat percentage.
     2. **Ability adjustment** — polynomial in the change of relative ability,
        with per-metric sensitivity.  This captures the paper's observation
        that offensive output scales with team quality while defensive
@@ -502,6 +530,10 @@ def paper_heuristic_predict(
     # jumps can exceed this range (e.g. ±1.5).
     ra = change_relative_ability / 100.0
 
+    # Detect whether we have real team-position data or just fallback
+    # (both source and target are the same → no style data available).
+    _has_style_data = _check_has_style_data(player_per90, source_pos_avg, target_pos_avg)
+
     predicted: Dict[str, float] = {}
     for m in CORE_METRICS:
         player_val = player_per90.get(m, 0.0)
@@ -512,6 +544,15 @@ def paper_heuristic_predict(
         #    of this position differ from the source team?
         style_diff = tgt_avg - src_avg
         team_inf = _TEAM_INFLUENCE.get(m, 0.3)
+
+        # When no real team-position data is available, estimate style
+        # differences from the league quality gap (paper Section 4.2).
+        # Each metric gets a unique coefficient so that metrics with the
+        # same ability sensitivity still produce different predictions.
+        if not _has_style_data:
+            league_coeff = _LEAGUE_STYLE_COEFF.get(m, 0.05)
+            estimated_style_diff = src_avg * league_coeff * ra
+            style_diff = estimated_style_diff
 
         # Base prediction: player's stats shifted toward target team's style
         base = player_val + team_inf * style_diff
@@ -530,3 +571,31 @@ def paper_heuristic_predict(
         predicted[m] = max(pred, 0.0)  # per-90 can't be negative
 
     return predicted
+
+
+def _check_has_style_data(
+    player_per90: Dict[str, float],
+    source_pos_avg: Dict[str, float],
+    target_pos_avg: Dict[str, float],
+) -> bool:
+    """Return True if source/target position averages carry real team style info.
+
+    Returns False when both position average dicts are empty, all zeros,
+    or effectively equal to the player's own stats (indicating fallback
+    data rather than genuine team-position data).
+    """
+    diffs = 0
+    for m in CORE_METRICS:
+        src = source_pos_avg.get(m, 0.0)
+        tgt = target_pos_avg.get(m, 0.0)
+        player = player_per90.get(m, 0.0)
+
+        # Check if source and target are genuinely different from each other
+        if abs(src - tgt) > 1e-6:
+            diffs += 1
+        # Or at least different from the player's own stats
+        elif abs(src - player) > 1e-6 or abs(tgt - player) > 1e-6:
+            diffs += 1
+
+    # Need at least 2 metrics with different averages to count as real data
+    return diffs >= 2
