@@ -55,6 +55,8 @@ def filter_candidates(
     filters: ShortlistFilters,
 ) -> List[Candidate]:
     """Apply filters to reduce candidate list."""
+    from backend.data.sofascore_client import normalize_position
+
     result = []
     for c in candidates:
         if filters.max_age is not None and c.age is not None:
@@ -70,7 +72,9 @@ def filter_candidates(
             if c.minutes_played < filters.min_minutes_played:
                 continue
         if filters.positions is not None and c.position:
-            if c.position not in filters.positions:
+            # Use normalized position categories for robust matching
+            c_norm = normalize_position(c.position)
+            if c_norm not in filters.positions and c.position not in filters.positions:
                 continue
         if filters.leagues is not None and c.league:
             if c.league not in filters.leagues:

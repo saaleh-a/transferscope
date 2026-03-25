@@ -418,3 +418,108 @@ def auto_train_from_player_history(
     player_model.fit(all_player_rows)
 
     return team_model, player_model
+
+
+# ── Paper-aligned heuristic prediction ────────────────────────────────────────
+
+# Per-metric team influence: how much a metric is driven by team tactics
+# vs individual skill (paper Sections 2.3, 4.2).
+# Higher = more team-dependent (adapts more to new team's style).
+# Lower = more individual (retains player's own level).
+_TEAM_INFLUENCE: Dict[str, float] = {
+    "expected_goals": 0.35,           # Team creates chances, moderate influence
+    "expected_assists": 0.40,         # Passing system drives assists
+    "shots": 0.30,                    # Team creates shooting situations
+    "successful_dribbles": 0.15,      # Highly individual, "irreducible" per paper
+    "successful_crosses": 0.45,       # Tactical role dictates crossing volume
+    "touches_in_opposition_box": 0.50,  # Team attacking approach drives box presence
+    "successful_passes": 0.50,        # Passing style is heavily tactical
+    "pass_completion_pct": 0.35,      # Mix of individual quality + system
+    "accurate_long_balls": 0.45,      # Tactical approach to build-up play
+    "chances_created": 0.40,          # Team's attacking system
+    "clearances": 0.50,               # Defensive approach/press height
+    "interceptions": 0.45,            # Press intensity and defensive line
+    "possession_won_final_3rd": 0.35,  # Press style, moderate team influence
+}
+
+# Per-metric sensitivity to relative ability changes (paper Section 2.2).
+# Offensive metrics scale positively (better team → more output).
+# Defensive workload scales inversely (better team → less defending).
+_ABILITY_SENSITIVITY: Dict[str, float] = {
+    "expected_goals": 0.5,
+    "expected_assists": 0.4,
+    "shots": 0.4,
+    "successful_dribbles": 0.15,      # Barely affected by team quality
+    "successful_crosses": 0.3,
+    "touches_in_opposition_box": 0.5,
+    "successful_passes": 0.2,
+    "pass_completion_pct": 0.1,
+    "accurate_long_balls": 0.2,
+    "chances_created": 0.4,
+    "clearances": -0.4,               # Better team → less clearances
+    "interceptions": -0.3,            # Better team → less interceptions
+    "possession_won_final_3rd": 0.2,  # Better team → more high press
+}
+
+
+def paper_heuristic_predict(
+    player_per90: Dict[str, float],
+    source_pos_avg: Dict[str, float],
+    target_pos_avg: Dict[str, float],
+    change_relative_ability: float,
+) -> Dict[str, float]:
+    """Paper-aligned heuristic when no trained model is available.
+
+    Mirrors the structure of the PlayerAdjustmentModel (paper Appendix A.3)
+    but with reasonable default coefficients instead of trained weights.
+
+    For each metric the prediction uses:
+
+    1. **Style shift** — difference between target and source team's position
+       averages, weighted by how team-influenced the metric is.
+    2. **Ability adjustment** — polynomial in the change of relative ability,
+       with per-metric sensitivity.  This captures the paper's observation
+       that offensive output scales with team quality while defensive
+       workload decreases.
+
+    Parameters
+    ----------
+    player_per90 : dict
+        Player's current per-90 values (13 core metrics).
+    source_pos_avg : dict
+        Average per-90 for the player's position at the **current** team.
+    target_pos_avg : dict
+        Average per-90 for the player's position at the **target** team.
+    change_relative_ability : float
+        ``(target_norm - target_league_mean) - (source_norm - source_league_mean)``
+        Positive means moving to a relatively stronger position.
+
+    Returns
+    -------
+    dict[str, float] — predicted per-90 values at the target club.
+    """
+    ra = change_relative_ability / 100.0  # normalize to [-1, 1] range
+
+    predicted: Dict[str, float] = {}
+    for m in CORE_METRICS:
+        player_val = player_per90.get(m, 0.0)
+        src_avg = source_pos_avg.get(m, player_val)
+        tgt_avg = target_pos_avg.get(m, player_val)
+
+        # 1. Style shift: how much does the target team's tactical use
+        #    of this position differ from the source team?
+        style_diff = tgt_avg - src_avg
+        team_inf = _TEAM_INFLUENCE.get(m, 0.3)
+
+        # Base prediction: player's stats shifted toward target team's style
+        base = player_val + team_inf * style_diff
+
+        # 2. Ability adjustment: polynomial per paper (β4*ra + β5*ra² + β6*ra³)
+        sensitivity = _ABILITY_SENSITIVITY.get(m, 0.2)
+        # Quadratic term dampens extreme predictions
+        ability_factor = 1.0 + sensitivity * ra - 0.15 * sensitivity * (ra ** 2)
+
+        pred = base * ability_factor
+        predicted[m] = max(pred, 0.0)  # per-90 can't be negative
+
+    return predicted
