@@ -166,7 +166,7 @@ def player_info_card(
         parts.append(f"<span>{minutes:,} mins</span>")
     if season_label:
         parts.append(f"<span>{season_label}</span>")
-    meta = "".join(parts)
+    meta = '<span style="opacity:0.3; margin:0 0.3em;">·</span>'.join(parts)
     st.markdown(
         f'<div class="ts-player-header">'
         f'<div class="ts-player-name">{name}</div>'

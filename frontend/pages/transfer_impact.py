@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 import streamlit as st
 
 from backend.data import sofascore_client, elo_router
-from backend.data.sofascore_client import CORE_METRICS
+from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
 from backend.features import power_rankings, rolling_windows
 from backend.features.adjustment_models import (
     PlayerAdjustmentModel,
@@ -188,21 +188,14 @@ def render():
     # If no trained model weights exist, the NN outputs random noise.
     # Apply paper-aligned heuristic: adjust per-90 by relative ability
     # change, with different rates for offensive vs defensive metrics.
-    _OFFENSIVE = {
-        "expected_goals", "expected_assists", "shots",
-        "successful_dribbles", "successful_crosses",
-        "touches_in_opposition_box", "chances_created",
-    }
-    _DEFENSIVE = {"clearances", "interceptions", "possession_won_final_3rd"}
-
     if not predicted:
         predicted = {}
         for m in CORE_METRICS:
             val = current_per90_clean.get(m, 0)
-            if m in _OFFENSIVE:
+            if m in OFFENSIVE_METRICS:
                 # Moving to relatively stronger position → offensive uplift
                 adj = 1.0 + (change_ra / 100.0) * 0.8
-            elif m in _DEFENSIVE:
+            elif m in DEFENSIVE_METRICS:
                 # Stronger relative position → less defending needed
                 adj = 1.0 - (change_ra / 100.0) * 0.6
             else:

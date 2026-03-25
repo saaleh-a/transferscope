@@ -106,6 +106,15 @@ def _league_label(row: pd.Series) -> str:
     )
 
 
+def _is_valid_csv(text: str) -> bool:
+    """Return True if *text* looks like CSV, not an HTML error page."""
+    if not text:
+        return False
+    # ClubElo returns HTML error pages on bad requests
+    lower = text[:200].lower()
+    return "<html" not in lower and "<!doctype" not in lower
+
+
 def _fetch_csv(date_str: str) -> Optional[str]:
     """GET the ClubElo CSV for a specific date via direct HTTP."""
     url = f"{_API_BASE}/{date_str}"
@@ -113,7 +122,7 @@ def _fetch_csv(date_str: str) -> Optional[str]:
         resp = requests.get(url, timeout=_HTTP_TIMEOUT)
         resp.raise_for_status()
         text = resp.text.strip()
-        if not text or "<html" in text.lower():
+        if not _is_valid_csv(text):
             return None
         return text
     except Exception as exc:
@@ -150,7 +159,7 @@ def _http_fallback_history(team_name: str) -> pd.DataFrame:
         resp = requests.get(url, timeout=_HTTP_TIMEOUT)
         resp.raise_for_status()
         text = resp.text.strip()
-        if not text or "<html" in text.lower():
+        if not _is_valid_csv(text):
             return pd.DataFrame()
         df = pd.read_csv(io.StringIO(text), header=0)
         df.columns = [c.strip().lower() for c in df.columns]
