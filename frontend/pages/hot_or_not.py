@@ -147,10 +147,26 @@ def render():
         predicted = model.predict(fd)
     except Exception:
         predicted = {}
+
+    # If no trained model weights exist, apply paper-aligned heuristic.
+    _OFFENSIVE = {
+        "expected_goals", "expected_assists", "shots",
+        "successful_dribbles", "successful_crosses",
+        "touches_in_opposition_box", "chances_created",
+    }
+    _DEFENSIVE = {"clearances", "interceptions", "possession_won_final_3rd"}
+
+    if not predicted:
+        predicted = {}
         for m in CORE_METRICS:
             val = current_per90_clean.get(m, 0)
-            adjustment = 1.0 + (change_ra / 100.0) * 0.5
-            predicted[m] = val * adjustment
+            if m in _OFFENSIVE:
+                adj = 1.0 + (change_ra / 100.0) * 0.8
+            elif m in _DEFENSIVE:
+                adj = 1.0 - (change_ra / 100.0) * 0.6
+            else:
+                adj = 1.0 + (change_ra / 100.0) * 0.3
+            predicted[m] = val * max(adj, 0.2)
 
     pct_changes = compute_percentage_changes(current_per90_clean, predicted)
 

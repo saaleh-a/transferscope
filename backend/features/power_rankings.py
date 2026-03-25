@@ -161,9 +161,24 @@ def get_team_ranking(
     team_name: str,
     query_date: Optional[date] = None,
 ) -> Optional[TeamRanking]:
-    """Get a single team's Power Ranking."""
+    """Get a single team's Power Ranking.
+
+    Uses fuzzy matching to handle name differences between data sources.
+    For example, ClubElo returns ``"RealMadrid"`` while Sofascore returns
+    ``"Real Madrid"``.
+    """
     teams, _ = compute_daily_rankings(query_date)
-    return teams.get(team_name)
+
+    # 1. Exact match
+    if team_name in teams:
+        return teams[team_name]
+
+    # 2. Build normalized lookup and try fuzzy match
+    match = _fuzzy_find_team(team_name, teams)
+    if match is not None:
+        return teams[match]
+
+    return None
 
 
 def get_league_snapshot(
@@ -213,3 +228,136 @@ def _clubelo_to_code(clubelo_league: Optional[str]) -> Optional[str]:
             return code
     # Unknown European league — still track it with the raw string
     return None
+
+
+# ── Fuzzy team name matching ─────────────────────────────────────────────────
+
+import re
+import unicodedata
+
+# Only strip short abbreviation suffixes that never form the core name.
+# Do NOT strip "City", "United", etc. — these are meaningful in names like
+# "ManCity", "Man City", "Manchester City".
+_STRIP_ABBREVS = re.compile(
+    r"\b(FC|CF|SC|AC|AS|SS|SK|FK|BK|IF|SV|VfB|VfL|TSG|BSC|"
+    r"1\.\s*FC|Calcio|Club|Futbol)\b",
+    re.IGNORECASE,
+)
+
+# Curated alias map for ClubElo abbreviated names ↔ common full names.
+# Keys and values are both lowercased-and-stripped forms.
+_TEAM_ALIASES: Dict[str, str] = {
+    "mancity": "manchestercity",
+    "manchestercity": "mancity",
+    "manutd": "manchesterunited",
+    "manchesterunited": "manutd",
+    "manunited": "manchesterunited",
+    "atletico": "atleticomadrid",
+    "atleticomadrid": "atletico",
+    "spurs": "tottenhamhotspur",
+    "tottenham": "tottenhamhotspur",
+    "tottenhamhotspur": "tottenham",
+    "intermilan": "inter",
+    "inter": "intermilan",
+    "acmilan": "milan",
+    "milan": "acmilan",
+    "psg": "parissaintgermain",
+    "parissaintgermain": "psg",
+    "realsociedad": "rsociedad",
+    "realbetis": "betis",
+    "betis": "realbetis",
+    "westham": "westhamunited",
+    "westhamunited": "westham",
+    "newcastle": "newcastleunited",
+    "newcastleunited": "newcastle",
+    "astonvilla": "avilla",
+    "wolverhampton": "wolves",
+    "wolves": "wolverhampton",
+    "wolverhamptonwanderers": "wolves",
+    "nottingham": "nottinghamforest",
+    "nottinghamforest": "nottingham",
+    "leverkusen": "bayerleverkusen",
+    "bayerleverkusen": "leverkusen",
+    "dortmund": "borussiadortmund",
+    "borussiadortmund": "dortmund",
+    "gladbach": "borussiamgladbach",
+    "borussiamgladbach": "gladbach",
+    "leipzig": "rbleipzig",
+    "rbleipzig": "leipzig",
+}
+
+
+def _normalize_team_name(name: str) -> str:
+    """Reduce a team name to a canonical key for matching.
+
+    Steps:
+    - NFKD-decompose accented characters
+    - Lowercase
+    - Strip short abbreviations (FC, CF, SC, etc.) but NOT meaningful
+      words like City, United, Town
+    - Remove all non-alphanumeric characters
+    """
+    # Decompose accents (ü → u, é → e)
+    name = unicodedata.normalize("NFKD", name)
+    name = "".join(c for c in name if not unicodedata.combining(c))
+    name = name.lower()
+    # Strip only short abbreviation suffixes
+    name = _STRIP_ABBREVS.sub("", name)
+    # Remove non-alphanumeric
+    name = re.sub(r"[^a-z0-9]", "", name)
+    return name
+
+
+def _fuzzy_find_team(
+    query: str,
+    teams: Dict[str, TeamRanking],
+) -> Optional[str]:
+    """Find the best-matching team name from *teams* for *query*.
+
+    Matching strategy (in priority order):
+    1. Direct normalized match
+    2. Alias lookup (ManCity ↔ Manchester City, etc.)
+    3. Substring containment (longer overlap wins)
+
+    Returns the original key from *teams*, or None if no match.
+    """
+    q = _normalize_team_name(query)
+    if not q:
+        return None
+
+    # Build normalised → original key map
+    candidates: Dict[str, str] = {}
+    for team_name in teams:
+        norm = _normalize_team_name(team_name)
+        candidates[norm] = team_name
+
+    # 1. Direct normalised match
+    if q in candidates:
+        return candidates[q]
+
+    # 2. Alias lookup: check if query has a known alias in the candidates
+    alias = _TEAM_ALIASES.get(q)
+    if alias and alias in candidates:
+        return candidates[alias]
+
+    # Also check reverse: does any candidate have an alias matching query?
+    for norm, orig in candidates.items():
+        candidate_alias = _TEAM_ALIASES.get(norm)
+        if candidate_alias == q:
+            return orig
+
+    # 3. Substring match: query contains candidate or vice-versa
+    # Prefer the longest overlapping match to avoid false positives
+    # Require minimum 4 chars overlap to avoid spurious matches
+    best: Optional[str] = None
+    best_len = 0
+    for norm, orig in candidates.items():
+        if len(norm) < 4 or len(q) < 4:
+            continue
+        if q in norm or norm in q:
+            overlap = min(len(q), len(norm))
+            if overlap > best_len:
+                best = orig
+                best_len = overlap
+
+    return best

@@ -54,8 +54,15 @@ def render_metric_bars(
         name="Current",
         orientation="h",
         marker_color=COLORS["text_muted"],
-        opacity=0.35,
+        opacity=0.4,
         marker_line_width=0,
+        text=[f"{v:.2f}" for v in current_vals],
+        textposition="inside",
+        textfont=dict(
+            family="'JetBrains Mono', monospace",
+            size=11,
+            color=COLORS["text_secondary"],
+        ),
     ))
 
     fig.add_trace(go.Bar(
@@ -65,11 +72,11 @@ def render_metric_bars(
         orientation="h",
         marker_color=colors,
         opacity=0.9,
-        text=[f"{c:+.1f}%" for c in changes],
+        text=[f"{v:.2f}  ({c:+.1f}%)" for v, c in zip(predicted_vals, changes)],
         textposition="outside",
         textfont=dict(
             family="'JetBrains Mono', monospace",
-            size=10,
+            size=11,
             color=[COLORS["accent_green"] if c >= 0 else COLORS["accent_crimson"] for c in changes],
         ),
         marker_line_width=0,
@@ -81,15 +88,15 @@ def render_metric_bars(
         barmode="group",
         xaxis_title="Per 90",
         yaxis=dict(autorange="reversed", **PLOTLY_LAYOUT["yaxis"]),
-        height=max(420, len(metrics) * 42),
-        margin=dict(l=120, r=80, t=50, b=30),
+        height=max(500, len(metrics) * 48),
+        margin=dict(l=140, r=120, t=50, b=30),
         legend=dict(
             orientation="h", yanchor="bottom", y=1.02,
             bgcolor="rgba(0,0,0,0)",
-            font=dict(color=COLORS["text_secondary"], size=11),
+            font=dict(color=COLORS["text_secondary"], size=12),
         ),
-        bargap=0.25,
-        bargroupgap=0.08,
+        bargap=0.30,
+        bargroupgap=0.10,
     )
     fig.update_layout(**layout)
 
