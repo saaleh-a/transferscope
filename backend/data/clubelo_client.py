@@ -29,17 +29,17 @@ _HTTP_TIMEOUT = 15
 # ── soccerdata primary path ──────────────────────────────────────────────────
 
 _soccerdata_available: Optional[bool] = None  # lazy probe
-_soccerdata_disabled_at: float = 0.0  # timestamp when disabled
+_soccerdata_last_failure_at: float = 0.0  # timestamp of last soccerdata failure
 _SOCCERDATA_RETRY_INTERVAL = 3600  # retry soccerdata every hour after failure
 
 
 def _try_soccerdata(date_str: str) -> Optional[pd.DataFrame]:
     """Try fetching via soccerdata.ClubElo.  Returns None on any failure."""
-    global _soccerdata_available, _soccerdata_disabled_at
+    global _soccerdata_available, _soccerdata_last_failure_at
     if _soccerdata_available is False:
         # Retry after the interval expires
         import time
-        if (time.time() - _soccerdata_disabled_at) < _SOCCERDATA_RETRY_INTERVAL:
+        if (time.time() - _soccerdata_last_failure_at) < _SOCCERDATA_RETRY_INTERVAL:
             return None
         _log.info("Retrying soccerdata after %.0fs cooldown", _SOCCERDATA_RETRY_INTERVAL)
         _soccerdata_available = None  # reset for retry
@@ -53,16 +53,16 @@ def _try_soccerdata(date_str: str) -> Optional[pd.DataFrame]:
         _log.info("soccerdata ClubElo unavailable, using HTTP fallback: %s", exc)
         import time
         _soccerdata_available = False
-        _soccerdata_disabled_at = time.time()
+        _soccerdata_last_failure_at = time.time()
         return None
 
 
 def _try_soccerdata_history(team_name: str) -> Optional[pd.DataFrame]:
     """Try fetching team history via soccerdata."""
-    global _soccerdata_available, _soccerdata_disabled_at
+    global _soccerdata_available, _soccerdata_last_failure_at
     if _soccerdata_available is False:
         import time
-        if (time.time() - _soccerdata_disabled_at) < _SOCCERDATA_RETRY_INTERVAL:
+        if (time.time() - _soccerdata_last_failure_at) < _SOCCERDATA_RETRY_INTERVAL:
             return None
         _soccerdata_available = None  # reset for retry
     try:
@@ -74,7 +74,7 @@ def _try_soccerdata_history(team_name: str) -> Optional[pd.DataFrame]:
     except Exception:
         import time
         _soccerdata_available = False
-        _soccerdata_disabled_at = time.time()
+        _soccerdata_last_failure_at = time.time()
         return None
 
 
