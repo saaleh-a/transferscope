@@ -4,11 +4,13 @@ Inputs: player to replace, metric weight sliders (0.0-1.0),
         filters (age, value, league, position, minutes, Power Ranking cap).
 Output: ranked candidate table with similarity scores.
 Click any candidate to open their full transfer impact dashboard.
+
+Now supports multi-league search via Sofascore tournament stats.
 """
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -48,7 +50,7 @@ _LABELS: Dict[str, str] = {
 
 def render():
     st.header("Shortlist Generator")
-    st.caption("Find replacement candidates ranked by weighted similarity")
+    st.caption("Find replacement candidates ranked by weighted similarity across leagues")
 
     # ── Player to replace ────────────────────────────────────────────────
     player_query = st.text_input(
@@ -129,6 +131,22 @@ def render():
         max_power_ranking=max_pr if max_pr < 100 else None,
     )
 
+    # ── Season selector ──────────────────────────────────────────────────
+    tournament_id = player.get("tournament_id")
+    selected_season_id: Optional[int] = None
+
+    if tournament_id:
+        seasons = sofascore_client.get_season_list(tournament_id)
+        if seasons:
+            season_labels = {s["name"]: s["id"] for s in seasons}
+            chosen_season = st.selectbox(
+                "Season",
+                ["Current"] + list(season_labels.keys()),
+                key="sg_season",
+            )
+            if chosen_season != "Current":
+                selected_season_id = season_labels[chosen_season]
+
     # ── Generate shortlist ───────────────────────────────────────────────
     if not st.button("Generate Shortlist", type="primary"):
         return
@@ -139,16 +157,6 @@ def render():
             st.error("Cannot determine player's team.")
             return
 
-        # Get candidates from the same team and comparable teams
-        try:
-            team_players = sofascore_client.get_team_players_stats(team_id)
-        except Exception:
-            team_players = []
-
-        # Build candidate list from team players (in a real deployment,
-        # this would search across multiple leagues/teams)
-        candidates: List[Candidate] = []
-
         # Get current team's power ranking for context
         source_ranking = power_rankings.get_team_ranking(
             player_stats.get("team", "")
@@ -156,12 +164,77 @@ def render():
         source_norm = source_ranking.normalized_score if source_ranking else 50.0
         source_league = source_ranking.league_mean_normalized if source_ranking else 50.0
 
-        for tp in team_players:
-            if tp.get("id") == player["id"]:
-                continue  # Skip the player being replaced
+        candidates: List[Candidate] = []
+
+        # ── Multi-league search ──────────────────────────────────────────
+        # Determine which leagues to scan
+        if "Any" not in (selected_leagues or ["Any"]):
+            target_leagues = [
+                (code, info) for code, info in LEAGUES.items()
+                if info.name in selected_leagues
+            ]
+        else:
+            target_leagues = list(LEAGUES.items())
+
+        league_progress = st.progress(0, text="Scanning leagues...")
+        total_leagues = len(target_leagues)
+
+        for li, (league_code, league_info) in enumerate(target_leagues):
+            league_progress.progress(
+                (li + 1) / total_leagues,
+                text=f"Scanning {league_info.name}...",
+            )
+            tid = league_info.sofascore_tournament_id
+            if tid is None:
+                continue
 
             try:
-                tp_stats = sofascore_client.get_player_stats(tp["id"])
+                league_players = sofascore_client.get_league_player_stats(
+                    tid, selected_season_id, limit=100,
+                )
+            except Exception:
+                continue
+
+            for lp in league_players:
+                lp_id = lp.get("id")
+                if lp_id == player["id"]:
+                    continue
+
+                lp_per90 = lp.get("per90") or {}
+                if not any(lp_per90.get(m) for m in CORE_METRICS):
+                    continue
+
+                predicted = {}
+                for m in CORE_METRICS:
+                    predicted[m] = lp_per90.get(m, 0) or 0
+
+                candidates.append(Candidate(
+                    player_id=lp_id,
+                    name=lp.get("name", "Unknown"),
+                    team=lp.get("team", ""),
+                    position=lp.get("position", "Unknown"),
+                    minutes_played=lp.get("minutes_played"),
+                    league=league_info.name,
+                    predicted_per90=predicted,
+                    current_per90={m: (lp_per90.get(m) or 0) for m in CORE_METRICS},
+                ))
+
+        league_progress.empty()
+
+        # Also include current teammates for completeness
+        try:
+            team_players = sofascore_client.get_team_players_stats(team_id)
+        except Exception:
+            team_players = []
+
+        seen_ids = {c.player_id for c in candidates}
+        for tp in team_players:
+            tp_id = tp.get("id")
+            if tp_id == player["id"] or tp_id in seen_ids:
+                continue
+
+            try:
+                tp_stats = sofascore_client.get_player_stats(tp_id)
             except Exception:
                 continue
 
@@ -174,7 +247,7 @@ def render():
                 predicted[m] = tp_per90.get(m, 0) or 0
 
             candidates.append(Candidate(
-                player_id=tp["id"],
+                player_id=tp_id,
                 name=tp_stats.get("name", tp.get("name", "Unknown")),
                 team=tp_stats.get("team", ""),
                 position=tp_stats.get("position", tp.get("position", "Unknown")),
@@ -208,6 +281,7 @@ def render():
             "Rank": len(rows) + 1,
             "Player": c.name,
             "Team": c.team,
+            "League": c.league or "",
             "Position": c.position,
             "Score": f"{c.score:.3f}",
             "Top Changes": top_str,

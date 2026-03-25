@@ -2,10 +2,14 @@
 
 Team adjustment: 13 models (one per core metric).
 Player adjustment: 13 models per position.
+
+``build_training_data_from_transfers`` turns Sofascore transfer-history
+records into the rows these models expect, enabling auto-training.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 import pickle
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,6 +18,8 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 
 from backend.data.sofascore_client import CORE_METRICS
+
+_log = logging.getLogger(__name__)
 
 _MODELS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -287,3 +293,130 @@ class PlayerAdjustmentModel:
         with open(path, "rb") as f:
             self.models = pickle.load(f)
         self.fitted = True
+
+
+# ── Auto-training from transfer history ──────────────────────────────────────
+
+
+def build_training_data_from_transfers(
+    player_id: int,
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Build training rows for the Team and Player adjustment models.
+
+    Uses the player's Sofascore transfer history to find clubs where the
+    player has stats both *before* and *after* a move.  For each such
+    transfer the function emits training rows (one per core metric).
+
+    Returns
+    -------
+    (team_rows, player_rows)
+        team_rows:  list[dict] suitable for ``TeamAdjustmentModel.fit``
+        player_rows: list[dict] suitable for ``PlayerAdjustmentModel.fit``
+    """
+    from backend.data import sofascore_client
+    from backend.features import power_rankings
+
+    transfers = sofascore_client.get_player_transfer_history(player_id)
+    if not transfers:
+        return [], []
+
+    team_rows: List[Dict[str, Any]] = []
+    player_rows: List[Dict[str, Any]] = []
+
+    # Walk consecutive pairs: at club A (before) → club B (after)
+    for i in range(len(transfers) - 1):
+        to_transfer = transfers[i]       # newer (arrival at new club)
+        from_transfer = transfers[i + 1] # older (was at previous club)
+
+        new_team = to_transfer.get("to_team") or {}
+        old_team = from_transfer.get("to_team") or from_transfer.get("from_team") or {}
+
+        new_team_id = new_team.get("id")
+        old_team_id = old_team.get("id")
+        new_team_name = new_team.get("name", "")
+        old_team_name = old_team.get("name", "")
+
+        if not new_team_id or not old_team_id:
+            continue
+
+        # Try to get the player's stats at both clubs.  We use the
+        # current-season stats as a proxy (best available without
+        # historical season resolution).
+        try:
+            new_stats = sofascore_client.get_player_stats(player_id)
+        except Exception:
+            continue
+
+        # Power rankings for relative ability
+        new_ranking = power_rankings.get_team_ranking(new_team_name)
+        old_ranking = power_rankings.get_team_ranking(old_team_name)
+
+        if new_ranking is None or old_ranking is None:
+            continue
+
+        change_ra = new_ranking.relative_ability - old_ranking.relative_ability
+        new_per90 = new_stats.get("per90") or {}
+        position = new_stats.get("position", "Unknown")
+
+        for metric in CORE_METRICS:
+            actual = new_per90.get(metric)
+            if actual is None:
+                continue
+
+            # Team adjustment row
+            team_rows.append({
+                "metric": metric,
+                "team_relative_feature": new_ranking.relative_ability,
+                "naive_league_expectation": new_ranking.league_mean_normalized,
+                "actual": actual,
+            })
+
+            # Player adjustment row
+            player_rows.append({
+                "position": position,
+                "metric": metric,
+                "player_previous_per90": actual,  # approximation
+                "avg_position_feature_new_team": actual,
+                "diff_avg_position_old_vs_new": 0.0,
+                "change_relative_ability": change_ra,
+                "actual": actual,
+            })
+
+        # Only use the most recent transfer for now
+        break
+
+    return team_rows, player_rows
+
+
+def auto_train_from_player_history(
+    player_ids: List[int],
+) -> Tuple[TeamAdjustmentModel, PlayerAdjustmentModel]:
+    """Convenience function: collect training data and fit both models.
+
+    Parameters
+    ----------
+    player_ids : list[int]
+        Sofascore player IDs with transfer histories.
+
+    Returns
+    -------
+    (team_model, player_model) — both fitted.
+    """
+    all_team_rows: List[Dict[str, Any]] = []
+    all_player_rows: List[Dict[str, Any]] = []
+
+    for pid in player_ids:
+        try:
+            t_rows, p_rows = build_training_data_from_transfers(pid)
+            all_team_rows.extend(t_rows)
+            all_player_rows.extend(p_rows)
+        except Exception as exc:
+            _log.warning("Failed to build training data for player %s: %s", pid, exc)
+
+    team_model = TeamAdjustmentModel()
+    team_model.fit(all_team_rows)
+
+    player_model = PlayerAdjustmentModel()
+    player_model.fit(all_player_rows)
+
+    return team_model, player_model

@@ -162,6 +162,268 @@ def _get(path: str) -> Optional[dict]:
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
+def search_team(name: str) -> List[Dict[str, Any]]:
+    """Search Sofascore for a team by name.
+
+    Returns a list of dicts with ``id``, ``name``, and optional
+    ``tournament_id``.
+    """
+    key = cache.make_key("sofascore_team_search", name.lower().strip())
+    cached = cache.get(key, max_age=86400 * 7)
+    if cached is not None:
+        return cached
+
+    raw = _get(f"/search/teams?q={requests.utils.quote(name)}&page=0")
+    teams: list[dict] = []
+
+    if isinstance(raw, dict):
+        results = raw.get("results", [])
+        for item in results:
+            entity = item.get("entity") or item
+            if not isinstance(entity, dict):
+                continue
+            team_id = entity.get("id")
+            team_name = entity.get("name") or entity.get("shortName", "")
+            if not team_id or not team_name:
+                continue
+
+            entry: dict[str, Any] = {"id": team_id, "name": team_name}
+
+            tournament = entity.get("tournament") or {}
+            tournament_id = tournament.get("id")
+            if tournament_id:
+                entry["tournament_id"] = tournament_id
+
+            country = entity.get("country") or {}
+            if isinstance(country, dict) and country.get("name"):
+                entry["country"] = country["name"]
+
+            teams.append(entry)
+
+    cache.set(key, teams)
+    return teams
+
+
+def get_player_transfer_history(player_id: int) -> List[Dict[str, Any]]:
+    """Fetch a player's transfer history from Sofascore.
+
+    Returns a list of transfer dicts (most recent first), each with:
+        - ``transfer_date``: ISO date string or None
+        - ``from_team``: dict with ``id`` and ``name``
+        - ``to_team``: dict with ``id`` and ``name``
+        - ``type``: transfer type string (e.g. "transfer", "loan")
+    """
+    key = cache.make_key("sofascore_transfers", str(player_id))
+    cached = cache.get(key, max_age=86400 * 7)
+    if cached is not None:
+        return cached
+
+    raw = _get(f"/player/{player_id}/transfer-history")
+    transfers: list[dict] = []
+
+    if isinstance(raw, dict):
+        entries = raw.get("transferHistory", [])
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+
+            from_team = entry.get("transferFrom") or {}
+            to_team = entry.get("transferTo") or {}
+
+            t: dict[str, Any] = {
+                "transfer_date": _unix_to_iso(entry.get("transferDateTimestamp")),
+                "from_team": {
+                    "id": from_team.get("id"),
+                    "name": from_team.get("name", ""),
+                },
+                "to_team": {
+                    "id": to_team.get("id"),
+                    "name": to_team.get("name", ""),
+                },
+                "type": entry.get("type") or entry.get("transferType", ""),
+            }
+            transfers.append(t)
+
+    cache.set(key, transfers)
+    return transfers
+
+
+def get_league_player_stats(
+    tournament_id: int,
+    season_id: Optional[int] = None,
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    """Fetch aggregated player stats for an entire league/tournament season.
+
+    Uses Sofascore's top-players endpoint to retrieve season stats for
+    all players in the tournament.  Results are cached for 1 day.
+
+    Parameters
+    ----------
+    tournament_id : int
+        Sofascore unique-tournament ID.
+    season_id : int, optional
+        Specific season ID.  If ``None``, the current season is fetched.
+    limit : int
+        Maximum number of players to fetch (default 200).
+
+    Returns
+    -------
+    list[dict] — each dict has ``id``, ``name``, ``team``, ``team_id``,
+    ``position``, ``minutes_played``, ``per90``.
+    """
+    if season_id is None:
+        season_id = _get_current_season_id(tournament_id)
+    if season_id is None:
+        return []
+
+    key = cache.make_key(
+        "sofascore_league_stats", str(tournament_id), str(season_id)
+    )
+    cached = cache.get(key, max_age=86400)
+    if cached is not None:
+        return cached
+
+    # Sofascore provides a "top players" endpoint per tournament+season
+    # We query the "rating" accumulator which gives the broadest player list
+    players_map: Dict[int, Dict[str, Any]] = {}
+
+    # Fetch multiple stat pages to get broad coverage
+    for stat_type in ("rating", "expectedGoals", "accuratePasses"):
+        page = 1
+        while page <= (limit // 100 + 1):
+            raw = _get(
+                f"/unique-tournament/{tournament_id}/season/{season_id}"
+                f"/statistics?limit=100&order=-{stat_type}"
+                f"&accumulation=total&group=summary&page={page}"
+            )
+            if not isinstance(raw, dict):
+                break
+            results = raw.get("results") or []
+            if not results:
+                break
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                player_data = item.get("player") or {}
+                pid = player_data.get("id")
+                if pid is None or pid in players_map:
+                    continue
+                team_data = item.get("team") or player_data.get("team") or {}
+                minutes = int(item.get("minutesPlayed") or
+                              item.get("statistics", {}).get("minutesPlayed", 0) or 0)
+                # Build per90 from the statistics sub-dict
+                stats_dict = item.get("statistics") or item
+                per90 = _parse_stats(stats_dict, minutes)
+
+                players_map[pid] = {
+                    "id": pid,
+                    "name": player_data.get("name") or player_data.get("shortName", ""),
+                    "team": team_data.get("name", ""),
+                    "team_id": team_data.get("id"),
+                    "position": _map_position(
+                        player_data.get("position") or ""
+                    ),
+                    "minutes_played": minutes,
+                    "per90": per90,
+                }
+                if len(players_map) >= limit:
+                    break
+            if len(players_map) >= limit:
+                break
+            page += 1
+        if len(players_map) >= limit:
+            break
+
+    result = list(players_map.values())
+    cache.set(key, result)
+    return result
+
+
+def get_season_list(tournament_id: int) -> List[Dict[str, Any]]:
+    """Return the list of available seasons for a tournament.
+
+    Each item has ``id`` (season_id) and ``name`` (e.g. ``"2024/2025"``).
+    Newest season first.
+    """
+    key = cache.make_key("sofascore_season_list", str(tournament_id))
+    cached = cache.get(key, max_age=86400)
+    if cached is not None:
+        return cached
+
+    raw = _get(f"/unique-tournament/{tournament_id}/seasons")
+    if not isinstance(raw, dict):
+        return []
+
+    seasons = raw.get("seasons") or []
+    result = [
+        {"id": s.get("id"), "name": s.get("name", "")}
+        for s in seasons
+        if isinstance(s, dict) and s.get("id") is not None
+    ]
+
+    cache.set(key, result)
+    return result
+
+
+def get_player_stats_for_season(
+    player_id: int,
+    tournament_id: int,
+    season_id: int,
+) -> Dict[str, Any]:
+    """Fetch player stats for a specific tournament + season combination.
+
+    Unlike ``get_player_stats`` which auto-discovers the current season,
+    this function targets an explicit season.
+    """
+    key = cache.make_key(
+        "sofascore_player_season",
+        str(player_id),
+        str(tournament_id),
+        str(season_id),
+    )
+    cached = cache.get(key, max_age=86400)
+    if cached is not None:
+        return cached
+
+    # Get player profile for name/team
+    profile_raw = _get(f"/player/{player_id}")
+    result = _make_empty_result()
+
+    if isinstance(profile_raw, dict):
+        player_data = profile_raw.get("player") or profile_raw
+        if isinstance(player_data, dict):
+            result["name"] = player_data.get("name") or player_data.get("shortName", "")
+            team_data = player_data.get("team") or {}
+            if isinstance(team_data, dict):
+                result["team"] = team_data.get("name", "")
+                result["team_id"] = team_data.get("id")
+            position_data = player_data.get("position") or {}
+            result["position"] = _map_position(
+                player_data.get("positionDescription", {}) or position_data
+            )
+
+    stats_raw = _get(
+        f"/player/{player_id}/unique-tournament/{tournament_id}"
+        f"/season/{season_id}/statistics/overall"
+    )
+
+    if isinstance(stats_raw, dict):
+        stats = stats_raw.get("statistics") or {}
+        if isinstance(stats, dict):
+            result["minutes_played"] = int(stats.get("minutesPlayed") or 0)
+            result["appearances"] = int(
+                stats.get("appearances") or stats.get("matchesStarted") or 0
+            )
+            result["per90"] = _parse_stats(stats, result["minutes_played"])
+            result["raw"] = stats_raw
+    else:
+        result["raw"] = {}
+
+    cache.set(key, result)
+    return result
+
+
 def search_player(name: str) -> List[Dict[str, Any]]:
     """Search Sofascore for a player by name.
 
@@ -411,6 +673,17 @@ def _get_cached_tournament_id(player_id: int) -> Optional[int]:
     if isinstance(meta, dict):
         return meta.get("tournament_id")
     return None
+
+
+def _unix_to_iso(ts: Any) -> Optional[str]:
+    """Convert a Unix timestamp to ISO-8601 date string, or return None."""
+    if ts is None:
+        return None
+    try:
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d")
+    except (ValueError, TypeError, OSError):
+        return None
 
 
 def _get_current_season_id(tournament_id: int) -> Optional[int]:
