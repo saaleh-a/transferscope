@@ -359,10 +359,10 @@ def get_league_player_stats(
                 if not isinstance(stats_dict, dict):
                     stats_dict = {}
                 # Minutes: try statistics sub-dict first, then top-level
-                _mins = stats_dict.get("minutesPlayed")
-                if _mins is None:
-                    _mins = item.get("minutesPlayed")
-                minutes = int(_mins) if _mins is not None else 0
+                mins_raw = stats_dict.get("minutesPlayed")
+                if mins_raw is None:
+                    mins_raw = item.get("minutesPlayed")
+                minutes = int(mins_raw) if mins_raw is not None else 0
                 # Merge item-level stat keys into stats_dict for _parse_stats
                 merged_stats = dict(stats_dict)
                 for k, v in item.items():
