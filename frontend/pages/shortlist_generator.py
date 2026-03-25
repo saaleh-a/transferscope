@@ -16,8 +16,11 @@ import pandas as pd
 import streamlit as st
 
 from backend.data import sofascore_client
-from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
+from backend.data.sofascore_client import (
+    CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS, normalize_position,
+)
 from backend.features import power_rankings
+from backend.features.adjustment_models import paper_heuristic_predict
 from backend.models.shortlist_scorer import (
     Candidate,
     ShortlistFilters,
@@ -145,11 +148,23 @@ def render():
     with fcol3:
         max_pr = st.slider("Max club Power Ranking", 0, 100, 100, key="f_pr")
 
+    # Normalize positions for consistent matching between filter and data
+    normalized_filter_positions = None
+    if "Any" not in positions:
+        # Build a set of normalized categories from the selected positions
+        normalized_filter_positions = list(set(
+            normalize_position(p) for p in positions
+        ))
+        # Remove "Unknown" if it crept in from unrecognized input
+        normalized_filter_positions = [p for p in normalized_filter_positions if p != "Unknown"]
+        if not normalized_filter_positions:
+            normalized_filter_positions = None
+
     filters = ShortlistFilters(
         max_age=max_age if max_age < 45 else None,
         min_minutes_played=min_minutes if min_minutes > 0 else None,
         leagues=None if "Any" in selected_leagues else selected_leagues,
-        positions=None if "Any" in positions else positions,
+        positions=normalized_filter_positions,
         max_power_ranking=max_pr if max_pr < 100 else None,
     )
 
@@ -185,6 +200,19 @@ def render():
         )
         source_norm = source_ranking.normalized_score if source_ranking else 50.0
         source_league = source_ranking.league_mean_normalized if source_ranking else 50.0
+
+        # Fetch source team position averages once (paper Section 2.3)
+        # This represents the tactical style of the team the player is joining.
+        source_pos_avg: Dict[str, float] = {}
+        try:
+            source_pos_avg, _ = sofascore_client.get_team_position_averages(
+                team_id, position
+            )
+        except Exception:
+            pass
+        if not source_pos_avg:
+            source_pos_avg = {m: current_per90.get(m, 0) if current_per90.get(m) is not None else 0.0
+                              for m in CORE_METRICS}
 
         candidates: List[Candidate] = []
 
@@ -232,33 +260,35 @@ def render():
                     v = lp_per90.get(m)
                     lp_current[m] = v if v is not None else 0
 
-                # Apply heuristic transfer adjustment based on Power Rankings.
-                # Coefficients align with the paper's observation that:
-                # - Offensive output scales positively with relative team strength (0.8)
-                # - Defensive workload decreases at stronger clubs (-0.6)
-                # - Passing/other metrics see moderate positive correlation (0.3)
+                # Paper-aligned prediction: use team-position style data
+                # to predict how this candidate would perform at the source team.
                 lp_team = lp.get("team", "")
                 lp_ranking = power_rankings.get_team_ranking(lp_team)
                 lp_norm = lp_ranking.normalized_score if lp_ranking else 50.0
                 lp_league = lp_ranking.league_mean_normalized if lp_ranking else 50.0
                 # Relative ability change if player moved to the source team
                 delta_ra = (source_norm - source_league) - (lp_norm - lp_league)
-                predicted = {}
-                for m in CORE_METRICS:
-                    val = lp_current[m]
-                    if m in OFFENSIVE_METRICS:
-                        adj = 1.0 + (delta_ra / 100.0) * 0.8
-                    elif m in DEFENSIVE_METRICS:
-                        adj = 1.0 - (delta_ra / 100.0) * 0.6
-                    else:
-                        adj = 1.0 + (delta_ra / 100.0) * 0.3
-                    predicted[m] = val * max(adj, 0.2)
+
+                # Use the candidate's own stats as a proxy for their team's
+                # position average (fetching each candidate's team would be
+                # too many API calls).  The source team's position average
+                # is the real tactical style target.
+                predicted = paper_heuristic_predict(
+                    player_per90=lp_current,
+                    source_pos_avg=lp_current,
+                    target_pos_avg=source_pos_avg,
+                    change_relative_ability=delta_ra,
+                )
+
+                # Normalize position for consistent filtering
+                raw_pos = lp.get("position", "Unknown")
+                norm_pos = normalize_position(raw_pos)
 
                 candidates.append(Candidate(
                     player_id=lp_id,
                     name=lp.get("name", "Unknown"),
                     team=lp_team,
-                    position=lp.get("position", "Unknown"),
+                    position=norm_pos if norm_pos != "Unknown" else raw_pos,
                     minutes_played=lp.get("minutes_played"),
                     league=league_info.name,
                     predicted_per90=predicted,
@@ -293,13 +323,17 @@ def render():
                 v = tp_per90.get(m)
                 tp_current[m] = v if v is not None else 0
 
+            raw_pos = tp_stats.get("position", tp.get("position", "Unknown"))
+            norm_pos = normalize_position(raw_pos)
+
             # Teammates are already on the same team — no transfer adjustment
             candidates.append(Candidate(
                 player_id=tp_id,
                 name=tp_stats.get("name", tp.get("name", "Unknown")),
                 team=tp_stats.get("team", ""),
-                position=tp_stats.get("position", tp.get("position", "Unknown")),
+                position=norm_pos if norm_pos != "Unknown" else raw_pos,
                 minutes_played=tp_stats.get("minutes_played"),
+                league=LEAGUES.get(source_ranking.league_code, LEAGUES.get("ENG1")).name if source_ranking else "",
                 predicted_per90=tp_current.copy(),
                 current_per90=tp_current,
             ))

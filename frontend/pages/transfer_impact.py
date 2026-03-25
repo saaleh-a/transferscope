@@ -22,6 +22,7 @@ from backend.features import power_rankings, rolling_windows
 from backend.features.adjustment_models import (
     PlayerAdjustmentModel,
     TeamAdjustmentModel,
+    paper_heuristic_predict,
     scale_team_position_features,
 )
 from backend.models.shortlist_scorer import compute_percentage_changes
@@ -203,8 +204,6 @@ def render():
     # Replace None with 0.0 for model input; track which metrics have data
     current_per90_clean = {m: (current_per90.get(m) if current_per90.get(m) is not None else 0.0) for m in CORE_METRICS}
     has_real_data = any(current_per90.get(m) is not None for m in CORE_METRICS)
-    team_pos_current = current_per90_clean.copy()
-    team_pos_target = current_per90_clean.copy()
 
     if not has_real_data:
         st.warning(
@@ -212,6 +211,38 @@ def render():
             "Stats may not have loaded from Sofascore — try a different season "
             "or check that the player has played enough minutes."
         )
+
+    # ── Fetch team-position averages (paper Section 2.3) ─────────────────
+    # These capture tactical style: how each team uses players in this position.
+    source_pos_avg: Dict[str, float] = {}
+    target_pos_avg: Dict[str, float] = {}
+    source_pos_players: list = []
+    target_pos_players: list = []
+
+    team_id = player_stats.get("team_id")
+    if team_id:
+        with st.spinner("Fetching source team position data..."):
+            try:
+                source_pos_avg, source_pos_players = (
+                    sofascore_client.get_team_position_averages(team_id, position)
+                )
+            except Exception:
+                pass
+
+    if target_team_id:
+        with st.spinner("Fetching target team position data..."):
+            try:
+                target_pos_avg, target_pos_players = (
+                    sofascore_client.get_team_position_averages(target_team_id, position)
+                )
+            except Exception:
+                pass
+
+    # Fallback: use player's own stats if position averages are empty
+    if not source_pos_avg:
+        source_pos_avg = current_per90_clean.copy()
+    if not target_pos_avg:
+        target_pos_avg = current_per90_clean.copy()
 
     # Only use the TF model if trained weights have been saved to disk.
     predicted = {}
@@ -225,30 +256,23 @@ def render():
                 team_ability_target=target_norm,
                 league_ability_current=source_league_mean,
                 league_ability_target=target_league_mean,
-                team_pos_current=team_pos_current,
-                team_pos_target=team_pos_target,
+                team_pos_current=source_pos_avg,
+                team_pos_target=target_pos_avg,
             )
             predicted = model.predict(fd)
     except Exception:
         predicted = {}
 
-    # If no trained model, fall back to paper-aligned heuristics.
-    # Adjust per-90 by relative ability change, with different rates for
-    # offensive vs defensive metrics.
+    # Paper-aligned heuristic fallback: uses team-position style data +
+    # relative ability polynomial to give per-metric predictions
+    # (not flat group adjustments).
     if not predicted:
-        predicted = {}
-        for m in CORE_METRICS:
-            val = current_per90_clean.get(m, 0)
-            if m in OFFENSIVE_METRICS:
-                # Moving to relatively stronger position → offensive uplift
-                adj = 1.0 + (change_ra / 100.0) * 0.8
-            elif m in DEFENSIVE_METRICS:
-                # Stronger relative position → less defending needed
-                adj = 1.0 - (change_ra / 100.0) * 0.6
-            else:
-                # Passing metrics: moderate positive correlation
-                adj = 1.0 + (change_ra / 100.0) * 0.3
-            predicted[m] = val * max(adj, 0.2)  # floor at 20% to avoid negatives
+        predicted = paper_heuristic_predict(
+            player_per90=current_per90_clean,
+            source_pos_avg=source_pos_avg,
+            target_pos_avg=target_pos_avg,
+            change_relative_ability=change_ra,
+        )
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
     pct_changes = compute_percentage_changes(current_per90_clean, predicted)
@@ -346,11 +370,16 @@ def render():
     # ── (d) Swarm plots — with real league context data ──────────────────
     section_header("League Context", "Player positioning vs teammates and league")
 
-    team_id = player_stats.get("team_id")
+    # Reuse teammate data from the position-average fetch where possible
     teammate_per90s: List[Dict] = []
     league_per90s: List[Dict] = []
 
-    if team_id:
+    if source_pos_players:
+        # Already fetched during position average computation
+        for tp_stats in source_pos_players:
+            if tp_stats.get("per90"):
+                teammate_per90s.append(tp_stats["per90"])
+    elif team_id:
         try:
             team_players = sofascore_client.get_team_players_stats(team_id)
             for tp in team_players[:15]:  # Cap to limit API calls per run

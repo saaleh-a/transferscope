@@ -88,10 +88,14 @@ _SOFASCORE_KEY_MAP: dict[str, str] = {
     # Crosses
     "accurateCrosses": "successful_crosses",
     "crossesAccurate": "successful_crosses",
-    # Touches in box
+    # Touches in box — Sofascore uses varying key names across seasons/endpoints
     "penaltyAreaTouches": "touches_in_opposition_box",
     "touchInBox": "touches_in_opposition_box",
     "touchesInOppositionBox": "touches_in_opposition_box",
+    "touchesInPenaltyArea": "touches_in_opposition_box",
+    "penAreaEntries": "touches_in_opposition_box",
+    "penaltyAreaEntries": "touches_in_opposition_box",
+    "boxTouches": "touches_in_opposition_box",
     # Passes
     "accuratePasses": "successful_passes",
     "passesAccurate": "successful_passes",
@@ -678,6 +682,115 @@ def get_team_players_stats(
 
     cache.set(key, players)
     return players
+
+
+# ── Position categories ──────────────────────────────────────────────────────
+
+_POSITION_CATEGORIES: Dict[str, str] = {
+    # Forward / Attacker variants
+    "forward": "Forward", "forwards": "Forward", "attacker": "Forward",
+    "attackers": "Forward", "striker": "Forward", "centre-forward": "Forward",
+    "center forward": "Forward", "cf": "Forward", "st": "Forward",
+    "right winger": "Forward", "left winger": "Forward", "winger": "Forward",
+    "rw": "Forward", "lw": "Forward", "wing": "Forward",
+    # Midfielder variants
+    "midfielder": "Midfielder", "midfielders": "Midfielder",
+    "central midfielder": "Midfielder", "attacking midfielder": "Midfielder",
+    "defensive midfielder": "Midfielder", "cm": "Midfielder",
+    "am": "Midfielder", "dm": "Midfielder", "cam": "Midfielder",
+    "cdm": "Midfielder", "rm": "Midfielder", "lm": "Midfielder",
+    # Defender variants
+    "defender": "Defender", "defenders": "Defender",
+    "centre-back": "Defender", "center back": "Defender",
+    "right back": "Defender", "left back": "Defender",
+    "right-back": "Defender", "left-back": "Defender",
+    "cb": "Defender", "rb": "Defender", "lb": "Defender",
+    "rwb": "Defender", "lwb": "Defender",
+    # Goalkeeper variants
+    "goalkeeper": "Goalkeeper", "goalkeepers": "Goalkeeper", "gk": "Goalkeeper",
+}
+
+
+def normalize_position(position: str) -> str:
+    """Normalize a position string to one of: Forward, Midfielder, Defender, Goalkeeper."""
+    return _POSITION_CATEGORIES.get(position.strip().lower(), "Unknown")
+
+
+def get_team_position_averages(
+    team_id: int,
+    target_position: str,
+    max_players: int = 8,
+) -> Tuple[Dict[str, float], List[Dict[str, Any]]]:
+    """Compute average per-90 stats for players in a position at a team.
+
+    Fetches the team squad, filters by position category, retrieves
+    individual stats for matching players, and returns the mean per-90
+    for each core metric.  This captures the team's tactical style for
+    that position (paper Section 2.3: team-position features).
+
+    Parameters
+    ----------
+    team_id : int
+        Sofascore team ID.
+    target_position : str
+        Position to match (e.g. "Forward", "Right Winger", "Striker").
+    max_players : int
+        Cap on number of individual player stats to fetch.
+
+    Returns
+    -------
+    (avg_per90, player_data_list)
+        avg_per90: dict mapping metric -> average per-90 across position.
+        player_data_list: list of dicts with ``per90``, ``position``, ``name``.
+    """
+    cache_key = cache.make_key(
+        "team_pos_avg", str(team_id), normalize_position(target_position),
+    )
+    cached = cache.get(cache_key, max_age=86400)
+    if cached is not None:
+        return cached  # type: ignore[return-value]
+
+    target_cat = normalize_position(target_position)
+    squad = get_team_players_stats(team_id)
+
+    # Filter squad members whose position matches the same category
+    matching = [
+        p for p in squad
+        if normalize_position(p.get("position", "")) == target_cat
+    ]
+    if not matching:
+        # Fallback: use all outfield players
+        matching = [
+            p for p in squad
+            if normalize_position(p.get("position", "")) != "Goalkeeper"
+        ]
+
+    # Fetch individual stats (limited to avoid too many API calls)
+    player_data: List[Dict[str, Any]] = []
+    for p in matching[:max_players]:
+        pid = p.get("id")
+        if not pid:
+            continue
+        try:
+            stats = get_player_stats(pid)
+            if stats.get("per90"):
+                player_data.append(stats)
+        except Exception:
+            continue
+
+    # Compute average per-90 across matching players
+    avg_per90: Dict[str, float] = {}
+    for m in CORE_METRICS:
+        values = []
+        for pd_item in player_data:
+            v = pd_item.get("per90", {}).get(m)
+            if v is not None:
+                values.append(v)
+        avg_per90[m] = sum(values) / len(values) if values else 0.0
+
+    result = (avg_per90, player_data)
+    cache.set(cache_key, result)
+    return result
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

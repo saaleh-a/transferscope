@@ -14,6 +14,7 @@ import streamlit as st
 from backend.data import sofascore_client
 from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
 from backend.features import power_rankings, rolling_windows
+from backend.features.adjustment_models import paper_heuristic_predict
 from backend.models.shortlist_scorer import compute_percentage_changes
 from backend.models.transfer_portal import (
     TransferPortalModel,
@@ -96,6 +97,7 @@ def render():
         club_results = []
 
     target_club = target_club_query
+    target_team_id: Optional[int] = None
     if club_results:
         club_options = {
             f"{c['name']}" + (f" ({c.get('country', '')})" if c.get("country") else ""): c
@@ -105,6 +107,7 @@ def render():
             "Select target club", list(club_options.keys()), key="hon_club_select"
         )
         target_club = club_options[selected_club]["name"]
+        target_team_id = club_options[selected_club].get("id")
 
     # ── Season selector ──────────────────────────────────────────────────
     tournament_id = player_info.get("tournament_id")
@@ -164,6 +167,31 @@ def render():
     # Confidence
     features = rolling_windows.compute_player_features(player_stats)
 
+    # Fetch team-position averages for tactical style context (paper Sec 2.3)
+    source_pos_avg: dict = {}
+    target_pos_avg: dict = {}
+    team_id = player_stats.get("team_id")
+
+    if team_id:
+        try:
+            source_pos_avg, _ = sofascore_client.get_team_position_averages(
+                team_id, position
+            )
+        except Exception:
+            pass
+    if target_team_id:
+        try:
+            target_pos_avg, _ = sofascore_client.get_team_position_averages(
+                target_team_id, position
+            )
+        except Exception:
+            pass
+
+    if not source_pos_avg:
+        source_pos_avg = current_per90_clean.copy()
+    if not target_pos_avg:
+        target_pos_avg = current_per90_clean.copy()
+
     # Prediction — only use TF model if trained weights exist
     predicted = {}
     try:
@@ -176,25 +204,21 @@ def render():
                 team_ability_target=target_norm,
                 league_ability_current=source_league,
                 league_ability_target=target_league,
-                team_pos_current=current_per90_clean,
-                team_pos_target=current_per90_clean,
+                team_pos_current=source_pos_avg,
+                team_pos_target=target_pos_avg,
             )
             predicted = model.predict(fd)
     except Exception:
         predicted = {}
 
-    # If no trained model weights exist, apply paper-aligned heuristic.
+    # Paper-aligned heuristic: per-metric predictions using team style + ability
     if not predicted:
-        predicted = {}
-        for m in CORE_METRICS:
-            val = current_per90_clean.get(m, 0)
-            if m in OFFENSIVE_METRICS:
-                adj = 1.0 + (change_ra / 100.0) * 0.8
-            elif m in DEFENSIVE_METRICS:
-                adj = 1.0 - (change_ra / 100.0) * 0.6
-            else:
-                adj = 1.0 + (change_ra / 100.0) * 0.3
-            predicted[m] = val * max(adj, 0.2)
+        predicted = paper_heuristic_predict(
+            player_per90=current_per90_clean,
+            source_pos_avg=source_pos_avg,
+            target_pos_avg=target_pos_avg,
+            change_relative_ability=change_ra,
+        )
 
     pct_changes = compute_percentage_changes(current_per90_clean, predicted)
 
