@@ -297,17 +297,14 @@ def render():
             change_relative_ability=0.0,
         )
 
-    # Use "predicted" as the target prediction for downstream display
-    predicted = predicted_target
-
     # Paper-faithful baseline: compare predicted-at-target vs predicted-at-current
     # (not raw stats vs predicted). This makes both sides come from the same
     # model process, reducing noise sensitivity (paper Section 4).
     baseline = predicted_current if predicted_current else current_per90_clean
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
-    pct_changes = compute_percentage_changes(baseline, predicted)
-    metric_bar.show(baseline, predicted, pct_changes,
+    pct_changes = compute_percentage_changes(baseline, predicted_target)
+    metric_bar.show(baseline, predicted_target, pct_changes,
                     title=f"Predicted Changes: {player_name} -> {target_club_display}")
 
     # ── Summary table — right after metric bars for easy comparison ──────
@@ -329,7 +326,7 @@ def render():
         rows.append({
             "Metric": _LABELS.get(m, m),
             "Simulated Current": round(baseline.get(m, 0), 3),
-            "Predicted (per 90)": round(predicted.get(m, 0), 3),
+            "Predicted (per 90)": round(predicted_target.get(m, 0), 3),
             "Change %": round(change, 1),
             "Direction": "📈" if change > 2 else ("📉" if change < -2 else "➡️"),
         })

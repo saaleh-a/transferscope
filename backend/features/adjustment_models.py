@@ -548,7 +548,7 @@ def paper_heuristic_predict(
         # differences from the league quality gap (paper Section 4.2).
         # Each metric gets a unique coefficient so that metrics with the
         # same ability sensitivity still produce different predictions.
-        if not _has_style_data and ra != 0:
+        if not _has_style_data:
             league_coeff = _LEAGUE_STYLE_COEFF.get(m, 0.05)
             estimated_style_diff = src_avg * league_coeff * ra
             style_diff = estimated_style_diff
