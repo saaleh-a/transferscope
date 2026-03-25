@@ -939,10 +939,13 @@ def _parse_stats(stats: dict, minutes_played: int) -> Dict[str, Optional[float]]
     # touches using a position-based ratio (attackers ~15-20% of touches
     # are in the box, midfielders ~8-12%, defenders ~3-5%).
     #
-    # Estimation constants:
+    # Estimation constants (educated estimates calibrated to paper case studies):
     #   BOX_TOUCHES_PER_SHOT — each shot implies ~2.5 box touches on average
-    #   MAX_BOX_TOUCH_RATIO  — cap at 30% of total touches (realistic upper bound)
+    #     (typical attackers have ~2-3x more box touches than shots per game)
+    #   MAX_BOX_TOUCH_RATIO  — cap at 30% of total touches (realistic upper bound
+    #     even for elite strikers; most attackers are 15-25%)
     #   DEFAULT_BOX_RATIO    — generic fallback when no shots data available
+    #     (~10% is typical for midfielders/mixed positions)
     _BOX_TOUCHES_PER_SHOT = 2.5
     _MAX_BOX_TOUCH_RATIO = 0.30
     _DEFAULT_BOX_RATIO = 0.10

@@ -464,6 +464,7 @@ _ABILITY_SENSITIVITY: Dict[str, float] = {
 
 # Per-metric coefficients for estimating how team-position averages vary
 # with relative ability when real team-position data is unavailable.
+# Used by paper_heuristic_predict() (line ~552) as a fallback style estimator.
 # Derived from the paper's observations (Sections 4.2, 4.3):
 # - Stronger teams: higher attacking outputs, lower defensive workload
 # - Different metrics respond to team quality at different rates
