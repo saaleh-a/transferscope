@@ -1,4 +1,4 @@
-"""League ID mappings for FotMob + Elo sources.
+"""League ID mappings for Sofascore + Elo sources.
 
 Central registry so every module resolves league/team names consistently.
 """
@@ -14,7 +14,7 @@ class LeagueInfo:
     """Metadata for a single league across all data sources."""
 
     name: str
-    fotmob_id: int
+    sofascore_tournament_id: Optional[int]  # Sofascore unique-tournament ID
     clubelo_league: Optional[str]  # None if not in ClubElo
     worldelo_slug: Optional[str]  # None if not on eloratings.net
     country: str
@@ -27,7 +27,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     # ── Europe ───────────────────────────────────────────────────────────
     "ENG1": LeagueInfo(
         name="Premier League",
-        fotmob_id=47,
+        sofascore_tournament_id=17,
         clubelo_league="ENG-Premier League",
         worldelo_slug="England",
         country="England",
@@ -35,7 +35,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "ENG2": LeagueInfo(
         name="Championship",
-        fotmob_id=48,
+        sofascore_tournament_id=18,
         clubelo_league="ENG-Championship",
         worldelo_slug="England",
         country="England",
@@ -43,7 +43,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "ESP1": LeagueInfo(
         name="La Liga",
-        fotmob_id=87,
+        sofascore_tournament_id=8,
         clubelo_league="ESP-La Liga",
         worldelo_slug="Spain",
         country="Spain",
@@ -51,7 +51,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "GER1": LeagueInfo(
         name="Bundesliga",
-        fotmob_id=54,
+        sofascore_tournament_id=35,
         clubelo_league="GER-Bundesliga",
         worldelo_slug="Germany",
         country="Germany",
@@ -59,7 +59,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "ITA1": LeagueInfo(
         name="Serie A",
-        fotmob_id=55,
+        sofascore_tournament_id=23,
         clubelo_league="ITA-Serie A",
         worldelo_slug="Italy",
         country="Italy",
@@ -67,7 +67,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "FRA1": LeagueInfo(
         name="Ligue 1",
-        fotmob_id=53,
+        sofascore_tournament_id=34,
         clubelo_league="FRA-Ligue 1",
         worldelo_slug="France",
         country="France",
@@ -75,7 +75,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "NED1": LeagueInfo(
         name="Eredivisie",
-        fotmob_id=57,
+        sofascore_tournament_id=37,
         clubelo_league="NED-Eredivisie",
         worldelo_slug="Netherlands",
         country="Netherlands",
@@ -83,7 +83,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "POR1": LeagueInfo(
         name="Primeira Liga",
-        fotmob_id=61,
+        sofascore_tournament_id=238,
         clubelo_league="POR-Liga Portugal",
         worldelo_slug="Portugal",
         country="Portugal",
@@ -91,7 +91,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "BEL1": LeagueInfo(
         name="Belgian Pro League",
-        fotmob_id=56,
+        sofascore_tournament_id=11,
         clubelo_league="BEL-First Division A",
         worldelo_slug="Belgium",
         country="Belgium",
@@ -99,7 +99,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "TUR1": LeagueInfo(
         name="Super Lig",
-        fotmob_id=71,
+        sofascore_tournament_id=52,
         clubelo_league="TUR-Süper Lig",
         worldelo_slug="Turkey",
         country="Turkey",
@@ -108,7 +108,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     # ── South America ────────────────────────────────────────────────────
     "BRA1": LeagueInfo(
         name="Brasileirao Serie A",
-        fotmob_id=268,
+        sofascore_tournament_id=325,
         clubelo_league=None,
         worldelo_slug="Brazil",
         country="Brazil",
@@ -116,7 +116,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "BRA2": LeagueInfo(
         name="Brasileirao Serie B",
-        fotmob_id=325,
+        sofascore_tournament_id=390,
         clubelo_league=None,
         worldelo_slug="Brazil",
         country="Brazil",
@@ -124,7 +124,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "ARG1": LeagueInfo(
         name="Argentine Primera Division",
-        fotmob_id=112,
+        sofascore_tournament_id=155,
         clubelo_league=None,
         worldelo_slug="Argentina",
         country="Argentina",
@@ -132,7 +132,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "COL1": LeagueInfo(
         name="Colombian Primera A",
-        fotmob_id=275,
+        sofascore_tournament_id=109,
         clubelo_league=None,
         worldelo_slug="Colombia",
         country="Colombia",
@@ -140,7 +140,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "CHI1": LeagueInfo(
         name="Chilean Primera Division",
-        fotmob_id=271,
+        sofascore_tournament_id=19,
         clubelo_league=None,
         worldelo_slug="Chile",
         country="Chile",
@@ -148,7 +148,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "URU1": LeagueInfo(
         name="Uruguayan Primera Division",
-        fotmob_id=278,
+        sofascore_tournament_id=1064,
         clubelo_league=None,
         worldelo_slug="Uruguay",
         country="Uruguay",
@@ -156,7 +156,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "ECU1": LeagueInfo(
         name="Ecuadorian Serie A",
-        fotmob_id=274,
+        sofascore_tournament_id=240,
         clubelo_league=None,
         worldelo_slug="Ecuador",
         country="Ecuador",
@@ -165,7 +165,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     # ── Other ────────────────────────────────────────────────────────────
     "USA1": LeagueInfo(
         name="MLS",
-        fotmob_id=130,
+        sofascore_tournament_id=242,
         clubelo_league=None,
         worldelo_slug="United_States",
         country="United States",
@@ -173,7 +173,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "SAU1": LeagueInfo(
         name="Saudi Pro League",
-        fotmob_id=350,
+        sofascore_tournament_id=955,
         clubelo_league=None,
         worldelo_slug="Saudi_Arabia",
         country="Saudi Arabia",
@@ -181,7 +181,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "JPN1": LeagueInfo(
         name="J-League",
-        fotmob_id=169,
+        sofascore_tournament_id=196,
         clubelo_league=None,
         worldelo_slug="Japan",
         country="Japan",
@@ -190,10 +190,10 @@ LEAGUES: Dict[str, LeagueInfo] = {
 }
 
 
-def get_by_fotmob_id(fotmob_id: int) -> Optional[LeagueInfo]:
-    """Look up league info by FotMob league ID."""
+def get_by_sofascore_id(tournament_id: int) -> Optional[LeagueInfo]:
+    """Look up league info by Sofascore tournament ID."""
     for info in LEAGUES.values():
-        if info.fotmob_id == fotmob_id:
+        if info.sofascore_tournament_id == tournament_id:
             return info
     return None
 

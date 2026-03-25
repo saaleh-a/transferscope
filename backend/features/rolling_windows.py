@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from backend.data.fotmob_client import ALL_METRICS, CORE_METRICS
+from backend.data.sofascore_client import ALL_METRICS, CORE_METRICS
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -163,7 +163,7 @@ def compute_player_features(
     Parameters
     ----------
     player_stats : dict
-        Output of ``fotmob_client.get_player_stats`` — must have
+        Output of ``sofascore_client.get_player_stats`` — must have
         ``per90`` dict and ``minutes_played``.
     prior_per90 : dict, optional
         League/position prior per-90 values. If None, no blending.

@@ -11,7 +11,7 @@ from typing import Dict, Optional
 import plotly.graph_objects as go
 import streamlit as st
 
-from backend.data.fotmob_client import CORE_METRICS
+from backend.data.sofascore_client import CORE_METRICS
 
 # Human-readable labels
 _LABELS: Dict[str, str] = {
