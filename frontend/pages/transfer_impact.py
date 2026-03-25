@@ -63,7 +63,17 @@ def render():
         st.warning(f"No players found for '{player_query}'.")
         return
 
-    player_options = {f"{p['name']} (ID: {p['id']})": p for p in search_results}
+    def _player_label(p: dict) -> str:
+        parts = [p["name"]]
+        if p.get("age"):
+            parts.append(f"Age {p['age']}")
+        if p.get("nationality"):
+            parts.append(p["nationality"])
+        if p.get("team_name"):
+            parts.append(p["team_name"])
+        return " · ".join(parts)
+
+    player_options = {_player_label(p): p for p in search_results}
     selected = st.selectbox("Select player", list(player_options.keys()))
     player_info = player_options[selected]
     player_id = player_info["id"]
@@ -143,6 +153,11 @@ def render():
     else:
         source_norm = source_ranking.normalized_score
         source_league_mean = source_ranking.league_mean_normalized
+        if source_ranking.match_type == "fuzzy":
+            st.info(
+                f"⚠️ Approximate match: '{current_team}' → "
+                f"'{source_ranking.team_name}' (fuzzy)"
+            )
 
     if target_ranking is None:
         st.warning(f"Could not find Power Ranking for {target_club_display}. Using defaults.")
@@ -151,6 +166,11 @@ def render():
     else:
         target_norm = target_ranking.normalized_score
         target_league_mean = target_ranking.league_mean_normalized
+        if target_ranking.match_type == "fuzzy":
+            st.info(
+                f"⚠️ Approximate match: '{target_club_display}' → "
+                f"'{target_ranking.team_name}' (fuzzy)"
+            )
 
     # Show data source status in a compact expander
     with st.expander("ℹ️ Data source status", expanded=False):
@@ -158,12 +178,8 @@ def render():
         all_teams, all_snapshots = power_rankings.compute_daily_rankings()
         n_teams = len(all_teams)
         n_leagues = len(all_snapshots)
-        src_match = "exact" if current_team in all_teams else (
-            "fuzzy" if source_ranking else "not found"
-        )
-        tgt_match = "exact" if target_club_display in all_teams else (
-            "fuzzy" if target_ranking else "not found"
-        )
+        src_match = source_ranking.match_type if source_ranking else "not found"
+        tgt_match = target_ranking.match_type if target_ranking else "not found"
         st.markdown(
             f"**Elo teams loaded:** {n_teams} across {n_leagues} leagues  \n"
             f"**{current_team}:** {src_match} match"
@@ -265,16 +281,56 @@ def render():
     # ── (b) Power Ranking chart ──────────────────────────────────────────
     section_header("Power Rankings", "Club strength comparison over time")
     today = date.today()
-    source_history = [(today - timedelta(days=30 * i), source_norm - i * 0.5) for i in range(6)]
-    source_history.reverse()
-    target_history = [(today - timedelta(days=30 * i), target_norm + i * 0.3) for i in range(6)]
-    target_history.reverse()
+
+    # Use real historical power rankings when available
+    source_history = power_rankings.get_historical_rankings(current_team, months=6)
+    target_history = power_rankings.get_historical_rankings(target_club_display, months=6)
+
+    # Fallback to synthetic trend if history is empty
+    if not source_history:
+        source_history = [(today - timedelta(days=30 * i), source_norm) for i in range(6)]
+        source_history.reverse()
+    if not target_history:
+        target_history = [(today - timedelta(days=30 * i), target_norm) for i in range(6)]
+        target_history.reverse()
 
     power_ranking_chart.show(
         current_team, target_club_display,
         source_history, target_history,
         transfer_date=today,
     )
+
+    # ── League comparison panel ──────────────────────────────────────────
+    section_header("League Comparison", "How do the source and target leagues compare?")
+
+    src_league = source_ranking.league_code if source_ranking else None
+    tgt_league = target_ranking.league_code if target_ranking else None
+    comparison_codes = list(dict.fromkeys(
+        [c for c in [src_league, tgt_league] if c]
+    ))
+    # Always include the big five for context
+    for big5 in ["ENG1", "ESP1", "GER1", "ITA1", "FRA1"]:
+        if big5 not in comparison_codes:
+            comparison_codes.append(big5)
+
+    comparison = power_rankings.compare_leagues(comparison_codes)
+    if comparison:
+        import pandas as pd
+        df_leagues = pd.DataFrame(comparison)
+        df_leagues = df_leagues.rename(columns={
+            "name": "League",
+            "mean_normalized": "Avg Rating",
+            "team_count": "Teams",
+            "p50": "Median",
+            "p10": "P10 (Weakest)",
+            "p90": "P90 (Strongest)",
+        })
+        cols_to_show = ["League", "Avg Rating", "Teams", "Median", "P10 (Weakest)", "P90 (Strongest)"]
+        st.dataframe(
+            df_leagues[[c for c in cols_to_show if c in df_leagues.columns]],
+            use_container_width=True,
+            hide_index=True,
+        )
 
     # ── (d) Swarm plots — with real league context data ──────────────────
     section_header("League Context", "Player positioning vs teammates and league")

@@ -78,7 +78,13 @@ def render():
         st.warning(f"No player found for '{player_query}'.")
         return
 
-    player_options = {f"{p['name']} (ID: {p['id']})": p for p in search_results}
+    player_options = {
+        f"{p['name']}"
+        + (f" · Age {p['age']}" if p.get("age") else "")
+        + (f" · {p['nationality']}" if p.get("nationality") else "")
+        + (f" · {p['team_name']}" if p.get("team_name") else "")
+        : p for p in search_results
+    }
     selected_player = st.selectbox(
         "Select player", list(player_options.keys()), key="hon_player_select"
     )
