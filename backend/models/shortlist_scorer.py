@@ -166,8 +166,10 @@ def compute_percentage_changes(
     """
     changes = {}
     for metric in CORE_METRICS:
-        current = current_per90.get(metric) or 0
-        predicted = predicted_per90.get(metric) or 0
+        current = current_per90.get(metric)
+        current = current if current is not None else 0
+        predicted = predicted_per90.get(metric)
+        predicted = predicted if predicted is not None else 0
         if current and current != 0:
             changes[metric] = ((predicted - current) / abs(current)) * 100
         else:

@@ -749,9 +749,9 @@ def _discover_tournament_for_team(team_id: int) -> Optional[int]:
         # Skip international tournaments (Champions League=7, Europa=679, etc.)
         # Heuristic: domestic leagues have a "category" with a country
         cat = t.get("category") or {}
-        is_national = cat.get("flag") is not None or cat.get("alpha2") is not None
+        is_domestic = cat.get("flag") is not None or cat.get("alpha2") is not None
         user_count = t.get("userCount") or 0
-        if is_national and user_count > best_count:
+        if is_domestic and user_count > best_count:
             best = int(tid)
             best_count = user_count
 
