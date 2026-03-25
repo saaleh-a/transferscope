@@ -18,6 +18,12 @@ os.environ["CACHE_DIR"] = _TEMP_DIR
 from backend.data import cache, sofascore_client
 
 
+def tearDownModule():
+    """Clean up the temp cache directory after all tests."""
+    cache.close()
+    shutil.rmtree(_TEMP_DIR, ignore_errors=True)
+
+
 # ── Mock API responses ───────────────────────────────────────────────────────
 
 MOCK_TEAM_SEARCH_RESPONSE = {

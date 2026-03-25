@@ -227,7 +227,7 @@ def render():
     if team_id:
         try:
             team_players = sofascore_client.get_team_players_stats(team_id)
-            for tp in team_players[:15]:
+            for tp in team_players[:15]:  # Cap to limit API calls per run
                 if tp.get("id") and tp["id"] != player_id:
                     try:
                         tp_stats = sofascore_client.get_player_stats(tp["id"])
