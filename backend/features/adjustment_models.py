@@ -498,7 +498,9 @@ def paper_heuristic_predict(
     -------
     dict[str, float] — predicted per-90 values at the target club.
     """
-    ra = change_relative_ability / 100.0  # normalize to [-1, 1] range
+    # Scale to roughly [-1, 1] for typical transfers; extreme league
+    # jumps can exceed this range (e.g. ±1.5).
+    ra = change_relative_ability / 100.0
 
     predicted: Dict[str, float] = {}
     for m in CORE_METRICS:
@@ -514,10 +516,15 @@ def paper_heuristic_predict(
         # Base prediction: player's stats shifted toward target team's style
         base = player_val + team_inf * style_diff
 
-        # 2. Ability adjustment: polynomial per paper (β4*ra + β5*ra² + β6*ra³)
+        # 2. Ability adjustment: polynomial (linear + quadratic + cubic).
+        #    Maps to paper Appendix A.3: β4*ra + β5*ra² + β6*ra³
         sensitivity = _ABILITY_SENSITIVITY.get(m, 0.2)
-        # Quadratic term dampens extreme predictions
-        ability_factor = 1.0 + sensitivity * ra - 0.15 * sensitivity * (ra ** 2)
+        ability_factor = (
+            1.0
+            + sensitivity * ra                    # linear term
+            - 0.15 * sensitivity * (ra ** 2)      # dampens extremes
+            + 0.02 * sensitivity * (ra ** 3)      # asymmetric tails
+        )
 
         pred = base * ability_factor
         predicted[m] = max(pred, 0.0)  # per-90 can't be negative

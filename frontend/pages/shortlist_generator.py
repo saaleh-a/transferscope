@@ -327,13 +327,17 @@ def render():
             norm_pos = normalize_position(raw_pos)
 
             # Teammates are already on the same team — no transfer adjustment
+            teammate_league = ""
+            if source_ranking:
+                league_info = LEAGUES.get(source_ranking.league_code)
+                teammate_league = league_info.name if league_info else ""
             candidates.append(Candidate(
                 player_id=tp_id,
                 name=tp_stats.get("name", tp.get("name", "Unknown")),
                 team=tp_stats.get("team", ""),
                 position=norm_pos if norm_pos != "Unknown" else raw_pos,
                 minutes_played=tp_stats.get("minutes_played"),
-                league=LEAGUES.get(source_ranking.league_code, LEAGUES.get("ENG1")).name if source_ranking else "",
+                league=teammate_league,
                 predicted_per90=tp_current.copy(),
                 current_per90=tp_current,
             ))
