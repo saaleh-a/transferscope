@@ -224,15 +224,25 @@ def render():
                 if info.name in selected_leagues
             ]
         else:
-            target_leagues = list(LEAGUES.items())
+            # Default to major leagues for speed; scanning all 37+ would be slow
+            _MAJOR_LEAGUES = {
+                "ENG1", "ESP1", "GER1", "ITA1", "FRA1",  # Big 5
+                "NED1", "POR1", "BEL1", "TUR1",           # Strong European
+                "BRA1", "ARG1",                             # South America
+            }
+            target_leagues = [
+                (code, info) for code, info in LEAGUES.items()
+                if code in _MAJOR_LEAGUES
+            ]
 
         league_progress = st.progress(0, text="Scanning leagues...")
         total_leagues = len(target_leagues)
+        leagues_with_data = 0
 
         for li, (league_code, league_info) in enumerate(target_leagues):
             league_progress.progress(
                 (li + 1) / total_leagues,
-                text=f"Scanning {league_info.name}...",
+                text=f"Scanning {league_info.name}... ({len(candidates)} candidates found)",
             )
             tid = league_info.sofascore_tournament_id
             if tid is None:
@@ -244,6 +254,9 @@ def render():
                 )
             except Exception:
                 continue
+
+            if league_players:
+                leagues_with_data += 1
 
             for lp in league_players:
                 lp_id = lp.get("id")
@@ -296,6 +309,13 @@ def render():
                 ))
 
         league_progress.empty()
+
+        if leagues_with_data == 0:
+            st.warning(
+                "⚠️ Could not fetch player data from any league. "
+                "Sofascore API may be rate-limiting requests. "
+                "Try again in a few minutes or select specific leagues."
+            )
 
         # Also include current teammates for completeness
         try:
