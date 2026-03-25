@@ -107,12 +107,16 @@ def _league_label(row: pd.Series) -> str:
 
 
 def _is_valid_csv(text: str) -> bool:
-    """Return True if *text* looks like CSV, not an HTML error page."""
+    """Return True if *text* looks like valid ClubElo CSV data."""
     if not text:
         return False
     # ClubElo returns HTML error pages on bad requests
     lower = text[:200].lower()
-    return "<html" not in lower and "<!doctype" not in lower
+    if "<html" in lower or "<!doctype" in lower:
+        return False
+    # Verify expected CSV header is present
+    first_line = text.split("\n", 1)[0].lower()
+    return "club" in first_line and "elo" in first_line
 
 
 def _fetch_csv(date_str: str) -> Optional[str]:

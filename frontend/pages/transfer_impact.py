@@ -154,6 +154,7 @@ def render():
 
     # Show data source status in a compact expander
     with st.expander("ℹ️ Data source status", expanded=False):
+        # Reuses the cached result from get_team_ranking() calls above
         all_teams, all_snapshots = power_rankings.compute_daily_rankings()
         n_teams = len(all_teams)
         n_leagues = len(all_snapshots)
