@@ -128,11 +128,11 @@ This means a player at a worse team **can improve or decline** at a bigger team,
 
 Each group has the same architecture: Input → Dense(128, ReLU) → Dropout(0.3) → Dense(64, ReLU) → Dropout(0.3) → Linear output heads. Trained with Adam optimizer and MSE loss. Auto-loads trained weights from `data/models/` when available; falls back to `paper_heuristic_predict()` when untrained.
 
-> **In plain English:** The neural network is the "brain" of the system. It takes in 43 numbers about a player (their current stats, how strong their current team is, how strong the target team is, what position players typically do at both clubs) and outputs 13 predictions — one for each stat. It's organized into 4 groups: shooting stats, passing stats, dribbling stats, and defensive stats. Each group has its own little brain that specializes in predicting that type of stat.
+> **In plain English:** The neural network is the "brain" of the system. A full set of 43 numbers about a player is assembled (their current stats, team strength, league strength, what position players typically do at both clubs). But each specialist group only sees the subset relevant to its job — the shooting brain gets 16 features, the passing brain 25, the dribbling brain just 7, and the defending brain 13. Each group outputs its predictions for that stat type. This focus makes each specialist better at its job.
 >
 > The "Dropout(0.3)" bit means the model randomly ignores 30% of its connections during training — this is like studying by covering up parts of your notes and forcing yourself to remember. It prevents the model from memorizing specific examples and helps it generalize to new players it hasn't seen before.
 
-The 43-key feature dict is assembled from:
+The full 43-feature dictionary is assembled from:
 - 13 player per-90 metrics (current club)
 - 4 ability scores (team and league, current and target)
 - 13 team-position per-90 metrics (current club)
