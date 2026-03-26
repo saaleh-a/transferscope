@@ -1,19 +1,27 @@
-"""Weighted similarity scoring for shortlist generation.
+"""Shortlist scoring via k-means style clustering + weighted distance.
 
-normalized_target = (predicted_value - mean) / std
-weighted_score = normalized_target * user_weight
-final_score = sum(weighted_scores) / sum(weights)
+Flow:
+1. Standardize all per-90 metrics across candidates + reference player.
+2. K-means cluster all players into style groups (k=√(n/2), capped 3-10).
+3. Find the reference player's cluster.
+4. Rank candidates by weighted Euclidean distance to the reference player.
+   Candidates in the same cluster are preferred (cluster-match bonus).
+5. Filters (age, minutes, position, league, power ranking) are applied
+   before clustering so that only relevant candidates are considered.
 
-Filters: age, market value, minutes played, position, league,
-         club Power Ranking cap.
+Falls back to direct weighted distance when too few candidates for
+meaningful clustering (< 10).
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import numpy as np
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
 
 from backend.data.sofascore_client import CORE_METRICS
 
@@ -31,10 +39,13 @@ class Candidate:
     minutes_played: Optional[int] = None
     league: Optional[str] = None
     club_power_ranking: Optional[float] = None
+    rating: Optional[float] = None
     predicted_per90: Dict[str, float] = field(default_factory=dict)
     current_per90: Dict[str, float] = field(default_factory=dict)
     score: float = 0.0
     metric_scores: Dict[str, float] = field(default_factory=dict)
+    cluster: int = -1  # K-means cluster label (-1 = unassigned)
+    same_cluster_as_reference: bool = False  # True if in same cluster as reference player
 
 
 @dataclass
@@ -86,27 +97,79 @@ def filter_candidates(
     return result
 
 
+def _build_feature_matrix(
+    candidates: List[Candidate],
+    reference_per90: Dict[str, float],
+    weights: Dict[str, float],
+) -> tuple:
+    """Build standardized feature matrix for clustering.
+
+    Returns (X_scaled, active_metrics, scaler, ref_scaled) where
+    X_scaled[i] is the feature vector for candidates[i],
+    ref_scaled is the reference player's feature vector.
+    """
+    active_metrics = [m for m, w in weights.items() if w > 0 and m in CORE_METRICS]
+    if not active_metrics:
+        active_metrics = list(CORE_METRICS)
+
+    # Build raw matrix: candidates + reference player (last row)
+    n = len(candidates)
+    raw = np.zeros((n + 1, len(active_metrics)))
+
+    for i, c in enumerate(candidates):
+        for j, m in enumerate(active_metrics):
+            raw[i, j] = c.predicted_per90.get(m, 0.0)
+
+    # Reference player as last row
+    for j, m in enumerate(active_metrics):
+        v = reference_per90.get(m)
+        raw[n, j] = float(v) if v is not None else 0.0
+
+    # Apply user weights before standardization so that heavily-weighted
+    # metrics dominate the distance/clustering.
+    w_arr = np.array([weights.get(m, 0.5) for m in active_metrics])
+    raw_weighted = raw * w_arr
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(raw_weighted)
+
+    ref_scaled = X_scaled[-1]       # reference player
+    X_candidates = X_scaled[:-1]    # candidates only
+
+    return X_candidates, active_metrics, scaler, ref_scaled
+
+
 def score_candidates(
     candidates: List[Candidate],
     weights: Dict[str, float],
     filters: Optional[ShortlistFilters] = None,
+    reference_per90: Optional[Dict[str, float]] = None,
 ) -> List[Candidate]:
-    """Score and rank candidates using weighted similarity.
+    """Score and rank candidates using k-means clustering + weighted distance.
+
+    When ``reference_per90`` is provided (the stats of the player being
+    replaced), candidates are clustered by playing style and ranked by
+    weighted Euclidean distance to the reference player.  Candidates in the
+    same cluster as the reference player receive a bonus (lower distance)
+    since they share a similar style profile.
+
+    When ``reference_per90`` is not provided, falls back to z-score ranking
+    (original behavior).
 
     Parameters
     ----------
     candidates : list[Candidate]
         Candidates with ``predicted_per90`` already filled.
     weights : dict[str, float]
-        User weights per metric (0.0-1.0). Metrics not in this dict
-        are ignored.
+        User weights per metric (0.0-1.0).
     filters : ShortlistFilters, optional
         If provided, filter candidates before scoring.
+    reference_per90 : dict, optional
+        Per-90 stats of the player being replaced.
 
     Returns
     -------
-    list[Candidate] sorted by score descending. Each candidate's
-    ``score`` and ``metric_scores`` fields are updated.
+    list[Candidate] sorted by score descending (higher = more similar).
     """
     if filters is not None:
         candidates = filter_candidates(candidates, filters)
@@ -114,18 +177,93 @@ def score_candidates(
     if not candidates or not weights:
         return candidates
 
-    # Determine which metrics to use
+    # No reference player → fall back to z-score ranking
+    if reference_per90 is None:
+        return _score_zscore(candidates, weights)
+
     active_metrics = [m for m, w in weights.items() if w > 0 and m in CORE_METRICS]
     if not active_metrics:
         return candidates
 
-    # Step 1 — Collect predicted values per metric
+    n = len(candidates)
+
+    # Build feature matrix (candidates + reference)
+    X_cand, active_metrics, scaler, ref_vec = _build_feature_matrix(
+        candidates, reference_per90, weights
+    )
+
+    # --- K-means clustering ---
+    # Choose k = √(n/2), clamped to [3, 10].
+    # Below 10 candidates, skip clustering — just use distance.
+    use_clustering = n >= 10
+    ref_cluster = -1
+
+    if use_clustering:
+        k = max(3, min(10, int(math.sqrt(n / 2))))
+        # Include reference player in clustering to find its cluster
+        X_all = np.vstack([X_cand, ref_vec.reshape(1, -1)])
+        km = KMeans(n_clusters=k, n_init=10, random_state=42)
+        labels = km.fit_predict(X_all)
+        ref_cluster = int(labels[-1])
+        cand_labels = labels[:-1]
+    else:
+        cand_labels = np.zeros(n, dtype=int)
+
+    # --- Weighted Euclidean distance to reference ---
+    diffs = X_cand - ref_vec
+    distances = np.sqrt(np.sum(diffs ** 2, axis=1))
+
+    # Normalize distances to [0, 1] range for scoring
+    max_dist = float(np.max(distances)) if np.max(distances) > 0 else 1.0
+
+    # Score = 1 - normalized_distance (higher = more similar)
+    # Cluster bonus: candidates in same cluster as reference get 15% boost
+    for i, c in enumerate(candidates):
+        norm_dist = distances[i] / max_dist
+        base_score = 1.0 - norm_dist
+
+        # Cluster membership
+        c.cluster = int(cand_labels[i])
+        c.same_cluster_as_reference = (
+            use_clustering and c.cluster == ref_cluster
+        )
+
+        # Same-cluster bonus: candidates sharing the reference player's
+        # style group get a 15% score boost.
+        if c.same_cluster_as_reference:
+            base_score = min(1.0, base_score * 1.15)
+
+        c.score = base_score
+
+        # Per-metric breakdown: how close each metric is to reference
+        c.metric_scores = {}
+        for j, m in enumerate(active_metrics):
+            # Difference in standardized space
+            metric_diff = abs(X_cand[i, j] - ref_vec[j])
+            # Convert to similarity (1 = identical, 0 = very different)
+            c.metric_scores[m] = max(0.0, 1.0 - metric_diff / 3.0)
+
+    # Sort by score descending (most similar first)
+    candidates.sort(key=lambda c: c.score, reverse=True)
+    return candidates
+
+
+def _score_zscore(
+    candidates: List[Candidate],
+    weights: Dict[str, float],
+) -> List[Candidate]:
+    """Original z-score ranking fallback (no reference player)."""
+    active_metrics = [m for m, w in weights.items() if w > 0 and m in CORE_METRICS]
+    if not active_metrics:
+        return candidates
+
+    # Collect predicted values per metric
     values: Dict[str, List[float]] = {m: [] for m in active_metrics}
     for c in candidates:
         for m in active_metrics:
             values[m].append(c.predicted_per90.get(m, 0.0))
 
-    # Step 2 — Compute mean and std per metric
+    # Compute mean and std per metric
     stats: Dict[str, tuple] = {}
     for m in active_metrics:
         arr = np.array(values[m])
@@ -133,7 +271,7 @@ def score_candidates(
         std = float(np.std(arr))
         stats[m] = (mean, std if std > 0 else 1.0)
 
-    # Step 3 — Normalize and weight
+    # Normalize and weight
     total_weight = sum(weights.get(m, 0) for m in active_metrics)
     if total_weight == 0:
         total_weight = 1.0
@@ -152,7 +290,6 @@ def score_candidates(
 
         c.score = weighted_sum / total_weight
 
-    # Sort by score descending
     candidates.sort(key=lambda c: c.score, reverse=True)
     return candidates
 

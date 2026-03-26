@@ -155,6 +155,7 @@ def player_info_card(
     position: str = "",
     minutes: int = 0,
     season_label: str = "Current",
+    rating: float | None = None,
 ) -> None:
     """Render a consistent player info card across all pages."""
     parts = []
@@ -166,6 +167,8 @@ def player_info_card(
         parts.append(f"<span>{minutes:,} mins</span>")
     if season_label:
         parts.append(f"<span>{season_label}</span>")
+    if rating is not None:
+        parts.append(f"<span>★ {rating:.2f}</span>")
     meta = '<span style="opacity:0.3; margin:0 0.3em;">·</span>'.join(parts)
     st.markdown(
         f'<div class="ts-player-header">'
