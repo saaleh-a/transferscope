@@ -199,7 +199,8 @@ def _get(path: str) -> Optional[dict]:
             delay = _RETRY_BASE_DELAY * (2 ** attempt)
             _log.info("Sofascore connection error on %s — retry in %.1fs", path, delay)
             time.sleep(delay)
-        except Exception:
+        except Exception as exc:
+            _log.warning("Sofascore permanent error on %s: %s", path, exc)
             return None
     _log.warning("Sofascore request failed after %d retries: %s", _MAX_RETRIES, path)
     return None
@@ -443,6 +444,11 @@ def get_season_list(tournament_id: int) -> List[Dict[str, Any]]:
 
     raw = _get(f"/unique-tournament/{tournament_id}/seasons")
     if not isinstance(raw, dict):
+        _log.warning(
+            "get_season_list(%d): API returned %s instead of dict — not caching",
+            tournament_id,
+            type(raw).__name__,
+        )
         return []
 
     seasons = raw.get("seasons") or []
@@ -451,6 +457,14 @@ def get_season_list(tournament_id: int) -> List[Dict[str, Any]]:
         for s in seasons
         if isinstance(s, dict) and s.get("id") is not None
     ]
+
+    if not result:
+        _log.warning(
+            "get_season_list(%d): API returned 0 valid seasons (raw keys: %s) — not caching",
+            tournament_id,
+            list(raw.keys()),
+        )
+        return []
 
     cache.set(key, result)
     return result
