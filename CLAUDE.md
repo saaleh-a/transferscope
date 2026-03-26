@@ -122,10 +122,10 @@ This is a key input feature to the adjustment models.
 2. **Accent-normalized exact match** via `_strip_accents()` (NFKD decomposition)
 3. **Fuzzy match** via `_fuzzy_find_team()` — 5-priority cascade:
    - Exact normalized match
-   - `_EXTREME_ABBREVS` alias lookup (138 bidirectional entries: PSG↔Paris Saint-Germain, etc.)
+   - `_EXTREME_ABBREVS` alias lookup (180+ bidirectional entries covering Europe, MLS, Saudi, J-League: PSG↔Paris Saint-Germain, Orlando City↔Orlando City SC, LAFC↔Los Angeles FC, etc.)
    - Substring containment (≥6 chars, ≥45% overlap ratio)
    - Word-level matching (shared words ≥4 chars)
-   - `SequenceMatcher` ratio ≥0.65
+   - `SequenceMatcher` ratio ≥0.70 (raised from 0.65 to reject "Orlando City SC"→"Man City" false positives)
 
 `_CLUBELO_TO_SOFASCORE` dict (116 entries) canonicalizes ClubElo abbreviated
 team names (ManCity, ManUtd, etc.) to Sofascore full display names at data-load time.
@@ -374,7 +374,7 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Position normalization to 4 categories (Forward, Midfielder, Defender, Goalkeeper) via `normalize_position()` — including Sofascore single-letter codes (F/M/D/G)
 - K-means clustering for shortlist scoring: weighted Euclidean distance + 15% same-cluster bonus vs simple z-score
 - Per-group feature subsets for TF model: shooting=16, passing=25, dribbling=7, defending=13 (not 43 for all groups)
-- 3-step team name resolution: exact → accent-normalized → fuzzy (5-priority cascade with 138 extreme abbreviations)
+- 3-step team name resolution: exact → accent-normalized → fuzzy (5-priority cascade with 180+ extreme abbreviations covering Europe, MLS, Saudi, J-League)
 - `_CLUBELO_TO_SOFASCORE` mapping (116 entries): canonicalize ClubElo names at load time
 - Polynomial normalization: `change_ra / 50.0` in PlayerAdjustmentModel (mapping -50..+50 to -1..+1)
 - Player-system-reliance scaling: style_diff scaled by player quality vs team average — prevents over-penalizing below-average players
