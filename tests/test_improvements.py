@@ -38,7 +38,7 @@ class TestSofascoreRetry(unittest.TestCase):
     def tearDown(self):
         cache.close()
 
-    @patch("requests.get")
+    @patch("backend.data.sofascore_client.requests.get")
     def test_retries_on_429(self, mock_get):
         """_get should retry on HTTP 429 and eventually return data."""
         resp_429 = MagicMock()
@@ -57,7 +57,7 @@ class TestSofascoreRetry(unittest.TestCase):
         self.assertEqual(result, {"data": "ok"})
         self.assertEqual(mock_get.call_count, 2)
 
-    @patch("requests.get")
+    @patch("backend.data.sofascore_client.requests.get")
     def test_retries_on_500(self, mock_get):
         """_get should retry on HTTP 500."""
         resp_500 = MagicMock()
@@ -76,7 +76,7 @@ class TestSofascoreRetry(unittest.TestCase):
         self.assertEqual(result, {"result": True})
         self.assertEqual(mock_get.call_count, 3)
 
-    @patch("requests.get")
+    @patch("backend.data.sofascore_client.requests.get")
     def test_gives_up_after_max_retries(self, mock_get):
         """_get returns None after exhausting retries."""
         resp_503 = MagicMock()
@@ -90,7 +90,7 @@ class TestSofascoreRetry(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(mock_get.call_count, sofascore_client._MAX_RETRIES)
 
-    @patch("requests.get")
+    @patch("backend.data.sofascore_client.requests.get")
     def test_no_retry_on_404(self, mock_get):
         """_get should NOT retry on 404 (non-retryable)."""
         import requests as req
