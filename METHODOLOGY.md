@@ -261,14 +261,14 @@ Matching team names across ClubElo, WorldFootballElo, and Sofascore is non-trivi
 2. **Accent-normalized exact match** via `_strip_accents()` (NFKD Unicode decomposition — ü→u, é→e, etc.)
 3. **Fuzzy match** via `_fuzzy_find_team()` with a 5-priority cascade:
    - Exact normalized match (lowercase + stripped)
-   - `_EXTREME_ABBREVS` alias lookup (138 bidirectional entries: PSG↔Paris Saint-Germain, Bayern↔Bayern Munich, BVB↔Borussia Dortmund)
+   - `_EXTREME_ABBREVS` alias lookup (180+ bidirectional entries covering Europe, MLS, Saudi Pro League, J-League, and South America — e.g. PSG↔Paris Saint-Germain, LAFC↔Los Angeles FC, Orlando City↔Orlando City SC)
    - Substring containment (≥6 chars, ≥45% overlap ratio)
    - Word-level matching (shared words ≥4 chars)
-   - `SequenceMatcher` ratio ≥0.65
+   - `SequenceMatcher` ratio ≥0.70 (raised from 0.65 to prevent false positives like "Orlando City SC"→"Man City" where the shared suffix "city" inflates similarity)
 
 Additionally, `_CLUBELO_TO_SOFASCORE` (116 entries) canonicalizes ClubElo's abbreviated team names to Sofascore full display names at data-load time, covering the top leagues in England, France, Germany, Spain, Italy, Portugal, Netherlands, Turkey, Scotland, Belgium, and Austria.
 
-> **In plain English:** Team names are a surprisingly hard problem. "PSG" and "Paris Saint-Germain" are the same team, but a computer doesn't know that unless you tell it. We maintain a large dictionary of abbreviations (138 entries) plus a smart fuzzy-matching system that handles accents, substrings, and similar-sounding names. This means a user can type "Bayern" or "Bayern Munich" or "FC Bayern München" and they all resolve to the same team.
+> **In plain English:** Team names are a surprisingly hard problem. "PSG" and "Paris Saint-Germain" are the same team, but a computer doesn't know that unless you tell it. We maintain a large dictionary of abbreviations (180+ entries including MLS, Saudi, and Japanese clubs) plus a smart fuzzy-matching system that handles accents, substrings, and similar-sounding names. Importantly, "Orlando City SC" does NOT accidentally match "Manchester City" — the similarity threshold is calibrated to reject false positives from shared suffixes like "City" or "United." This means a user can type "Bayern" or "Bayern Munich" or "FC Bayern München" and they all resolve to the same team, while MLS clubs like "Inter Miami CF" resolve correctly without confusing them with Inter Milan.
 
 ---
 
