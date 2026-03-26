@@ -36,22 +36,28 @@ def _model_is_trained() -> bool:
     )
 
 
-# ── Background training runner ───────────────────────────────────────────────
-def _run_training_background() -> None:
-    """Run the training pipeline in a background thread.
+# ── Thread-safe training status ──────────────────────────────────────────────
+# Module-level dict + lock for cross-thread communication.  The main Streamlit
+# thread copies values into session_state each rerun; the background thread
+# only mutates this dict (never touches session_state directly).
+_training_lock = threading.Lock()
+_training_state: dict = {"status": "unknown", "step": ""}
 
-    Updates ``st.session_state`` so the UI can reflect progress.
-    """
+
+def _run_training_background() -> None:
+    """Run the training pipeline in a background thread."""
     try:
-        st.session_state["training_status"] = "running"
-        st.session_state["training_step"] = "Importing pipeline…"
+        with _training_lock:
+            _training_state["status"] = "running"
+            _training_state["step"] = "Importing pipeline…"
 
         from backend.models.training_pipeline import run_pipeline
 
         def _on_progress(step: str, detail: str = "") -> None:
-            st.session_state["training_step"] = (
-                f"{step} — {detail}" if detail else step
-            )
+            with _training_lock:
+                _training_state["step"] = (
+                    f"{step} — {detail}" if detail else step
+                )
 
         success = run_pipeline(
             seasons_back=3,
@@ -60,18 +66,37 @@ def _run_training_background() -> None:
             progress_callback=_on_progress,
         )
 
-        if success:
-            st.session_state["training_status"] = "done"
-            st.session_state["training_step"] = "Training complete ✅"
-        else:
-            st.session_state["training_status"] = "failed"
-            st.session_state["training_step"] = (
-                "Training failed — insufficient data from API"
-            )
+        with _training_lock:
+            if success:
+                _training_state["status"] = "done"
+                _training_state["step"] = "Training complete ✅"
+            else:
+                _training_state["status"] = "failed"
+                _training_state["step"] = (
+                    "Training failed — insufficient data from API"
+                )
     except Exception as exc:
         _log.exception("Background training failed")
-        st.session_state["training_status"] = "failed"
-        st.session_state["training_step"] = f"Training error: {exc}"
+        with _training_lock:
+            _training_state["status"] = "failed"
+            _training_state["step"] = f"Training error: {exc}"
+
+
+def _start_training_thread() -> None:
+    """Launch a training thread if one isn't already running."""
+    with _training_lock:
+        if _training_state["status"] == "running":
+            return  # already in progress — don't spawn a second thread
+        _training_state["status"] = "starting"
+        _training_state["step"] = "Queued…"
+    threading.Thread(target=_run_training_background, daemon=True).start()
+
+
+# ── Sync module-level state → session_state each rerun ───────────────────────
+def _sync_training_status() -> None:
+    with _training_lock:
+        st.session_state["training_status"] = _training_state["status"]
+        st.session_state["training_step"] = _training_state["step"]
 
 
 # ── Cache warmup — run once per session so the first query is fast ───────────
@@ -89,14 +114,17 @@ if "cache_warmed" not in st.session_state:
 
 
 # ── Auto-train: kick off training if no model exists ─────────────────────────
-if "training_status" not in st.session_state:
+if "training_checked" not in st.session_state:
+    st.session_state["training_checked"] = True
     if _model_is_trained():
-        st.session_state["training_status"] = "done"
-        st.session_state["training_step"] = "Trained model loaded ✅"
+        with _training_lock:
+            _training_state["status"] = "done"
+            _training_state["step"] = "Trained model loaded ✅"
     else:
-        st.session_state["training_status"] = "starting"
-        st.session_state["training_step"] = "Queued…"
-        threading.Thread(target=_run_training_background, daemon=True).start()
+        _start_training_thread()
+
+# Copy background thread status into session_state for this rerun
+_sync_training_status()
 
 
 # Sidebar brand + navigation
@@ -120,9 +148,7 @@ if _ts in ("starting", "running"):
 elif _ts == "failed":
     st.sidebar.warning(f"⚠️ **Training incomplete**\n\n{_step}")
     if st.sidebar.button("🔁 Retry Training"):
-        st.session_state["training_status"] = "starting"
-        st.session_state["training_step"] = "Retrying…"
-        threading.Thread(target=_run_training_background, daemon=True).start()
+        _start_training_thread()
         st.rerun()
 elif _ts == "done":
     st.sidebar.success("✅ **Trained model active**")
