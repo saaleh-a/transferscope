@@ -37,7 +37,7 @@ transferscope/
 ├── app.py                              # Streamlit entry point only
 ├── backend/
 │   ├── data/
-│   │   ├── sofascore_client.py         # Sofascore REST API — player stats, search, transfers
+│   │   ├── sofascore_client.py         # Sofascore REST API — player stats, search, transfers, match logs
 │   │   ├── clubelo_client.py           # ClubElo wrapper via soccerdata (Europe)
 │   │   ├── worldfootballelo_client.py  # WorldFootballElo scraper (global fallback)
 │   │   ├── elo_router.py               # Routes club to correct Elo source, merges scores
@@ -47,8 +47,10 @@ transferscope/
 │   │   ├── power_rankings.py           # Dynamic league Elo + 0-100 normalization
 │   │   └── adjustment_models.py        # sklearn priors + paper_heuristic_predict fallback
 │   ├── models/
-│   │   ├── transfer_portal.py          # TensorFlow multi-head NN, 4 target groups
-│   │   └── shortlist_scorer.py         # Weighted similarity scoring for shortlist
+│   │   ├── transfer_portal.py          # TensorFlow multi-head NN, 4 target groups (per-group feature subsets)
+│   │   ├── shortlist_scorer.py         # K-means clustering + weighted Euclidean distance scoring
+│   │   ├── training_pipeline.py        # End-to-end training: transfer discovery → sklearn + TF fit
+│   │   └── backtester.py              # Compares predictions against actual post-transfer per-90
 │   └── utils/
 │       └── league_registry.py          # League ID mappings for Sofascore + Elo sources
 ├── frontend/
@@ -61,7 +63,7 @@ transferscope/
 │   │   ├── power_ranking_chart.py      # Before/after team Power Rankings timeline
 │   │   └── metric_bar.py              # Horizontal bar: predicted % change per metric
 │   └── theme.py                        # "Tactical Noir" dark theme + shared UI components
-├── tests/                              # 97 tests across 8 files (all mocked, no network)
+├── tests/                              # 188 tests across 11 files (all mocked, no network)
 └── data/
     ├── cache/                          # diskcache files — gitignored
     └── models/                         # Saved TF model weights — gitignored
@@ -112,6 +114,30 @@ relative_ability = team_normalized_score - league_mean_normalized_score
 ```
 Positive = better than league average. Negative = worse.
 This is a key input feature to the adjustment models.
+
+### Team name resolution
+
+`get_team_ranking()` uses a 3-step lookup:
+1. **Exact match** in the rankings dict
+2. **Accent-normalized exact match** via `_strip_accents()` (NFKD decomposition)
+3. **Fuzzy match** via `_fuzzy_find_team()` — 5-priority cascade:
+   - Exact normalized match
+   - `_EXTREME_ABBREVS` alias lookup (180+ bidirectional entries covering Europe, MLS, Saudi, J-League: PSG↔Paris Saint-Germain, Orlando City↔Orlando City SC, LAFC↔Los Angeles FC, etc.)
+   - Substring containment (≥6 chars, ≥45% overlap ratio)
+   - Word-level matching (shared words ≥4 chars)
+   - `SequenceMatcher` ratio ≥0.70 (raised from 0.65 to reject "Orlando City SC"→"Man City" false positives)
+
+`_CLUBELO_TO_SOFASCORE` dict (116 entries) canonicalizes ClubElo abbreviated
+team names (ManCity, ManUtd, etc.) to Sofascore full display names at data-load time.
+
+---
+
+## Match-level data
+
+`get_player_match_logs(player_id, tournament_id, season_id)` fetches per-match
+stats via Sofascore events endpoint. Paginates up to 10 pages, excludes 0-min
+matches, returns [] if fewer than 3 valid matches. Sorted ascending by match_date.
+Cached 7 days. Used for rolling window computation when available.
 
 ---
 
@@ -183,7 +209,7 @@ If a league is on Sofascore it is in scope for TransferScope. 37+ leagues regist
 
 Architecture per group:
 ```
-Input (flattened feature vector)
+Input (group-specific feature subset)
   -> Dense(128, relu)
   -> Dropout(0.3)
   -> Dense(64, relu)
@@ -191,8 +217,18 @@ Input (flattened feature vector)
   -> [Linear output head per target]
 ```
 
-Input features: player per-90 metrics (current club) + team ability (current + target)
-+ league ability (current + target) + team-position per-90 metrics (current + target).
+Per-group feature subsets (GROUP_FEATURE_SUBSETS):
+- Shooting: 16 features (relevant player metrics + ability + relevant team-pos metrics)
+- Passing: 25 features
+- Dribbling: 7 features (minimal — dribbling is near-irreducible)
+- Defending: 13 features
+
+Total input feature dict: 43 keys (player per-90 + team/league ability + team-pos per-90).
+Each group slices internally — external API unchanged.
+
+Auto-loads trained weights from `data/models/` when available (`is_trained()` checks
+for `.keras` files + `feature_scaler.pkl`). Falls back to `paper_heuristic_predict()`
+with a warning when no trained model exists.
 
 ---
 
@@ -288,11 +324,35 @@ predicted_target  = predict(player, current_team → target_team, ra=Δ)
 
 ## Shortlist scoring
 
+K-means clustering + weighted Euclidean distance to a reference player.
+
+**Step 1 — Filter candidates** by age, minutes, position, league, Power Ranking cap.
+
+**Step 2 — Cluster by style** using sklearn KMeans (k = √(n/2), capped 3–10).
+Reference player is included in clustering to identify their cluster.
+Only when n ≥ 10 candidates; otherwise falls back to direct distance.
+
+**Step 3 — Weighted Euclidean distance:**
 ```
-normalized_target = (predicted_value - mean_across_candidates) / std_across_candidates
-weighted_score = normalized_target * user_weight        # weight 0.0-1.0 per metric
-final_score = sum(weighted_scores) / sum(weights)       # final range 0-1
+raw_weighted = predicted_per90 * user_weight_array
+standardized = StandardScaler(raw_weighted)
+distance = sqrt(sum((candidate - reference)²))
+base_score = 1.0 - normalized_distance
 ```
+
+**Step 4 — Cluster bonus:**
+```
+if same_cluster_as_reference:
+    base_score = min(1.0, base_score * 1.15)   # 15% bonus
+```
+
+**Step 5 — Per-metric breakdown:**
+```
+metric_score[m] = max(0.0, 1.0 - abs(metric_diff) / 3.0)
+```
+
+Candidate dataclass has `same_cluster_as_reference` boolean field.
+Falls back to z-score ranking without `reference_per90`.
 
 Available filters: age, market value, minutes played, position, league, club Power Ranking cap.
 
@@ -312,6 +372,13 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Multi-tournament stats fallback: when primary tournament returns 0 minutes, try all team tournaments
 - Position-aware Hot or Not verdict: offensive metrics 1.5× for forwards, defensive 1.5× for defenders; ±3% thresholds; UNKNOWN when no data
 - Position normalization to 4 categories (Forward, Midfielder, Defender, Goalkeeper) via `normalize_position()` — including Sofascore single-letter codes (F/M/D/G)
+- K-means clustering for shortlist scoring: weighted Euclidean distance + 15% same-cluster bonus vs simple z-score
+- Per-group feature subsets for TF model: shooting=16, passing=25, dribbling=7, defending=13 (not 43 for all groups)
+- 3-step team name resolution: exact → accent-normalized → fuzzy (5-priority cascade with 180+ extreme abbreviations covering Europe, MLS, Saudi, J-League)
+- `_CLUBELO_TO_SOFASCORE` mapping (116 entries): canonicalize ClubElo names at load time
+- Polynomial normalization: `change_ra / 50.0` in PlayerAdjustmentModel (mapping -50..+50 to -1..+1)
+- Player-system-reliance scaling: style_diff scaled by player quality vs team average — prevents over-penalizing below-average players
+- Diverging butterfly metric bar chart with paper Table 1 group markers (⚡ ◈ ◎ ◆)
 
 ---
 

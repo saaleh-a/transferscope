@@ -171,7 +171,7 @@ _HEADERS: dict[str, str] = {
 _REQUEST_TIMEOUT = 10  # seconds
 _MAX_RETRIES = 3  # total attempts for retryable errors
 _RETRY_BASE_DELAY = 1.0  # seconds — doubles each attempt (1, 2, 4)
-_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
 
 
 def _get(path: str) -> Optional[dict]:
@@ -195,11 +195,15 @@ def _get(path: str) -> Optional[dict]:
                 continue
             resp.raise_for_status()
             return resp.json()
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as ce:
             delay = _RETRY_BASE_DELAY * (2 ** attempt)
-            _log.info("Sofascore connection error on %s — retry in %.1fs", path, delay)
+            _log.info(
+                "Sofascore connection error on %s — retry %d/%d in %.1fs (%s)",
+                path, attempt + 1, _MAX_RETRIES, delay, ce,
+            )
             time.sleep(delay)
-        except Exception:
+        except Exception as exc:
+            _log.warning("Sofascore permanent error on %s: %s", path, exc)
             return None
     _log.warning("Sofascore request failed after %d retries: %s", _MAX_RETRIES, path)
     return None
@@ -443,6 +447,11 @@ def get_season_list(tournament_id: int) -> List[Dict[str, Any]]:
 
     raw = _get(f"/unique-tournament/{tournament_id}/seasons")
     if not isinstance(raw, dict):
+        _log.warning(
+            "get_season_list(%d): API returned %s instead of dict — not caching",
+            tournament_id,
+            type(raw).__name__,
+        )
         return []
 
     seasons = raw.get("seasons") or []
@@ -451,6 +460,14 @@ def get_season_list(tournament_id: int) -> List[Dict[str, Any]]:
         for s in seasons
         if isinstance(s, dict) and s.get("id") is not None
     ]
+
+    if not result:
+        _log.warning(
+            "get_season_list(%d): API returned 0 valid seasons (raw keys: %s) — not caching",
+            tournament_id,
+            list(raw.keys()),
+        )
+        return []
 
     cache.set(key, result)
     return result
