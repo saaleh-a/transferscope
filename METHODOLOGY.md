@@ -51,10 +51,13 @@ The system predicts 13 core metrics simultaneously. These cover the full spectru
 | `/unique-tournament/{tid}/seasons` | `get_season_list()` — available seasons for a tournament | 1 day |
 | `/team/{id}/players` | `get_team_players_stats()` — squad roster | 1 day |
 | `/team/{id}/unique-tournaments` | `_try_all_tournaments_for_player()` — multi-tournament fallback | 7 days |
+| `/player/{id}/unique-tournament/{tid}/season/{sid}/events/last/{page}` | `get_player_match_logs()` — per-match stats | 7 days |
 
 Sofascore returns **raw totals** (e.g. 15 goals in 2,000 minutes), not per-90 values. The client converts these in `_parse_stats()`.
 
 **Multi-tournament fallback:** `get_player_stats()` first tries the player's primary domestic league. If that returns 0 minutes (common for youth players or mid-season signings), it iterates through **all tournaments** the player's team participates in (cups, European competitions, secondary divisions) and uses the one with the most minutes. This prevents false "no data" results.
+
+**Match logs:** `get_player_match_logs()` fetches per-match statistics for a player in a specific tournament/season. Paginates up to 10 pages, excludes matches with 0 minutes, returns an empty list if fewer than 3 valid matches. Results sorted ascending by match date for rolling window computation.
 
 > **In plain English:** Sofascore is where we get the player numbers. When you search for "Bukayo Saka," we hit their search API, get his ID, then fetch his full stats for the season. We also pull team rosters (to populate league context), transfer histories (to train our models), and league-wide data (to build shortlists). Everything gets saved locally so we don't re-download it every time.
 
@@ -250,6 +253,23 @@ change_RA = target_relative_ability - source_relative_ability
 
 > **In plain English:** If a player moves from a team that's +2 above their league average to a team that's +13 above theirs, the change is +11. This player is moving to a much more dominant team (relative to their league). The models use this to predict how stats will shift — moving to a more dominant team typically increases attacking stats and decreases defensive workload.
 
+### 6.4 Team Name Resolution
+
+Matching team names across ClubElo, WorldFootballElo, and Sofascore is non-trivial — each source uses different naming conventions (e.g. "ManCity" vs "Manchester City" vs "Man City"). `get_team_ranking()` uses a 3-step lookup:
+
+1. **Exact match** in the rankings dictionary
+2. **Accent-normalized exact match** via `_strip_accents()` (NFKD Unicode decomposition — ü→u, é→e, etc.)
+3. **Fuzzy match** via `_fuzzy_find_team()` with a 5-priority cascade:
+   - Exact normalized match (lowercase + stripped)
+   - `_EXTREME_ABBREVS` alias lookup (138 bidirectional entries: PSG↔Paris Saint-Germain, Bayern↔Bayern Munich, BVB↔Borussia Dortmund)
+   - Substring containment (≥6 chars, ≥45% overlap ratio)
+   - Word-level matching (shared words ≥4 chars)
+   - `SequenceMatcher` ratio ≥0.65
+
+Additionally, `_CLUBELO_TO_SOFASCORE` (116 entries) canonicalizes ClubElo's abbreviated team names to Sofascore full display names at data-load time, covering the top leagues in England, France, Germany, Spain, Italy, Portugal, Netherlands, Turkey, Scotland, Belgium, and Austria.
+
+> **In plain English:** Team names are a surprisingly hard problem. "PSG" and "Paris Saint-Germain" are the same team, but a computer doesn't know that unless you tell it. We maintain a large dictionary of abbreviations (138 entries) plus a smart fuzzy-matching system that handles accents, substrings, and similar-sounding names. This means a user can type "Bayern" or "Bayern Munich" or "FC Bayern München" and they all resolve to the same team.
+
 ---
 
 ## 7. Adjustment Models (sklearn)
@@ -292,16 +312,18 @@ if team_xG drops 40%:
 
 ### 7.4 Player Adjustment — 13 Models × Position
 
-Implemented in `PlayerAdjustmentModel`. Uses 6 input features per prediction:
+Implemented in `PlayerAdjustmentModel`. Uses 6 input features per prediction, with `change_in_relative_ability` normalized by `/50.0` (mapping the -50..+50 range to -1..+1 for numerical stability):
 
 ```
+norm_ra = change_in_relative_ability / 50.0
+
 predicted_per90 = intercept
    + b1 × player_previous_per90
    + b2 × avg_position_feature_at_new_team
    + b3 × (avg_position_new_team - avg_position_old_team)
-   + b4 × change_in_relative_ability
-   + b5 × change_in_relative_ability²
-   + b6 × change_in_relative_ability³
+   + b4 × norm_ra
+   + b5 × norm_ra²
+   + b6 × norm_ra³
 ```
 
 > **In plain English:** This is more sophisticated. For each stat, it considers:
@@ -320,6 +342,32 @@ predicted_per90 = intercept
 `auto_train_from_player_history(player_ids)` collects training data from multiple players and fits both model types.
 
 > **In plain English:** The system can learn from real-world transfers. Give it a list of players who've changed clubs, and it will look at their stats before and after each move, then use that data to teach the adjustment models. The more transfers it learns from, the more accurate the adjustments become.
+
+### 7.5.1 Training Pipeline
+
+`backend/models/training_pipeline.py` provides the end-to-end training entry point. It discovers historical transfers across selected leagues, fetches before/after stats, builds training rows, and fits both sklearn adjustment models and the TensorFlow neural network.
+
+```bash
+python backend/models/training_pipeline.py [options]
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--leagues` | ENG1,ESP1,GER1,ITA1,FRA1,NED1,POR1,BEL1,ENG2,TUR1,SCO1 | Comma-separated league codes |
+| `--seasons-back` | 5 | Number of historical seasons to scan |
+| `--skip-discovery` | false | Load cached transfer records instead of re-discovering |
+| `--skip-training` | false | Skip training, run backtesting only |
+| `--val-ratio` | 0.15 | Validation split ratio |
+| `--test-ratio` | 0.10 | Test split ratio |
+| `--api-delay` | 2.0 | Delay between API calls (seconds) |
+
+Uses **temporal** (not random) train/val/test split — the most recent transfers go into the test set to simulate real-world prediction conditions.
+
+> **In plain English:** One command kicks off the entire training process. It goes league by league, finds players who transferred, fetches their stats before and after, then trains all the models. The temporal split means we test on the most recent transfers — exactly the scenario the tool will face in production.
+
+### 7.5.2 Backtester
+
+`backend/models/backtester.py` compares trained model predictions against actual post-transfer per-90 stats for a held-out test set. Reports per-metric MAE, RMSE, and directional accuracy (did the model correctly predict whether a metric would go up or down?).
 
 ### 7.6 Paper-Aligned Heuristic Fallback
 
@@ -382,8 +430,10 @@ Implemented in `backend/models/transfer_portal.py`. A 4-group multi-head neural 
 
 **Per-group architecture:**
 
+Each group receives only the features relevant to its metric type (GROUP_FEATURE_SUBSETS), not the full 43-feature vector. This reduces noise — dribbling doesn't need to see passing team-position averages.
+
 ```
-Input (43 features)
+Input (group-specific feature subset)
   → Dense layer (128 neurons, ReLU activation)
   → Dropout (30%)
   → Dense layer (64 neurons, ReLU activation)
@@ -391,27 +441,33 @@ Input (43 features)
   → Linear output head(s) (1 per target metric)
 ```
 
-| Group | Input | Hidden | Output | What it predicts |
+| Group | Input features | Hidden | Output | What it predicts |
 |---|---|---|---|---|
-| Shooting | 43 | 128 → 64 | 2 | xG, Shots |
-| Passing | 43 | 128 → 64 | 7 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area |
-| Dribbling | 43 | 128 → 64 | 1 | Take-ons |
-| Defending | 43 | 128 → 64 | 3 | Clearances, Interceptions, Possession Won |
+| Shooting | 16 | 128 → 64 | 2 | xG, Shots |
+| Passing | 25 | 128 → 64 | 7 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area |
+| Dribbling | 7 | 128 → 64 | 1 | Take-ons |
+| Defending | 13 | 128 → 64 | 3 | Clearances, Interceptions, Possession Won |
 
 > **In plain English:**
-> - **Dense layer** = a layer of artificial neurons. 128 neurons in the first layer, 64 in the second. Each neuron looks at all 43 inputs and learns to focus on certain patterns.
+> - Each specialist brain only sees the information relevant to its job — the shooting brain doesn't need to know about long pass accuracy at the target team.
+> - **Dense layer** = a layer of artificial neurons. 128 neurons in the first layer, 64 in the second. Each neuron looks at the group's inputs and learns to focus on certain patterns.
 > - **ReLU activation** = "if the answer is negative, just output zero; otherwise output the answer." This helps the network learn non-linear patterns (like "moving up 30 power ranking points affects stats differently than moving up 5").
 > - **Dropout 30%** = during training, randomly turn off 30% of neurons. This is like studying by covering up parts of your notes — it forces the model to not rely too heavily on any single piece of information and makes it better at generalizing.
 > - **Linear output** = the final prediction is just a number (the predicted per-90 value), with no cap or floor.
 
-### 8.2 Input Features (43-dimensional)
+### 8.2 Input Features (43-key feature dict, per-group slicing)
 
-`build_feature_dict()` assembles the input vector from components:
+`build_feature_dict()` assembles a 43-key dictionary from components. Each model group then slices only its relevant features internally via GROUP_FEATURE_SUBSETS.
 
 ```
+Full feature dict (43 keys):
 [ player per-90 (13) | team_ability_current | team_ability_target |
   league_ability_current | league_ability_target |
   team_pos_current per-90 (13) | team_pos_target per-90 (13) ]
+
+Group slicing examples:
+  Shooting (16): player xG/shots + all 4 ability scores + target-pos xG/shots + ...
+  Dribbling (7):  player dribbles + all 4 ability scores + source/target-pos dribbles
 ```
 
 | Block | Count | Description |
@@ -443,7 +499,9 @@ Input (43 features)
 
 ### 8.4 Prediction
 
-`TransferPortalModel.predict(feature_dict)` runs the 43-feature input through all 4 groups and returns a dictionary of 13 predicted per-90 values.
+`TransferPortalModel.predict(feature_dict)` runs the feature dict through all 4 groups (each slicing its relevant subset) and returns a dictionary of 13 predicted per-90 values.
+
+**Auto-loading:** `predict()` auto-loads trained weights from `data/models/` when available. `is_trained()` checks for both `.keras` model files and `feature_scaler.pkl`. When no trained model exists, falls back to `paper_heuristic_predict()` with a warning log.
 
 ---
 
@@ -459,31 +517,34 @@ Implemented in `backend/models/shortlist_scorer.py` → `score_candidates()`:
 
 **Step 1 — Filter candidates.** Apply user constraints: max age, min minutes, position, league, club Power Ranking cap.
 
-**Step 2 — Normalize across candidates.**
+**Step 2 — Cluster candidates by playing style** using sklearn KMeans (k = √(n/2), capped 3–10). The reference player is included in clustering to determine their cluster. Only used when n ≥ 10 candidates; otherwise falls back to direct distance.
+
+> **In plain English:** Before ranking, the system groups all candidates into clusters of players with similar playing styles. A high-xG target striker and a creative playmaker will end up in different clusters. This helps find players who aren't just statistically close but who play a similar *type* of game.
+
+**Step 3 — Compute weighted Euclidean distance to reference player.**
 ```python
-for each active metric:
-    mean = mean(predicted_per90 across all candidates)
-    std  = std(predicted_per90 across all candidates)
-    normalized = (candidate_value - mean) / std
+raw_weighted = predicted_per90 * user_weight_array
+standardized = StandardScaler(raw_weighted)
+distance = sqrt(sum((candidate - reference)²))
+base_score = 1.0 - normalized_distance   # inverted: closer = higher
 ```
 
-> **In plain English:** If the average xG across all candidates is 0.3 and the standard deviation is 0.1, a player with 0.5 xG gets a normalized score of +2.0 (excellent), while one with 0.2 gets -1.0 (below average). This puts all metrics on the same scale so we can compare apples to apples.
+> **In plain English:** Each candidate is compared to the reference player across all the weighted metrics, and the comparison is done on a standardized scale so that no single metric dominates just because its numbers are bigger.
 
-**Step 3 — Apply user weights.**
+**Step 4 — Apply cluster bonus.**
 ```python
-weighted_score = normalized_value × user_weight    # weight is 0.0 to 1.0
+if same_cluster_as_reference:
+    base_score = min(1.0, base_score * 1.15)   # 15% bonus
 ```
 
-The user sets weights for each metric. "I care a lot about xG (weight 1.0) and less about clearances (weight 0.2)."
+> **In plain English:** Candidates who play in the same style cluster as the reference player get a 15% score boost. This favours players who are not just numerically similar but stylistically similar.
 
-**Step 4 — Compute final score.**
+**Step 5 — Per-metric breakdown.**
 ```python
-final_score = sum(weighted_scores) / sum(weights)
+metric_score[m] = max(0.0, 1.0 - abs(metric_diff) / 3.0)
 ```
 
-> **In plain English:** Each candidate gets a score that reflects: "How good are they at the things the scout cares about?" A player who's exceptional at the high-weighted metrics and mediocre at the low-weighted ones will score higher than a player who's average at everything.
-
-**Step 5 — Sort descending.** Best match first.
+**Step 6 — Sort descending.** Best match first. Candidate dataclass includes `same_cluster_as_reference` boolean.
 
 ### 9.3 Percentage Changes
 
@@ -555,22 +616,25 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
 
 ### 11.1 Unit Tests
 
-97 tests across 8 test files, all using `unittest` with `mock.patch` for external API calls:
+188 tests across 11 test files, all using `unittest` with `mock.patch` for external API calls:
 
 | Test File | What It Tests | Count |
 |---|---|---|
-| `test_sofascore_client.py` | Player search, stats parsing, per-90 computation, caching, tournament discovery | 21 |
+| `test_sofascore_client.py` | Player search, stats parsing, per-90 computation, caching, tournament discovery, match logs | 22 |
 | `test_new_features.py` | Team search, transfer history, league stats, seasons, season-specific stats | 16 |
 | `test_adjustment_training.py` | Training data builder, auto-training, team-position scaling | 4 |
 | `test_cache.py` | Cache set/get, TTL expiry, namespace clearing | 8 |
-| `test_clubelo_client.py` | European Elo fetching, caching, league listing | 7 |
+| `test_clubelo_client.py` | European Elo fetching, caching, league listing | 11 |
 | `test_elo_router.py` | Source routing, normalization, coverage detection | 10 |
-| `test_improvements.py` | Historical rankings, league comparison, fuzzy matching | 13 |
-| `test_worldelo_client.py` | Non-European Elo fetching, HTML parsing, caching | 8 |
+| `test_improvements.py` | Historical rankings, league comparison, fuzzy matching | 18 |
+| `test_worldelo_client.py` | Non-European Elo fetching, HTML parsing, caching | 9 |
+| `test_fuzzy_matching.py` | Extreme abbreviations, accent normalization, substring/word matching, ClubElo canonicalization | 64 |
+| `test_training_pipeline.py` | First-1000-min targets, non-transfer samples, league means, per-group features, change_ra normalization | 23 |
+| `test_backtester.py` | Backtester predictions vs actuals, hold-out evaluation | 3 |
 
 All tests use mocked HTTP responses — no network access required. Temporary cache directories are created per test module and cleaned up in `tearDownModule()`.
 
-> **In plain English:** We have 97 automated checks that verify the system works correctly. They use fake data (so they don't need the internet), and they cover everything from "does the search work?" to "is the per-90 math right?" to "does the cache actually cache things?" If anyone changes the code and breaks something, these tests catch it immediately.
+> **In plain English:** We have 188 automated checks that verify the system works correctly. They use fake data (so they don't need the internet), and they cover everything from "does the search work?" to "is the per-90 math right?" to "does the cache actually cache things?" to "does fuzzy team name matching handle accents and abbreviations?" If anyone changes the code and breaks something, these tests catch it immediately.
 
 ### 11.2 Run Tests
 
