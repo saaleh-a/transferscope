@@ -151,7 +151,9 @@ A Streamlit application with three pages, styled with a custom "Tactical Noir" d
 
 **Shortlist Generator.** The user selects a player to replace and assigns weights to each metric. The system scans players across selected leagues (defaulting to 11 major leagues for speed, expandable to all 37+), scores them by weighted similarity, and returns a ranked table with filters for age, position, league, minutes played, and club Power Ranking cap.
 
-**Hot or Not.** A rapid rumour validator. Enter a player and a target club; receive an instant HOT / TEPID / NOT verdict with the top 3 predicted metric changes, a summary of improving vs declining metrics, and the player's transfer history.
+**Hot or Not.** A rapid rumour validator. Enter a player and a target club; receive an instant HOT / TEPID / NOT verdict with the top 3 predicted metric changes, a summary of improving vs declining metrics, the player's transfer history, and Power Ranking context. The verdict uses position-aware weighting: offensive metrics count 1.5× for forwards, defensive metrics count 1.5× for defenders. Thresholds are ±3% average predicted change.
+
+> **In plain English:** You read a rumour — "Osimhen to Arsenal." You type it in, press a button, and get a big verdict: HOT (good move), TEPID (meh), or NOT (bad move). The verdict is smarter for different positions — for a striker, goals and assists matter more than defensive stats. It shows you the top 3 stats that would change, a summary of what improves vs. declines, and the player's entire transfer history. If the data isn't available (e.g. the player hasn't played enough), you'll see UNKNOWN instead of a misleading verdict.
 
 ---
 
@@ -209,6 +211,21 @@ Predictions use three per-metric coefficient tables — `_TEAM_INFLUENCE` (how t
 
 > **In plain English:** The model doesn't just say "harder league = everything gets worse." It says "harder league AND this specific team's style = some things get better, others get worse." A creative passer joining Barcelona might see their passing numbers *increase* despite moving to a harder league, because Barcelona's system creates more passing opportunities. Meanwhile, their defensive stats might drop because Barcelona dominates possession and players defend less.
 
+### 4.9 Multi-Tournament Stats Aggregation
+When a player's primary domestic league tournament returns 0 minutes (common for young players rotating between league and cup competitions), the system automatically tries **all tournaments** the player's team participates in and uses the one where the player has the most data. This prevents false "no stats available" results for players like youth prospects who may have significant cup or European competition minutes.
+
+> **In plain English:** If a young player hasn't played in the league but has played 1,300 minutes in cup competitions, the system will automatically find and use that data instead of showing "0 minutes."
+
+### 4.10 Opposition Quality Modelling
+The heuristic prediction explicitly models **opposition quality** as a separate force from team quality. Moving to a weaker league means facing weaker defenders and goalkeepers, which boosts per-90 offensive output even if the team itself is weaker. This is implemented via per-metric `_OPP_QUALITY_SENS` coefficients (e.g. xG sensitivity 1.30 — weaker opposition significantly boosts expected goals). This faithfully recreates the paper's observation (Section 4.3.1) that Doku's xG increases at Gwangju (weak team, much weaker league) because opposition quality dominates.
+
+> **In plain English:** The model knows that playing against weaker defenders means more goals, even if the team creates fewer chances. A player in the K-League faces much easier opposition than in La Liga, so their xG goes up despite being at a worse team. This is a separate effect from "how good is the team" and is modelled independently.
+
+### 4.11 Asymmetric Prediction Calibration
+Extreme transfers (elite player to relegation team, or lower-league player to top club) use asymmetric damping: **downgrades allow larger predicted drops** while upgrades are more conservative (talent ceiling effect). Elite player protection is also asymmetric — a high-rated player retains more output when moving to a better team but is less protected when moving to a much weaker team, because even the best players suffer in poor systems.
+
+> **In plain English:** Mbappé moving from Real Madrid to a relegation team would see massive stat drops — the model doesn't protect him just because he's elite. But the same player moving from a good team to a *slightly* better one wouldn't see unrealistically huge improvements. The model is calibrated to be realistic in both directions.
+
 ---
 
 ## 5. Technical Stack
@@ -236,6 +253,8 @@ Predictions use three per-metric coefficient tables — `_TEAM_INFLUENCE` (how t
 - **Adjustment model training data.** Auto-training uses the most recent transfer only. All historical transfers with season-specific stats would produce more robust models.
 - **No market value data.** Sofascore doesn't provide transfer fees, limiting financial filtering.
 - **Single-season neural network.** The TensorFlow model initializes with random weights. Training on historical transfers would significantly improve predictions.
+- **Single-tournament season selector.** The season dropdown only shows seasons from the player's primary tournament. Multi-tournament aggregation is used when the primary returns 0 minutes, but the season selector doesn't yet expose all tournaments.
+- **No historical data in predictions.** The current system uses single-season snapshot stats. Multi-season trend analysis (is the player improving or declining?) is not yet incorporated into the prediction model.
 
 > **In plain English:**
 > - We're currently using season averages instead of game-by-game data (which would be more accurate but harder to get).

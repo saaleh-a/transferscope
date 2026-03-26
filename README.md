@@ -32,7 +32,7 @@ Select a player to replace and weight the metrics that matter. TransferScope sca
 
 ### Hot or Not
 
-Paste a transfer rumour. Get an instant HOT / TEPID / NOT verdict backed by predicted metric changes, power ranking context, and the player's transfer history.
+Paste a transfer rumour. Get an instant HOT / TEPID / NOT verdict backed by predicted metric changes, power ranking context, and the player's transfer history. The verdict uses position-aware weighting (offensive metrics matter more for forwards, defensive for defenders) and opposition quality modelling (weaker league = easier opponents). Shows UNKNOWN when insufficient data is available.
 
 > **In plain English:** You read a rumour — "Osimhen to Arsenal." You type it in, press a button, and get a big verdict: HOT (good move), TEPID (meh), or NOT (bad move). It shows you the top 3 stats that would change, a summary of what improves vs. declines, and the player's entire transfer history.
 
@@ -237,7 +237,10 @@ Any league available on Sofascore can be added by extending the league registry.
 | ClubElo + WorldFootballElo | Dynamic, global, faithful to the paper | Two data sources cover the whole world |
 | Dynamic league Elo from team mean | Updates automatically, no manual maintenance | League quality is calculated fresh every day, not hard-coded |
 | Dual simulation | Predict at both current and target clubs, compare model-vs-model (paper Section 4) | Both predictions use the same model, reducing noise |
-| Per-metric style weights | `_TEAM_INFLUENCE`, `_ABILITY_SENSITIVITY`, `_LEAGUE_STYLE_COEFF` keyed per-metric | Different stats respond differently to team/league changes |
+| Per-metric style weights | `_TEAM_INFLUENCE`, `_ABILITY_SENSITIVITY`, `_OPP_QUALITY_SENS`, `_LEAGUE_STYLE_COEFF` keyed per-metric | Different stats respond differently to team/league/opposition changes |
+| Asymmetric calibration | Less damping for downgrades, more for upgrades; elite protection halved for downgrades | Extreme transfers produce realistically large changes |
+| Multi-tournament fallback | When primary tournament returns 0 minutes, try all team tournaments | Fixes data loading for players in cups/European competitions |
+| Position-aware verdict | Hot or Not weights offensive metrics 1.5× for forwards, defensive for defenders | More accurate verdicts for different player types |
 | Streamlit | Fast to build; sufficient for a personal tool | Web app framework that gets us a UI without a separate frontend team |
 | diskcache | Local tool, SQLite is enough | Simple on-disk cache, no need for a database server |
 | All stats per-90 | Consistent, comparable, position-agnostic | Fair comparisons regardless of minutes played |
