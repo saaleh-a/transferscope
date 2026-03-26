@@ -242,22 +242,32 @@ target = intercept
 When no trained TF model weights exist, this function produces predictions
 using the paper's structure (Appendix A.3) with calibrated default coefficients.
 
-For each metric, two forces compete:
+For each metric, three forces compete:
 1. **Style shift** — `team_influence * (target_pos_avg - source_pos_avg)`.
    How much does the target team's tactical system differ from the source?
-   Per-metric `_TEAM_INFLUENCE` weights (0.15 for dribbles → 0.50 for passing).
+   Per-metric `_TEAM_INFLUENCE` weights (0.15 for dribbles → 0.55 for passing).
    When real team-position data is unavailable, per-metric `_LEAGUE_STYLE_COEFF`
    values estimate style from the league quality gap so metrics produce
    **different** percentage changes (not flat).
-2. **Ability factor** — polynomial in `change_relative_ability / 100`:
-   `1 + sensitivity*ra − 0.15*sensitivity*ra² + 0.02*sensitivity*ra³`.
+2. **Team quality factor** — decomposed into team_gap and league_gap:
+   `team_effect = sensitivity * team_gap * (1 - damping * |team_gap|)`
+   Asymmetric damping: `_DAMPING_FACTOR_DOWN=0.05` (downgrades) vs
+   `_DAMPING_FACTOR_UP=0.10` (upgrades). Extreme downgrades produce larger drops.
    Per-metric `_ABILITY_SENSITIVITY` (offensive positive, defensive negative).
+3. **Opposition quality** — `opp_effect = _OPP_QUALITY_SENS[m] * league_gap`.
+   Moving to a weaker league means facing weaker opposition, boosting per-90
+   offensive output even if the team is weaker. Per-metric `_OPP_QUALITY_SENS`
+   (xG=1.30, dribbles=0.12, clearances=-0.55).
+
+Elite player quality_scale is asymmetric: halved protection for downgrades
+(even the best players suffer in poor systems).
 
 This means a player moving to a bigger team **can improve or decline**
 per-metric depending on whether the target team's style fits them:
 - Moving to a high-crossing team → crosses and xA may rise even if league is harder
 - Moving to a possession team → passing metrics rise, dribbling stays stable
 - Moving to a defensive team → clearances/interceptions may rise, attacking may fall
+- Moving to a much weaker team → realistically large drops (not protected by elite status)
 
 **Dual simulation (paper Section 4):**
 
@@ -297,7 +307,10 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - diskcache not Redis: local tool, SQLite is enough
 - All stats stored and displayed as per-90 — never raw totals in UI
 - Dual simulation for Transfer Impact: predict at both current and target clubs, compare model vs model (paper Section 4)
-- Per-metric style differentiation: `_TEAM_INFLUENCE`, `_ABILITY_SENSITIVITY`, `_LEAGUE_STYLE_COEFF` all keyed per-metric, not flat group multipliers
+- Per-metric style differentiation: `_TEAM_INFLUENCE`, `_ABILITY_SENSITIVITY`, `_OPP_QUALITY_SENS`, `_LEAGUE_STYLE_COEFF` all keyed per-metric, not flat group multipliers
+- Asymmetric prediction calibration: `_DAMPING_FACTOR_DOWN=0.05`, `_DAMPING_FACTOR_UP=0.10`; elite quality_scale halved for downgrades
+- Multi-tournament stats fallback: when primary tournament returns 0 minutes, try all team tournaments
+- Position-aware Hot or Not verdict: offensive metrics 1.5× for forwards, defensive 1.5× for defenders; ±3% thresholds; UNKNOWN when no data
 - Position normalization to 4 categories (Forward, Midfielder, Defender, Goalkeeper) via `normalize_position()` — including Sofascore single-letter codes (F/M/D/G)
 
 ---

@@ -12,7 +12,7 @@ from typing import Dict, Optional
 import streamlit as st
 
 from backend.data import sofascore_client
-from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
+from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS, normalize_position
 from backend.features import power_rankings, rolling_windows
 from backend.features.adjustment_models import paper_heuristic_predict
 from backend.models.shortlist_scorer import compute_percentage_changes
@@ -41,11 +41,23 @@ _LABELS: Dict[str, str] = {
 }
 
 
-def _verdict(avg_change: float) -> tuple:
-    """Return (verdict, color, emoji) based on average % change."""
-    if avg_change > 5:
+def _verdict(avg_change: float, has_data: bool = True) -> tuple:
+    """Return (verdict, color, emoji) based on average % change.
+
+    Thresholds calibrated to the paper's case studies:
+    - HOT  (> +3%): Metrics predicted to meaningfully improve on average.
+    - TEPID (-3% to +3%): Roughly neutral transfer — marginal impact.
+    - NOT  (< -3%): Metrics predicted to meaningfully decline on average.
+
+    Previous thresholds were ±5% which was too strict — most realistic
+    transfers produce average changes of 5-15%, so a ±5% dead zone
+    made almost everything TEPID.
+    """
+    if not has_data:
+        return "UNKNOWN", "#888888", "question"
+    if avg_change > 3:
         return "HOT", "#2DD4A8", "fire"
-    elif avg_change > -5:
+    elif avg_change > -3:
         return "TEPID", "#E3A507", "thinking_face"
     else:
         return "NOT", "#F45B69", "x"
@@ -154,7 +166,7 @@ def render():
     player_info_card(player_name, current_team, position, minutes,
                      rating=player_stats.get("rating"))
 
-    # Power Rankings
+    # Power Rankings — with user-visible warnings when resolution fails
     source_ranking = power_rankings.get_team_ranking(current_team)
     target_ranking = power_rankings.get_team_ranking(target_club)
 
@@ -162,6 +174,17 @@ def render():
     source_league = source_ranking.league_mean_normalized if source_ranking else 50.0
     target_norm = target_ranking.normalized_score if target_ranking else 50.0
     target_league = target_ranking.league_mean_normalized if target_ranking else 50.0
+
+    if source_ranking is None or target_ranking is None:
+        missing = []
+        if source_ranking is None:
+            missing.append(current_team)
+        if target_ranking is None:
+            missing.append(target_club)
+        st.warning(
+            f"⚠️ Could not find Power Ranking for: {', '.join(missing)}. "
+            "Using default (50.0) — predictions may underestimate the real impact."
+        )
 
     change_ra = (target_norm - target_league) - (source_norm - source_league)
 
@@ -227,14 +250,52 @@ def render():
     pct_changes = compute_percentage_changes(current_per90_clean, predicted)
 
     # ── Verdict ──────────────────────────────────────────────────────────
-    valid_changes = [v for v in pct_changes.values() if v != 0]
-    avg_change = sum(valid_changes) / len(valid_changes) if valid_changes else 0
-    verdict, color, emoji = _verdict(avg_change)
+    # Check if we actually have real player data
+    has_real_data = any(current_per90.get(m) is not None for m in CORE_METRICS)
+
+    # Position-aware weighting: for forwards/midfielders, offensive metrics
+    # matter more; for defenders, defensive metrics matter more. This
+    # prevents a forward being rated TEPID just because their defensive
+    # metrics are stable while attacking metrics are improving.
+    norm_pos = normalize_position(position)
+
+    def _metric_weight(metric: str) -> float:
+        """Return position-aware weight for a metric."""
+        if norm_pos == "Forward" and metric in OFFENSIVE_METRICS:
+            return 1.5
+        if norm_pos == "Forward" and metric in DEFENSIVE_METRICS:
+            return 0.5
+        if norm_pos == "Defender" and metric in DEFENSIVE_METRICS:
+            return 1.5
+        if norm_pos == "Defender" and metric in OFFENSIVE_METRICS:
+            return 0.5
+        return 1.0
+
+    weighted_changes: list = []
+    weight_sum = 0.0
+    for m, change in pct_changes.items():
+        if change == 0:
+            continue
+        w = _metric_weight(m)
+        weighted_changes.append(change * w)
+        weight_sum += w
+
+    avg_change = sum(weighted_changes) / weight_sum if weight_sum > 0 else 0
+
+    verdict, color, emoji = _verdict(avg_change, has_data=has_real_data)
 
     st.markdown("---")
 
     # Big verdict display
     verdict_display(verdict, player_name, current_team, target_club)
+
+    if not has_real_data:
+        st.error(
+            "⚠️ No per-90 stats available for this player/season. "
+            "Stats may not have loaded from Sofascore — try a different season "
+            "or check that the player has played enough minutes."
+        )
+        return
 
     # Confidence badge
     confidence_badge(features.confidence, features.weight, minutes)

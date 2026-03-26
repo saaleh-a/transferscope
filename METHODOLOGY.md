@@ -50,8 +50,11 @@ The system predicts 13 core metrics simultaneously. These cover the full spectru
 | `/unique-tournament/{tid}/season/{sid}/statistics` | `get_league_player_stats()` — bulk league-wide player stats | 1 day |
 | `/unique-tournament/{tid}/seasons` | `get_season_list()` — available seasons for a tournament | 1 day |
 | `/team/{id}/players` | `get_team_players_stats()` — squad roster | 1 day |
+| `/team/{id}/unique-tournaments` | `_try_all_tournaments_for_player()` — multi-tournament fallback | 7 days |
 
 Sofascore returns **raw totals** (e.g. 15 goals in 2,000 minutes), not per-90 values. The client converts these in `_parse_stats()`.
+
+**Multi-tournament fallback:** `get_player_stats()` first tries the player's primary domestic league. If that returns 0 minutes (common for youth players or mid-season signings), it iterates through **all tournaments** the player's team participates in (cups, European competitions, secondary divisions) and uses the one with the most minutes. This prevents false "no data" results.
 
 > **In plain English:** Sofascore is where we get the player numbers. When you search for "Bukayo Saka," we hit their search API, get his ID, then fetch his full stats for the season. We also pull team rosters (to populate league context), transfer histories (to train our models), and league-wide data (to build shortlists). Everything gets saved locally so we don't re-download it every time.
 
@@ -320,9 +323,9 @@ predicted_per90 = intercept
 
 ### 7.6 Paper-Aligned Heuristic Fallback
 
-When no trained TF model weights exist, `paper_heuristic_predict()` produces predictions using the paper's structure (Appendix A.3) with calibrated default coefficients. For each metric, two forces compete:
+When no trained TF model weights exist, `paper_heuristic_predict()` produces predictions using the paper's structure (Appendix A.3) with calibrated default coefficients. For each metric, three forces compete:
 
-**1. Style shift** — weighted by per-metric `_TEAM_INFLUENCE` (0.15 for dribbles → 0.50 for passing):
+**1. Style shift** — weighted by per-metric `_TEAM_INFLUENCE` (0.15 for dribbles → 0.55 for passing):
 ```python
 style_diff = target_pos_avg[metric] - source_pos_avg[metric]
 base = player_val + team_influence * style_diff
@@ -330,14 +333,26 @@ base = player_val + team_influence * style_diff
 
 When real team-position data is unavailable (both position averages equal), per-metric `_LEAGUE_STYLE_COEFF` values estimate style from the league quality gap. This ensures that **different metrics produce different percentage changes** — not a flat decline or increase:
 ```python
-# Each metric has a unique coefficient (e.g. xA=0.18, shots=0.08, dribbles=0.02)
+# Each metric has a unique coefficient (e.g. xA=0.40, shots=0.20, dribbles=0.04)
 estimated_style_diff = source_avg * league_style_coeff * ra
 ```
 
-**2. Ability factor** — polynomial (linear + quadratic + cubic) in `change_relative_ability / 100`, with per-metric `_ABILITY_SENSITIVITY`:
+**2. Ability factor** — polynomial in `change_relative_ability / 100`, decomposed into two orthogonal forces:
 ```python
-ability_factor = 1 + sensitivity*ra − 0.15*sensitivity*ra² + 0.02*sensitivity*ra³
+# Team quality: how dominant is the new team within their league?
+team_gap = ra - league_gap
+team_effect = sensitivity * team_gap * (1 - damping * |team_gap|)
+
+# Opposition quality: how strong is the new league's opposition?
+league_gap = (source_league_mean - target_league_mean) / 100
+opp_effect = opp_quality_sensitivity * league_gap
 ```
+
+The damping factor is **asymmetric**: less damping for downgrades (large drops are realistic — Mbappé at Ipswich, de Jong at Man Utd) and more damping for upgrades (talent ceiling effect). This ensures extreme transfers produce realistically large predicted changes.
+
+**3. Opposition quality** — per-metric `_OPP_QUALITY_SENS` coefficients model how facing weaker/stronger opponents affects per-90 output, independent of team quality. Moving to a weaker league boosts offensive output (xG sensitivity: 1.30) even if the team itself is weaker. Dribbling is barely affected (sensitivity: 0.12). This faithfully recreates the paper's Section 4.3.1 observation: Doku's xG increases at Gwangju because opposition quality dominates despite the team being worse.
+
+**Elite player protection (asymmetric):** A player's Sofascore match rating (0-10 scale) modulates team influence. Elite players (7.5+) retain more individual output when moving UP (reduced team-dependence), but this protection is halved when moving DOWN — even the best players suffer in poor systems.
 
 **The key paper insight:** A player at a worse team can do **better or worse** at a bigger team depending on style fit:
 - Moving to a high-crossing team → crosses and xA may **rise** even in a harder league
@@ -345,7 +360,7 @@ ability_factor = 1 + sensitivity*ra − 0.15*sensitivity*ra² + 0.02*sensitivity
 - Moving to a counter-attacking team → take-ons **retained**, passing may **drop**
 - Defensive metrics at dominant teams → **drop** (less defending needed)
 
-> **In plain English:** The model doesn't just say "harder league = everything gets worse." It accounts for tactical fit. A creative winger joining Barcelona might see passing stats *increase* despite moving to a harder league, because Barcelona's system demands more passing. Meanwhile their defensive stats drop because Barcelona dominates the ball. And their dribbling stays roughly the same because that's an individual skill. Each of the 13 stats responds differently.
+> **In plain English:** The model considers three separate things: (1) how the new team's style differs from the old one, (2) how much stronger or weaker the team is compared to their league, and (3) how strong the league's opponents are overall. A winger moving from Real Madrid to Ipswich Town would see massive drops in attacking output because: the team creates far fewer chances (team quality effect), the style is completely different (style shift), but the league is similar quality so opposition doesn't help. Each of the 13 stats responds differently to these three forces.
 
 ---
 
