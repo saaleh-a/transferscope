@@ -44,11 +44,11 @@ _LABELS: Dict[str, str] = {
 def _verdict(avg_change: float) -> tuple:
     """Return (verdict, color, emoji) based on average % change."""
     if avg_change > 5:
-        return "HOT", "#2ecc71", "fire"
+        return "HOT", "#2DD4A8", "fire"
     elif avg_change > -5:
-        return "TEPID", "#f39c12", "thinking_face"
+        return "TEPID", "#E3A507", "thinking_face"
     else:
-        return "NOT", "#e74c3c", "x"
+        return "NOT", "#F45B69", "x"
 
 
 def render():
