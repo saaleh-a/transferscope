@@ -13,13 +13,17 @@ Architecture per group:
 
 from __future__ import annotations
 
+import logging
 import os
+from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import tensorflow as tf
 
 from backend.data.sofascore_client import CORE_METRICS
+
+_log = logging.getLogger(__name__)
 
 # ── Target group definitions ─────────────────────────────────────────────────
 
@@ -36,6 +40,82 @@ MODEL_GROUPS: Dict[str, List[str]] = {
     ],
     "dribbling": ["successful_dribbles"],
     "defending": ["clearances", "interceptions", "possession_won_final_3rd"],
+}
+
+# ── Per-group feature subsets (Improvement 6) ────────────────────────────────
+# Each group uses only the features most relevant to its target metrics.
+# The external interface does NOT change — slicing is internal.
+
+GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
+    "shooting": [
+        "player_expected_goals",
+        "player_shots",
+        "player_touches_in_opposition_box",
+        "player_chances_created",
+        "team_ability_current",
+        "team_ability_target",
+        "league_ability_current",
+        "league_ability_target",
+        "team_pos_current_expected_goals",
+        "team_pos_current_shots",
+        "team_pos_current_touches_in_opposition_box",
+        "team_pos_current_chances_created",
+        "team_pos_target_expected_goals",
+        "team_pos_target_shots",
+        "team_pos_target_touches_in_opposition_box",
+        "team_pos_target_chances_created",
+    ],
+    "passing": [
+        "player_expected_assists",
+        "player_successful_crosses",
+        "player_successful_passes",
+        "player_pass_completion_pct",
+        "player_accurate_long_balls",
+        "player_chances_created",
+        "player_touches_in_opposition_box",
+        "team_ability_current",
+        "team_ability_target",
+        "league_ability_current",
+        "league_ability_target",
+        "team_pos_current_expected_assists",
+        "team_pos_current_successful_crosses",
+        "team_pos_current_successful_passes",
+        "team_pos_current_pass_completion_pct",
+        "team_pos_current_accurate_long_balls",
+        "team_pos_current_chances_created",
+        "team_pos_current_touches_in_opposition_box",
+        "team_pos_target_expected_assists",
+        "team_pos_target_successful_crosses",
+        "team_pos_target_successful_passes",
+        "team_pos_target_pass_completion_pct",
+        "team_pos_target_accurate_long_balls",
+        "team_pos_target_chances_created",
+        "team_pos_target_touches_in_opposition_box",
+    ],
+    "dribbling": [
+        "player_successful_dribbles",
+        "team_ability_current",
+        "team_ability_target",
+        "league_ability_current",
+        "league_ability_target",
+        "team_pos_current_successful_dribbles",
+        "team_pos_target_successful_dribbles",
+    ],
+    "defending": [
+        "player_clearances",
+        "player_interceptions",
+        "player_possession_won_final_3rd",
+        "team_ability_current",
+        "team_ability_target",
+        "league_ability_current",
+        "league_ability_target",
+        "team_pos_current_clearances",
+        "team_pos_current_interceptions",
+        "team_pos_current_possession_won_final_3rd",
+        "team_pos_target_clearances",
+        "team_pos_target_interceptions",
+        "team_pos_target_possession_won_final_3rd",
+    ],
 }
 
 _MODELS_DIR = os.path.join(
@@ -76,13 +156,15 @@ class TransferPortalModel:
         self.input_dim = input_dim
         self.models: Dict[str, tf.keras.Model] = {}
         self.fitted = False
+        self._scaler: Any = None  # StandardScaler, loaded from data/models/ if trained
 
     def build(self, input_dim: int) -> None:
-        """Build all 4 group models."""
+        """Build all 4 group models with per-group feature dimensions."""
         self.input_dim = input_dim
         for group_name, targets in MODEL_GROUPS.items():
+            group_dim = len(GROUP_FEATURE_SUBSETS[group_name])
             self.models[group_name] = _build_group_model(
-                input_dim, len(targets), group_name
+                group_dim, len(targets), group_name
             )
         self.fitted = False
 
@@ -100,6 +182,14 @@ class TransferPortalModel:
         Total: 43 features
         """
         keys = _feature_keys()
+        vec = [feature_dict.get(k, 0.0) for k in keys]
+        return np.array(vec, dtype=np.float32)
+
+    def _prepare_group_features(
+        self, feature_dict: Dict[str, float], group_name: str,
+    ) -> np.ndarray:
+        """Extract only the feature subset relevant to a given group."""
+        keys = GROUP_FEATURE_SUBSETS[group_name]
         vec = [feature_dict.get(k, 0.0) for k in keys]
         return np.array(vec, dtype=np.float32)
 
@@ -125,21 +215,26 @@ class TransferPortalModel:
         -------
         dict of training history per group.
         """
-        X_arr = np.array([self._prepare_features(fd) for fd in X], dtype=np.float32)
+        # Store full feature array for compatibility
+        X_arr_full = np.array([self._prepare_features(fd) for fd in X], dtype=np.float32)
 
         if self.input_dim is None:
-            self.build(X_arr.shape[1])
+            self.build(X_arr_full.shape[1])
         elif not self.models:
             self.build(self.input_dim)
 
         histories = {}
         for group_name, targets in MODEL_GROUPS.items():
+            X_group = np.array(
+                [self._prepare_group_features(fd, group_name) for fd in X],
+                dtype=np.float32,
+            )
             y_group = np.column_stack([
                 np.array(y.get(t, [0.0] * len(X)), dtype=np.float32)
                 for t in targets
             ])
             hist = self.models[group_name].fit(
-                X_arr, y_group,
+                X_group, y_group,
                 epochs=epochs,
                 batch_size=batch_size,
                 validation_split=validation_split,
@@ -150,21 +245,58 @@ class TransferPortalModel:
         self.fitted = True
         return histories
 
+    def is_trained(self) -> bool:
+        """Return True if saved TF weights and feature scaler both exist."""
+        model_dir = os.path.join(_MODELS_DIR, "transfer_portal")
+        scaler_path = os.path.join(_MODELS_DIR, "feature_scaler.pkl")
+        if not os.path.exists(scaler_path):
+            return False
+        if not os.path.isdir(model_dir):
+            return False
+        # Check at least one .keras file exists
+        for group_name in MODEL_GROUPS:
+            if os.path.exists(os.path.join(model_dir, f"{group_name}.keras")):
+                return True
+        return False
+
     def predict(self, feature_dict: Dict[str, float]) -> Dict[str, float]:
         """Predict per-90 metrics for a single transfer scenario.
 
         Returns dict mapping metric name -> predicted per-90 value.
-        """
-        if not self.models:
-            raise RuntimeError("Model not built. Call build() or fit() first.")
 
-        X = self._prepare_features(feature_dict).reshape(1, -1)
+        If trained weights and a feature scaler exist in data/models/,
+        loads them and runs the neural network.  Otherwise falls back
+        to paper_heuristic_predict() with a logged warning.
+        """
+        # Try to use trained weights if available and model not already loaded
+        if not self.models:
+            if self.is_trained():
+                try:
+                    self._load_trained()
+                except Exception as exc:
+                    _log.warning("Failed to load trained model: %s", exc)
+
+            if not self.models:
+                _log.warning("No trained model found, using heuristic fallback")
+                return self._heuristic_fallback(feature_dict)
+
+        # Build full feature vector and optionally scale it
+        full_X = self._prepare_features(feature_dict).reshape(1, -1)
+        if self._scaler is not None:
+            full_X = self._scaler.transform(full_X)
+
+        # Pre-compute column indices for each group's feature subset
+        all_keys = _feature_keys()
+        key_to_idx = {k: i for i, k in enumerate(all_keys)}
+
         result = {}
 
         for group_name, targets in MODEL_GROUPS.items():
             if group_name not in self.models:
                 continue
-            preds = self.models[group_name].predict(X, verbose=0)
+            group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
+            X_group = full_X[:, group_indices]
+            preds = self.models[group_name].predict(X_group, verbose=0)
             preds = preds.flatten()
             for i, target in enumerate(targets):
                 if i < len(preds):
@@ -172,22 +304,63 @@ class TransferPortalModel:
 
         return result
 
+    def _load_trained(self) -> None:
+        """Load trained weights and scaler from data/models/."""
+        import joblib
+
+        model_dir = os.path.join(_MODELS_DIR, "transfer_portal")
+        self.load(model_dir)
+
+        scaler_path = os.path.join(_MODELS_DIR, "feature_scaler.pkl")
+        if os.path.exists(scaler_path):
+            self._scaler = joblib.load(scaler_path)
+
+    @staticmethod
+    def _heuristic_fallback(feature_dict: Dict[str, float]) -> Dict[str, float]:
+        """Fall back to paper_heuristic_predict() when no trained model exists."""
+        from backend.features.adjustment_models import paper_heuristic_predict
+
+        # Extract components from feature dict
+        player_per90 = {}
+        src_pos_avg = {}
+        tgt_pos_avg = {}
+        for m in CORE_METRICS:
+            player_per90[m] = feature_dict.get(f"player_{m}", 0.0)
+            src_pos_avg[m] = feature_dict.get(f"team_pos_current_{m}", 0.0)
+            tgt_pos_avg[m] = feature_dict.get(f"team_pos_target_{m}", 0.0)
+
+        team_current = feature_dict.get("team_ability_current", 50.0)
+        team_target = feature_dict.get("team_ability_target", 50.0)
+        league_current = feature_dict.get("league_ability_current", 50.0)
+        league_target = feature_dict.get("league_ability_target", 50.0)
+
+        ra_current = team_current - league_current
+        ra_target = team_target - league_target
+        change_ra = ra_target - ra_current
+
+        return paper_heuristic_predict(
+            player_per90=player_per90,
+            change_relative_ability=change_ra,
+            src_pos_avg=src_pos_avg,
+            tgt_pos_avg=tgt_pos_avg,
+        )
+
     def predict_batch(self, feature_dicts: List[Dict[str, float]]) -> List[Dict[str, float]]:
         """Predict for multiple transfer scenarios at once."""
         if not self.models:
             raise RuntimeError("Model not built. Call build() or fit() first.")
 
-        X = np.array(
-            [self._prepare_features(fd) for fd in feature_dicts],
-            dtype=np.float32,
-        )
         n = len(feature_dicts)
         results = [{} for _ in range(n)]
 
         for group_name, targets in MODEL_GROUPS.items():
             if group_name not in self.models:
                 continue
-            preds = self.models[group_name].predict(X, verbose=0)
+            X_group = np.array(
+                [self._prepare_group_features(fd, group_name) for fd in feature_dicts],
+                dtype=np.float32,
+            )
+            preds = self.models[group_name].predict(X_group, verbose=0)
             if preds.ndim == 1:
                 preds = preds.reshape(-1, 1)
             for i in range(n):
@@ -278,3 +451,121 @@ def build_feature_dict(
 
 
 FEATURE_DIM = len(_feature_keys())  # 43
+
+
+# ── Improvement 9: Inference-time feature builder ────────────────────────────
+
+
+def build_feature_dict_from_player(
+    player_id: int,
+    tournament_id: int,
+    season_id: int,
+    target_club_id: int,
+    target_league_id: int,
+    position: str,
+    query_date: Optional[date] = None,
+) -> Dict[str, float]:
+    """Build a full feature dict for inference by fetching live data.
+
+    Steps:
+    1. Get match logs → rolling window (last 1000 min) for player per-90.
+       Falls back to season aggregate if logs unavailable.
+    2. Get power rankings for source (player's current club) and target.
+    3. Get team-position averages for both clubs.
+    4. Call build_feature_dict() with assembled components.
+    """
+    from backend.data import sofascore_client
+    from backend.data.sofascore_client import normalize_position
+    from backend.features import power_rankings
+    from backend.features.rolling_windows import player_rolling_average
+
+    norm_pos = normalize_position(position) or "Forward"
+
+    # Step 1: Player per-90 (match logs → rolling window, or season aggregate)
+    match_logs = sofascore_client.get_player_match_logs(
+        player_id, tournament_id, season_id,
+    )
+
+    player_per90: Dict[str, float] = {}
+    source_club_id: Optional[int] = None
+
+    if match_logs:
+        rolling = player_rolling_average(match_logs)
+        player_per90 = {m: (rolling.get(m) or 0.0) for m in CORE_METRICS}
+        # Infer source club from season stats
+        stats = sofascore_client.get_player_stats_for_season(
+            player_id, tournament_id, season_id,
+        )
+        if stats:
+            source_club_id = stats.get("team_id")
+    else:
+        # Fallback: season aggregate
+        stats = sofascore_client.get_player_stats_for_season(
+            player_id, tournament_id, season_id,
+        )
+        if stats:
+            per90 = stats.get("per90") or {}
+            player_per90 = {m: float(per90.get(m, 0.0) or 0.0) for m in CORE_METRICS}
+            source_club_id = stats.get("team_id")
+
+    if not player_per90:
+        player_per90 = {m: 0.0 for m in CORE_METRICS}
+
+    # Step 2: Power rankings
+    try:
+        team_rankings, league_snapshots = power_rankings.compute_daily_rankings(
+            query_date
+        )
+    except Exception:
+        team_rankings, league_snapshots = {}, {}
+
+    # Find source team name for ranking lookup
+    source_team_name = ""
+    if source_club_id:
+        stats_for_name = sofascore_client.get_player_stats_for_season(
+            player_id, tournament_id, season_id,
+        )
+        if stats_for_name:
+            source_team_name = stats_for_name.get("team", "")
+
+    src_ranking = power_rankings.get_team_ranking(source_team_name) if source_team_name else None
+    team_ability_current = src_ranking.normalized_score if src_ranking else 50.0
+    league_ability_current = src_ranking.league_mean_normalized if src_ranking else 50.0
+
+    # Target rankings
+    # Try to find target team name from search
+    try:
+        target_team_info = sofascore_client.search_team(str(target_club_id))
+        target_team_name = target_team_info[0]["name"] if target_team_info else ""
+    except Exception:
+        target_team_name = ""
+
+    tgt_ranking = power_rankings.get_team_ranking(target_team_name) if target_team_name else None
+    team_ability_target = tgt_ranking.normalized_score if tgt_ranking else 50.0
+    league_ability_target = tgt_ranking.league_mean_normalized if tgt_ranking else 50.0
+
+    # Step 3: Team-position averages
+    try:
+        src_pos_avg, _ = sofascore_client.get_team_position_averages(
+            source_club_id, norm_pos
+        ) if source_club_id else ({m: 0.0 for m in CORE_METRICS}, [])
+    except Exception:
+        src_pos_avg = {m: 0.0 for m in CORE_METRICS}
+
+    try:
+        tgt_pos_avg, _ = sofascore_client.get_team_position_averages(
+            target_club_id, norm_pos
+        )
+    except Exception:
+        tgt_pos_avg = {m: 0.0 for m in CORE_METRICS}
+
+    # Step 4: Assemble via build_feature_dict
+    return build_feature_dict(
+        player_per90=player_per90,
+        team_ability_current=team_ability_current,
+        team_ability_target=team_ability_target,
+        league_ability_current=league_ability_current,
+        league_ability_target=league_ability_target,
+        team_pos_current=src_pos_avg,
+        team_pos_target=tgt_pos_avg,
+    )

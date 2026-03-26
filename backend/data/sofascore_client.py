@@ -456,6 +456,91 @@ def get_season_list(tournament_id: int) -> List[Dict[str, Any]]:
     return result
 
 
+def get_player_match_logs(
+    player_id: int,
+    tournament_id: int,
+    season_id: int,
+) -> List[Dict[str, Any]]:
+    """Fetch per-match player stats for a specific tournament + season.
+
+    Uses the Sofascore events endpoint to retrieve match-by-match data.
+    Paginates from page 0 (most recent) upward until empty or page > 10.
+
+    Returns a list of match dicts sorted by ``match_date`` **ascending**
+    (oldest first), suitable for rolling window accumulation.  Each dict:
+    ``match_id``, ``match_date``, ``minutes_played``,
+    ``per90`` (dict of canonical metric -> float).
+
+    Matches with ``minutes_played`` of 0 or None are excluded.
+    If fewer than 3 valid matches are found, returns ``[]``.
+    """
+    key = cache.make_key(
+        "sofascore", "match_logs",
+        str(player_id), str(tournament_id), str(season_id),
+    )
+    cached = cache.get(key, max_age=86400 * 7)
+    if cached is not None:
+        return cached
+
+    matches: List[Dict[str, Any]] = []
+    max_page = 10  # safety ceiling
+
+    for page in range(max_page + 1):
+        raw = _get(
+            f"/player/{player_id}/unique-tournament/{tournament_id}"
+            f"/season/{season_id}/events/last/{page}"
+        )
+        if not isinstance(raw, dict):
+            break
+
+        events = raw.get("events") or []
+        if not events:
+            break
+
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+
+            match_id = event.get("id")
+            # Extract date from startTimestamp
+            start_ts = event.get("startTimestamp")
+            match_date = _unix_to_iso(start_ts)
+
+            # Player statistics may be nested under "statistics" or "playerStatistics"
+            stats_container = event.get("statistics") or event.get("playerStatistics") or {}
+            if not isinstance(stats_container, dict):
+                stats_container = {}
+
+            minutes_played_raw = stats_container.get("minutesPlayed")
+            if minutes_played_raw is None:
+                # Try alternate locations
+                minutes_played_raw = event.get("minutesPlayed")
+            if minutes_played_raw is None or int(minutes_played_raw) <= 0:
+                continue
+            minutes_played = int(minutes_played_raw)
+
+            per90 = _parse_stats(stats_container, minutes_played)
+
+            matches.append({
+                "match_id": match_id,
+                "match_date": match_date or "",
+                "minutes_played": minutes_played,
+                "per90": {m: per90.get(m) for m in CORE_METRICS},
+            })
+
+    # Sort by match_date ascending (oldest first)
+    matches.sort(key=lambda m: m.get("match_date", ""))
+
+    # Fewer than 3 valid matches → unreliable data
+    if len(matches) < 3:
+        result: List[Dict[str, Any]] = []
+    else:
+        result = matches
+
+    cache.set(key, result)
+    return result
+
+
 def get_player_stats_for_season(
     player_id: int,
     tournament_id: int,
