@@ -178,15 +178,16 @@ class TransferPortalModel:
         to paper_heuristic_predict() with a logged warning.
         """
         # Try to use trained weights if available and model not already loaded
-        if not self.models and self.is_trained():
-            try:
-                self._load_trained()
-            except Exception as exc:
-                _log.warning("Failed to load trained model: %s", exc)
-
         if not self.models:
-            _log.warning("No trained model found, using heuristic fallback")
-            return self._heuristic_fallback(feature_dict)
+            if self.is_trained():
+                try:
+                    self._load_trained()
+                except Exception as exc:
+                    _log.warning("Failed to load trained model: %s", exc)
+
+            if not self.models:
+                _log.warning("No trained model found, using heuristic fallback")
+                return self._heuristic_fallback(feature_dict)
 
         # If we have a scaler, apply it
         X = self._prepare_features(feature_dict).reshape(1, -1)

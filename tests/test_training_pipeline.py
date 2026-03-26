@@ -215,8 +215,13 @@ class TestSplitDataset(unittest.TestCase):
         X = np.random.randn(n, FEATURE_DIM).astype(np.float32)
         y = np.random.randn(n, len(CORE_METRICS)).astype(np.float32)
 
-        # Create metadata with known dates
-        dates = [f"2020-{(i % 12) + 1:02d}-15" for i in range(n)]
+        # Create metadata with known dates incrementing across years
+        base_year = 2018
+        dates = []
+        for i in range(n):
+            year = base_year + i // 12
+            month = (i % 12) + 1
+            dates.append(f"{year}-{month:02d}-15")
         metadata = [{"transfer_date": d, "player_id": i} for i, d in enumerate(dates)]
 
         result = split_dataset(X, y, metadata, val_ratio=0.15, test_ratio=0.10)
