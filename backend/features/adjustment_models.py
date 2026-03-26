@@ -614,65 +614,79 @@ def paper_heuristic_predict(
         src_avg = source_pos_avg.get(m, player_val)
         tgt_avg = target_pos_avg.get(m, player_val)
 
-        # ── Paper A.3 feature x3: position-average difference ────────────
-        style_diff = tgt_avg - src_avg
         team_inf = _TEAM_INFLUENCE.get(m, 0.3)
-
-        # When no real team-position data is available, estimate style
-        # differences from the league quality gap (paper Section 4.2).
-        # Each metric gets a unique coefficient so that metrics with the
-        # same ability sensitivity still produce different predictions.
-        if not _has_style_data:
-            league_coeff = _LEAGUE_STYLE_COEFF.get(m, 0.05)
-            estimated_style_diff = src_avg * league_coeff * ra
-            style_diff = estimated_style_diff
 
         # Modulate team influence by player quality: elite players are
         # less team-dependent (lower effective team_inf), multiplicatively.
         effective_team_inf = team_inf * quality_scale
 
-        # ── Paper A.3 feature x2: conformity to new team ─────────────────
-        # The player moves partly toward the target team's positional
-        # average.  This is separate from the style *difference* — it
-        # captures the pull toward the absolute level of the new team.
-        # Weighted by team_inf: highly tactical metrics conform more.
-        conformity = effective_team_inf * (tgt_avg - player_val)
-
-        # ── Paper A.3 feature x3: style adaptation ───────────────────────
-        # How the team-position style shift affects the player.
-        style_adaptation = effective_team_inf * style_diff
-
-        # ── Blend: paper's trained β1,β2,β3 as fixed weights ────────────
-        # β1 (player retention) + β2 (conformity to new team) +
-        # β3 (style diff adjustment).
+        # ── Paper A.3: y = α + β1·x1 + β2·x2 + β3·x3 + β4·x4 + β5·x4² + β6·x4³
         #
-        # In the trained model, β1 ≈ 0.7-0.9 (high retention), β2 and β3
-        # are learned per-metric.  We approximate by using player_val as
-        # base and adding a weighted blend of conformity and style_adaptation.
+        # x1 = player's previous per-90 (dominant — player retains ~70-90%)
+        # x2 = avg feature for position at NEW team (small pull toward team)
+        # x3 = diff in position avg old→new (style adaptation)
+        # x4 = change in relative ability (polynomial)
         #
-        # For the conformity term (β2): we use a fraction of team_inf.
-        # For the style_diff term (β3): we use team_inf directly.
-        # These overlap conceptually so we take the dominant signal.
-        # When style data is real, style_diff captures team differences
-        # and conformity overlaps.  Use conformity as the primary signal
-        # (it implicitly includes the player's deviation from team avg).
-        base = player_val + conformity
+        # The paper's trained β1 >> β2, β3 — the player's own level is
+        # the primary predictor.  β2 provides a small conformity pull
+        # toward the new team.  β3 captures style differences.
+        #
+        # Key insight from Section 4.3.1: Doku's xG INCREASES at Gwangju
+        # (much weaker league) despite Gwangju being a relegation candidate.
+        # This means the opposition quality effect (from league_ability
+        # features in the trained model) outweighs any pull toward the
+        # weaker team's position average.
 
-        # ── Paper A.3 feature x4: relative ability polynomial ────────────
+        # x3: position-average difference old→new (style shift)
+        style_diff = tgt_avg - src_avg
+
+        # When no real team-position data is available, estimate style
+        # differences from the league quality gap (paper Section 4.2).
+        if not _has_style_data:
+            league_coeff = _LEAGUE_STYLE_COEFF.get(m, 0.05)
+            estimated_style_diff = src_avg * league_coeff * ra
+            style_diff = estimated_style_diff
+
+        # Paper A.3 β3·x3: style adaptation (how much the player adapts
+        # to the difference in tactical use of this position).
+        style_shift = effective_team_inf * style_diff
+
+        # Paper A.3 β2·x2: conformity to new team's position average.
+        # This is a SMALL pull — the paper's trained β2 is much smaller
+        # than β1 (player retention).  We scale it to ~20-30% of team_inf
+        # to prevent the target team avg from dominating the prediction.
+        # This matches Section 4.3.1: Doku remains elite at Gwangju
+        # rather than being dragged down to Gwangju winger levels.
+        conformity_pull = 0.25 * effective_team_inf * (tgt_avg - player_val)
+
+        # Base: player retains their level + small style/conformity adjustments
+        base = player_val + style_shift + conformity_pull
+
+        # ── Paper A.3 x4: relative ability polynomial ────────────────────
+        # β4·ra + β5·ra² + β6·ra³
+        # This captures within-league positioning: moving to a relatively
+        # stronger team (within the same league) boosts offensive output.
         sensitivity = _ABILITY_SENSITIVITY.get(m, 0.2)
         ability_factor = (
             1.0
-            + sensitivity * ra                    # linear term
+            + sensitivity * ra                    # linear
             - 0.15 * sensitivity * (ra ** 2)      # dampens extremes
             + 0.02 * sensitivity * (ra ** 3)      # asymmetric tails
         )
 
-        # ── Opposition quality (league ability gap) ──────────────────────
-        # Paper Section 4.3.1: Doku xG increases at Gwangju (much weaker
-        # league) despite Gwangju being a relegation candidate.  This is
-        # because facing weaker opposition boosts individual per-90 output.
-        # The trained model learns this from league_ability features;
-        # we model it explicitly as a multiplicative boost.
+        # ── Opposition quality (absolute league quality gap) ─────────────
+        # The paper's TF model receives league_ability_current and
+        # league_ability_target as SEPARATE features, so it learns that
+        # moving to a weaker league = facing weaker opposition = higher
+        # individual per-90 output.  change_relative_ability collapses
+        # this away (it only captures within-league team positioning).
+        #
+        # Paper evidence (Section 4.3.1):
+        #   Doku xG INCREASES at Gwangju (league_gap=+30)
+        #   Doku xG INCREASES at Liverpool (team quality boost outweighs
+        #     league difficulty via the ability_factor above)
+        #   Take-ons barely change (irreducible individual metric)
+        #   Mbappé: 8-15% decrease in harder league (Section 5)
         opp_sens = _OPP_QUALITY_SENS.get(m, 0.0)
         opp_factor = 1.0 + opp_sens * league_gap
 
