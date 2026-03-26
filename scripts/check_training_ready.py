@@ -72,7 +72,16 @@ def main() -> None:
     try:
         from backend.data import sofascore_client
 
-        players = sofascore_client.get_league_player_stats(17, limit=5)
+        # Use a valid season_id from the season list
+        season_id = None
+        try:
+            seasons = sofascore_client.get_season_list(17)
+            if seasons:
+                season_id = seasons[0]["id"]
+        except Exception:
+            pass
+
+        players = sofascore_client.get_league_player_stats(17, season_id=season_id, limit=5)
         if players:
             first = players[0]
             print(f"   ✅ Returned {len(players)} players")
