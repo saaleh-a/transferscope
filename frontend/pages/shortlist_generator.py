@@ -404,7 +404,7 @@ def render():
             "Position": c.position,
             "Rating": f"{c.rating:.2f}" if c.rating is not None else "—",
             "Similarity": f"{c.score:.1%}",
-            "Cluster": f"{'✓ Same' if c.cluster >= 0 else '○ Diff'}" if c.cluster != -1 else "—",
+            "Cluster": "✓ Same" if c.same_cluster_as_reference else ("○ Diff" if c.cluster >= 0 else "—"),
             "Top Changes": top_str,
         })
 

@@ -669,6 +669,19 @@ def paper_heuristic_predict(
         # attenuating style_diff proportionally to the league gap.
         # Same-league: full style_diff (league_attn=1.0).
         # Large cross-league gap: mostly due to league quality, not style.
+        # League-quality adjustment: when teams are in different leagues,
+        # much of the position-average difference is due to league quality
+        # (e.g., Gwangju wingers have lower xG because of weaker league,
+        # not because of tactical style).  The paper's trained model handles
+        # this via the separate league_ability features.  We approximate by
+        # attenuating style_diff proportionally to the league gap.
+        # Same-league (league_gap≈0): full style_diff (league_attn≈1.0).
+        # Large cross-league gap (|league_gap|≥0.30): mostly league quality,
+        # so attn drops to 0.40 or below.
+        # Factor of 2.0 chosen so that a 30-point gap (e.g., Ligue 1 → K-League)
+        # reduces style influence to ~40%, matching the paper's observation
+        # that Doku retains elite output at Gwangju.
+        # Floor of 0.15 ensures some style adaptation always occurs.
         league_attn = max(0.15, 1.0 - abs(league_gap) * 2.0)
 
         # Paper A.3 β3·x3: style adaptation
