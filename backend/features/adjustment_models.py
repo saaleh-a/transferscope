@@ -446,19 +446,19 @@ _TEAM_INFLUENCE: Dict[str, float] = {
 # Offensive metrics scale positively (better team → more output).
 # Defensive workload scales inversely (better team → less defending).
 _ABILITY_SENSITIVITY: Dict[str, float] = {
-    "expected_goals": 0.5,
-    "expected_assists": 0.4,
-    "shots": 0.4,
+    "expected_goals": 0.50,
+    "expected_assists": 0.42,         # Slightly higher than shots — creative output scales more
+    "shots": 0.38,                    # Volume metric, moderate scaling
     "successful_dribbles": 0.15,      # Barely affected by team quality
-    "successful_crosses": 0.3,
-    "touches_in_opposition_box": 0.5,
-    "successful_passes": 0.2,
-    "pass_completion_pct": 0.1,
-    "accurate_long_balls": 0.2,
-    "chances_created": 0.4,
-    "clearances": -0.4,               # Better team → less clearances
-    "interceptions": -0.3,            # Better team → less interceptions
-    "possession_won_final_3rd": 0.2,  # Better team → more high press
+    "successful_crosses": 0.30,
+    "touches_in_opposition_box": 0.50,
+    "successful_passes": 0.22,        # Possession teams pass more, but also individual
+    "pass_completion_pct": 0.10,
+    "accurate_long_balls": 0.18,      # Direct play slightly decreases at top teams
+    "chances_created": 0.45,          # Creative output scales strongly with team quality
+    "clearances": -0.40,              # Better team → less clearances
+    "interceptions": -0.30,           # Better team → less interceptions
+    "possession_won_final_3rd": 0.25, # Better team → more high press
 }
 
 
@@ -491,6 +491,7 @@ def paper_heuristic_predict(
     source_pos_avg: Dict[str, float],
     target_pos_avg: Dict[str, float],
     change_relative_ability: float,
+    player_rating: Optional[float] = None,
 ) -> Dict[str, float]:
     """Paper-aligned heuristic when no trained model is available.
 
@@ -509,6 +510,10 @@ def paper_heuristic_predict(
        with per-metric sensitivity.  This captures the paper's observation
        that offensive output scales with team quality while defensive
        workload decreases.
+    3. **Player quality modifier** — when a Sofascore average match rating
+       is available, it modulates how much the player adapts vs retains
+       their own level.  Elite players (rating >= 7.5) retain more of
+       their individual output; weaker players are more team-dependent.
 
     Parameters
     ----------
@@ -521,6 +526,9 @@ def paper_heuristic_predict(
     change_relative_ability : float
         ``(target_norm - target_league_mean) - (source_norm - source_league_mean)``
         Positive means moving to a relatively stronger position.
+    player_rating : float, optional
+        Sofascore average match rating (0-10 scale).  Higher-rated players
+        retain more of their individual output when changing teams.
 
     Returns
     -------
@@ -533,6 +541,15 @@ def paper_heuristic_predict(
     # Detect whether we have real team-position data or just fallback
     # (both source and target are the same → no style data available).
     _has_style_data = _check_has_style_data(player_per90, source_pos_avg, target_pos_avg)
+
+    # Player quality modifier: elite players retain more individual output.
+    # Centered at 6.5 (average Sofascore rating), scaled so that:
+    #   - 7.5+ rated player: quality_mod ~= 0.15+ (retains ~15%+ more)
+    #   - 6.0 rated player: quality_mod ~= -0.075 (adapts more to team)
+    # Only affects team_influence blending, not ability polynomial.
+    quality_mod = 0.0
+    if player_rating is not None and isinstance(player_rating, (int, float)):
+        quality_mod = (player_rating - 6.5) * 0.15
 
     predicted: Dict[str, float] = {}
     for m in CORE_METRICS:
@@ -554,8 +571,12 @@ def paper_heuristic_predict(
             estimated_style_diff = src_avg * league_coeff * ra
             style_diff = estimated_style_diff
 
+        # Modulate team influence by player quality: elite players are
+        # less team-dependent (lower effective team_inf).
+        effective_team_inf = max(0.0, min(1.0, team_inf - quality_mod))
+
         # Base prediction: player's stats shifted toward target team's style
-        base = player_val + team_inf * style_diff
+        base = player_val + effective_team_inf * style_diff
 
         # 2. Ability adjustment: polynomial (linear + quadratic + cubic).
         #    Maps to paper Appendix A.3: β4*ra + β5*ra² + β6*ra³

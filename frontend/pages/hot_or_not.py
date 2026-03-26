@@ -151,7 +151,8 @@ def render():
     current_per90_clean = {m: (current_per90.get(m) if current_per90.get(m) is not None else 0.0) for m in CORE_METRICS}
 
     # ── Player info card ─────────────────────────────────────────────────
-    player_info_card(player_name, current_team, position, minutes)
+    player_info_card(player_name, current_team, position, minutes,
+                     rating=player_stats.get("rating"))
 
     # Power Rankings
     source_ranking = power_rankings.get_team_ranking(current_team)
@@ -218,6 +219,7 @@ def render():
             source_pos_avg=source_pos_avg,
             target_pos_avg=target_pos_avg,
             change_relative_ability=change_ra,
+            player_rating=player_stats.get("rating"),
         )
 
     pct_changes = compute_percentage_changes(current_per90_clean, predicted)
