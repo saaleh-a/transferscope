@@ -15,8 +15,9 @@ from __future__ import annotations
 import logging
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote as _url_quote
 
-import requests
+import tls_requests as requests
 
 from backend.data import cache
 
@@ -195,7 +196,7 @@ def _get(path: str) -> Optional[dict]:
                 continue
             resp.raise_for_status()
             return resp.json()
-        except requests.exceptions.ConnectionError as ce:
+        except (ConnectionError, requests.exceptions.TLSError) as ce:
             delay = _RETRY_BASE_DELAY * (2 ** attempt)
             _log.info(
                 "Sofascore connection error on %s — retry %d/%d in %.1fs (%s)",
@@ -223,7 +224,7 @@ def search_team(name: str) -> List[Dict[str, Any]]:
     if cached is not None:
         return cached
 
-    raw = _get(f"/search/teams?q={requests.utils.quote(name)}&page=0")
+    raw = _get(f"/search/teams?q={_url_quote(name)}&page=0")
     teams: list[dict] = []
 
     if isinstance(raw, dict):
@@ -637,7 +638,7 @@ def search_player(name: str) -> List[Dict[str, Any]]:
     if cached is not None:
         return cached
 
-    raw = _get(f"/search/players?q={requests.utils.quote(name)}&page=0")
+    raw = _get(f"/search/players?q={_url_quote(name)}&page=0")
     players: list[dict] = []
 
     if isinstance(raw, dict):
