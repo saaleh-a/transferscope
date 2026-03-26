@@ -117,26 +117,28 @@ This means a player at a worse team **can improve or decline** at a bigger team,
 
 > **In plain English:** Even without a trained neural network, the system makes smart per-metric predictions. A crossing winger joining a team that plays wide will see their crosses and assists go up, even if the league is harder. A dribbler will keep their dribbling numbers almost unchanged because that's an individual skill. A defender joining a dominant team will defend less. Each stat is predicted independently based on both ability and style.
 
-**Transfer Portal Neural Network (TensorFlow).** A 4-group multi-head neural network with 43 input features and 13 output heads:
+**Transfer Portal Neural Network (TensorFlow).** A 4-group multi-head neural network with per-group feature subsets (not all 43 features to every group) and 13 output heads:
 
-| Group | Targets | Heads |
-|---|---|---|
-| Shooting | xG, Shots | 2 |
-| Passing | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area Entries | 7 |
-| Dribbling | Take-ons | 1 |
-| Defending | Clearances, Interceptions, Possession Won Final 3rd | 3 |
+| Group | Input Features | Targets | Heads |
+|---|---|---|---|
+| Shooting | 16 | xG, Shots | 2 |
+| Passing | 25 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area Entries | 7 |
+| Dribbling | 7 | Take-ons | 1 |
+| Defending | 13 | Clearances, Interceptions, Possession Won Final 3rd | 3 |
 
-Each group has the same architecture: Input → Dense(128, ReLU) → Dropout(0.3) → Dense(64, ReLU) → Dropout(0.3) → Linear output heads. Trained with Adam optimizer and MSE loss.
+Each group has the same architecture: Input → Dense(128, ReLU) → Dropout(0.3) → Dense(64, ReLU) → Dropout(0.3) → Linear output heads. Trained with Adam optimizer and MSE loss. Auto-loads trained weights from `data/models/` when available; falls back to `paper_heuristic_predict()` when untrained.
 
 > **In plain English:** The neural network is the "brain" of the system. It takes in 43 numbers about a player (their current stats, how strong their current team is, how strong the target team is, what position players typically do at both clubs) and outputs 13 predictions — one for each stat. It's organized into 4 groups: shooting stats, passing stats, dribbling stats, and defensive stats. Each group has its own little brain that specializes in predicting that type of stat.
 >
 > The "Dropout(0.3)" bit means the model randomly ignores 30% of its connections during training — this is like studying by covering up parts of your notes and forcing yourself to remember. It prevents the model from memorizing specific examples and helps it generalize to new players it hasn't seen before.
 
-The 43 input features are:
+The 43-key feature dict is assembled from:
 - 13 player per-90 metrics (current club)
 - 4 ability scores (team and league, current and target)
 - 13 team-position per-90 metrics (current club)
 - 13 team-position per-90 metrics (target club)
+
+Each group slices only its relevant features internally (GROUP_FEATURE_SUBSETS), reducing noise — dribbling doesn't need passing team-position averages.
 
 ### 2.4 User Interface
 
@@ -149,7 +151,7 @@ A Streamlit application with three pages, styled with a custom "Tactical Noir" d
 - Swarm plots showing the player's position in their current league distribution
 - A detailed predictions table with "Simulated Current" vs "Predicted" columns
 
-**Shortlist Generator.** The user selects a player to replace and assigns weights to each metric. The system scans players across selected leagues (defaulting to 11 major leagues for speed, expandable to all 37+), scores them by weighted similarity, and returns a ranked table with filters for age, position, league, minutes played, and club Power Ranking cap.
+**Shortlist Generator.** The user selects a player to replace and assigns weights to each metric. The system scans players across selected leagues (defaulting to 11 major leagues for speed, expandable to all 37+), clusters candidates by playing style using k-means (k=√(n/2), capped 3–10), scores them by weighted Euclidean distance to the reference player with a 15% same-cluster bonus, and returns a ranked table with filters for age, position, league, minutes played, and club Power Ranking cap.
 
 **Hot or Not.** A rapid rumour validator. Enter a player and a target club; receive an instant HOT / TEPID / NOT verdict with the top 3 predicted metric changes, a summary of improving vs declining metrics, the player's transfer history, and Power Ranking context. The verdict uses position-aware weighting: offensive metrics count 1.5× for forwards, defensive metrics count 1.5× for defenders. Thresholds are ±3% average predicted change.
 
@@ -177,10 +179,10 @@ TransferScope covers 37+ leagues across 4 continents:
 
 While TransferScope faithfully implements the Dinsdale & Gallagher methodology, it extends the original work in several ways:
 
-### 4.1 Multi-League Shortlist Search
-The original paper focused on predicting individual transfers. TransferScope adds the ability to scan players across all 37+ registered leagues and rank candidates by weighted metric similarity — turning the model into a **scouting tool**, not just a prediction engine.
+### 4.1 Multi-League Shortlist Search with K-Means Clustering
+The original paper focused on predicting individual transfers. TransferScope adds the ability to scan players across all 37+ registered leagues, cluster candidates by playing style using k-means (k=√(n/2), capped 3–10), and rank them by weighted Euclidean distance to a reference player with a 15% same-cluster bonus — turning the model into a **scouting tool**, not just a prediction engine.
 
-> **In plain English:** The paper told you how to predict *one* transfer. We turned it into a tool that can search *thousands* of players and find the best fits.
+> **In plain English:** The paper told you how to predict *one* transfer. We turned it into a tool that can search *thousands* of players, group them by playing style, and find the best fits — prioritizing players who not only have similar numbers but play a similar type of game.
 
 ### 4.2 Dynamic Data Sources
 The original paper used static datasets. TransferScope pulls live data from Sofascore, ClubElo, and WorldFootballElo, with intelligent caching. Power Rankings update daily. Player stats refresh automatically. The system never goes stale.
@@ -226,6 +228,26 @@ Extreme transfers (elite player to relegation team, or lower-league player to to
 
 > **In plain English:** Mbappé moving from Real Madrid to a relegation team would see massive stat drops — the model doesn't protect him just because he's elite. But the same player moving from a good team to a *slightly* better one wouldn't see unrealistically huge improvements. The model is calibrated to be realistic in both directions.
 
+### 4.12 Per-Group Feature Subsets
+Each of the 4 TensorFlow model groups receives only the features relevant to its metric type (GROUP_FEATURE_SUBSETS), not the full 43-feature vector. Shooting uses 16 features, Passing 25, Dribbling just 7 (it's near-irreducible), and Defending 13. This reduces noise and improves generalization — the dribbling model doesn't need to see passing team-position averages.
+
+> **In plain English:** Each specialist brain only looks at the data that matters for its job. The shooting expert doesn't waste time looking at long ball accuracy. This makes each model more focused and less likely to be confused by irrelevant information.
+
+### 4.13 Robust Team Name Resolution
+Matching team names across three different data sources (ClubElo, WorldFootballElo, Sofascore) requires handling abbreviations, accents, and regional naming differences. TransferScope uses a 3-step lookup: exact match → accent-normalized match → fuzzy matching with a 5-priority cascade (including 138 extreme abbreviation aliases and 116 ClubElo-to-Sofascore canonicalization entries).
+
+> **In plain English:** "PSG" and "Paris Saint-Germain" and "Paris SG" are all the same team. "Bayern München" and "Bayern Munich" are the same. The system knows 138 abbreviation pairs and can fuzzy-match team names that are close but not identical. This means data from different sources always connects correctly.
+
+### 4.14 End-to-End Training Pipeline
+A CLI-driven training pipeline (`training_pipeline.py`) discovers historical transfers across 11+ leagues and up to 5 seasons, fetches before/after stats, builds training rows with temporal split, and fits both sklearn adjustment models and the TensorFlow neural network. A companion backtester evaluates predictions against actual post-transfer outcomes.
+
+> **In plain English:** One command trains the entire system from scratch: find transfers, collect data, train models, test accuracy. Everything is automated and reproducible.
+
+### 4.15 Match-Level Data Access
+Per-match statistics are available via `get_player_match_logs()`, enabling true rolling window computation from game-by-game data rather than season aggregates.
+
+> **In plain English:** Instead of just "season averages," we can get stats from each individual game, allowing more precise recent-form calculations.
+
 ---
 
 ## 5. Technical Stack
@@ -241,7 +263,7 @@ Extreme transfers (elite player to relegation team, or lower-league player to to
 | UI | Streamlit | The web interface you interact with |
 | Caching | diskcache (SQLite-backed) | Remembers API responses so we don't re-download |
 | Visualization | Plotly | Draws the interactive charts |
-| Testing | pytest + unittest (97 tests) | Makes sure nothing is broken |
+| Testing | pytest + unittest (188 tests) | Makes sure nothing is broken |
 
 ---
 
@@ -249,26 +271,27 @@ Extreme transfers (elite player to relegation team, or lower-league player to to
 
 ### 6.1 Current Limitations
 
-- **No match-level granularity.** Season-aggregate stats are used rather than true match-by-match rolling windows. Match-level data would improve accuracy.
+- **No match-level granularity in predictions (yet).** Match-level data is accessible via `get_player_match_logs()`, but the prediction pipeline currently uses season-aggregate stats rather than true match-by-match rolling windows.
 - **Adjustment model training data.** Auto-training uses the most recent transfer only. All historical transfers with season-specific stats would produce more robust models.
 - **No market value data.** Sofascore doesn't provide transfer fees, limiting financial filtering.
-- **Single-season neural network.** The TensorFlow model initializes with random weights. Training on historical transfers would significantly improve predictions.
+- **Training pipeline requires API access.** The end-to-end training pipeline needs live Sofascore data; there is no bundled offline training dataset.
 - **Single-tournament season selector.** The season dropdown only shows seasons from the player's primary tournament. Multi-tournament aggregation is used when the primary returns 0 minutes, but the season selector doesn't yet expose all tournaments.
 - **No historical data in predictions.** The current system uses single-season snapshot stats. Multi-season trend analysis (is the player improving or declining?) is not yet incorporated into the prediction model.
 
 > **In plain English:**
-> - We're currently using season averages instead of game-by-game data (which would be more accurate but harder to get).
-> - The learning models are still young — they get better as we feed them more historical transfer data.
+> - Match-by-match data is accessible but not yet wired into the rolling windows for predictions.
+> - The learning models get better as we feed them more historical transfer data via the training pipeline.
 > - We can't filter by transfer fee because Sofascore doesn't share that information.
-> - The neural network hasn't been trained on a huge dataset yet — right now it's smart about structure but hasn't "studied" millions of examples.
+> - Training requires an internet connection to fetch real data; there's no pre-packaged training set.
 
 ### 6.2 Future Directions
 
-- **Match-level data pipeline.** Integrate match-by-match stats to compute true 1000-minute rolling windows.
+- **Match-level rolling windows in predictions.** Wire `get_player_match_logs()` into the prediction pipeline for true 1000-minute rolling windows instead of season aggregates.
 - **Automated model retraining.** Schedule periodic retraining as new transfer data becomes available.
 - **Tactical embeddings.** Incorporate formation and tactical style to capture system fit beyond raw metrics.
 - **Expected minutes model.** Predict not just per-90 output but likely playing time at the target club.
-- **Multi-season validation.** Backtest predictions against historical transfers to quantify accuracy.
+- **Multi-season validation.** Extend backtester to cover multiple seasons and compute calibration metrics.
+- **Improved verdict classification.** Replace the 3-tier Hot/Tepid/Not system with a richer classification (e.g. 5-tier with confidence-weighted thresholds).
 
 ---
 

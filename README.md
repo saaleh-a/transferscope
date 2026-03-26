@@ -26,9 +26,9 @@ Enter a player and a target club. TransferScope predicts how each of 13 core per
 
 ### Shortlist Generator
 
-Select a player to replace and weight the metrics that matter. TransferScope scans players across 37+ leagues (defaulting to 11 major leagues for speed), scores them by weighted similarity against predicted performance, and returns a ranked shortlist with filters for age, position, league, minutes played, and club power ranking.
+Select a player to replace and weight the metrics that matter. TransferScope scans players across 37+ leagues (defaulting to 11 major leagues for speed), clusters candidates by playing style using k-means, scores them by weighted Euclidean distance to the reference player (with a 15% same-cluster bonus), and returns a ranked shortlist with filters for age, position, league, minutes played, and club power ranking.
 
-> **In plain English:** Say Saka gets injured and you need a replacement right winger. You tell TransferScope which stats matter most to you (e.g. "I care a lot about chance creation and dribbling, less about defensive work"). It then searches through thousands of players across major leagues worldwide and ranks them: "Here are the 20 best fits, sorted by how closely they match what you need." You can filter by age, league, how much they've played, etc.
+> **In plain English:** Say Saka gets injured and you need a replacement right winger. You tell TransferScope which stats matter most to you (e.g. "I care a lot about chance creation and dribbling, less about defensive work"). It then searches through thousands of players across major leagues worldwide, groups them by playing style (using machine learning clustering), and ranks them by how closely they match what you need — with a bonus for players who play in a similar style to the reference. You can filter by age, league, how much they've played, etc.
 
 ### Hot or Not
 
@@ -103,7 +103,7 @@ transferscope/
 ├── app.py                              # Streamlit entry point
 ├── backend/
 │   ├── data/                           # Talks to external data sources
-│   │   ├── sofascore_client.py         # Player stats, search, transfers, seasons, team-position averages
+│   │   ├── sofascore_client.py         # Player stats, search, transfers, seasons, match logs, team-position averages
 │   │   ├── clubelo_client.py           # European club Elo ratings
 │   │   ├── worldfootballelo_client.py  # Global club Elo ratings (non-Europe)
 │   │   ├── elo_router.py              # Picks the right Elo source for each club
@@ -114,7 +114,9 @@ transferscope/
 │   │   └── adjustment_models.py        # Paper-aligned heuristic + sklearn adjustment models
 │   ├── models/                         # The prediction engines
 │   │   ├── transfer_portal.py          # Neural network that predicts post-transfer stats
-│   │   └── shortlist_scorer.py         # Ranks replacement candidates by similarity
+│   │   ├── shortlist_scorer.py         # K-means clustering + weighted Euclidean distance scoring
+│   │   ├── training_pipeline.py        # End-to-end training: transfer discovery → sklearn + TF fit
+│   │   └── backtester.py              # Compares predictions against actual post-transfer stats
 │   └── utils/
 │       └── league_registry.py          # Master list of all 37+ leagues and their IDs
 ├── frontend/
@@ -127,7 +129,7 @@ transferscope/
 │   │   ├── power_ranking_chart.py      # Before/after club strength timeline
 │   │   └── metric_bar.py              # Bar chart of predicted stat changes
 │   └── theme.py                        # The dark "Tactical Noir" visual design
-├── tests/                              # 97 automated tests (no internet needed)
+├── tests/                              # 188 automated tests (no internet needed)
 ├── data/
 │   ├── cache/                          # Saved API responses (not in git)
 │   └── models/                         # Saved model weights (not in git)
@@ -172,7 +174,7 @@ The app opens at `http://localhost:8501`. No API keys required — all data sour
 python -m pytest tests/ -v
 ```
 
-All 97 tests use mocked API responses, so they run offline with no network calls.
+All 188 tests use mocked API responses, so they run offline with no network calls.
 
 ---
 
@@ -180,7 +182,7 @@ All 97 tests use mocked API responses, so they run offline with no network calls
 
 | Source | What it gives us | Plain English |
 |---|---|---|
-| **Sofascore** | Player stats, team rosters, transfer history, seasons | "How many goals/assists/passes did this player make?" |
+| **Sofascore** | Player stats, team rosters, transfer history, seasons, match logs | "How many goals/assists/passes did this player make?" |
 | **ClubElo** | Elo ratings for ~600 European clubs | "How strong is this European club right now?" |
 | **WorldFootballElo** | Elo ratings for clubs worldwide | "How strong is this Brazilian/MLS/Saudi club?" |
 
@@ -241,6 +243,9 @@ Any league available on Sofascore can be added by extending the league registry.
 | Asymmetric calibration | Less damping for downgrades, more for upgrades; elite protection halved for downgrades | Extreme transfers produce realistically large changes |
 | Multi-tournament fallback | When primary tournament returns 0 minutes, try all team tournaments | Fixes data loading for players in cups/European competitions |
 | Position-aware verdict | Hot or Not weights offensive metrics 1.5× for forwards, defensive for defenders | More accurate verdicts for different player types |
+| K-means shortlist scoring | Cluster candidates by playing style, 15% same-cluster bonus, weighted Euclidean distance | Finds replacements with similar playing profiles, not just similar raw numbers |
+| Per-group feature subsets | Shooting 16, Passing 25, Dribbling 7, Defending 13 features | Each model group only sees relevant features, reducing noise |
+| 3-step team name matching | Exact → accent-normalized → fuzzy (138 abbreviation aliases) | Reliably matches team names across ClubElo, WorldFootballElo, and Sofascore |
 | Streamlit | Fast to build; sufficient for a personal tool | Web app framework that gets us a UI without a separate frontend team |
 | diskcache | Local tool, SQLite is enough | Simple on-disk cache, no need for a database server |
 | All stats per-90 | Consistent, comparable, position-agnostic | Fair comparisons regardless of minutes played |
