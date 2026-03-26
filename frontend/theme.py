@@ -24,8 +24,8 @@ COLORS = {
     "text_muted": "#484F58",
     "accent_gold": "#D4A843",
     "accent_amber": "#E3A507",
-    "accent_crimson": "#DA3633",
-    "accent_green": "#3FB950",
+    "accent_crimson": "#F45B69",       # Warm coral-crimson (was #DA3633)
+    "accent_green": "#2DD4A8",         # Emerald (was #3FB950)
     "accent_blue": "#58A6FF",
     "accent_teal": "#39D2C0",
     "gradient_start": "#D4A843",
@@ -135,7 +135,7 @@ def confidence_badge(level: str, weight: float, minutes: int) -> None:
 
 def verdict_display(verdict: str, player: str, source: str, target: str) -> None:
     """Render the large Hot/Tepid/Not verdict block."""
-    color_map = {"HOT": "#3FB950", "TEPID": "#E3A507", "NOT": "#DA3633"}
+    color_map = {"HOT": "#2DD4A8", "TEPID": "#E3A507", "NOT": "#F45B69"}
     color = color_map.get(verdict, "#8B949E")
     st.markdown(
         f'<div class="ts-verdict-block">'
@@ -199,8 +199,8 @@ _CSS = """
     --text-muted: #484F58;
     --accent-gold: #D4A843;
     --accent-amber: #E3A507;
-    --accent-crimson: #DA3633;
-    --accent-green: #3FB950;
+    --accent-crimson: #F45B69;
+    --accent-green: #2DD4A8;
     --accent-blue: #58A6FF;
     --accent-teal: #39D2C0;
     --radius: 6px;
