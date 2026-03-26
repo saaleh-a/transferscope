@@ -19,7 +19,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -1538,7 +1538,7 @@ def run_pipeline(
     val_ratio: float = 0.15,
     test_ratio: float = 0.10,
     api_delay: float = 2.0,
-    progress_callback: Optional[Any] = None,
+    progress_callback: Optional[Callable[[str, str], None]] = None,
 ) -> bool:
     """Run the full training pipeline programmatically.
 
