@@ -1216,10 +1216,9 @@ def train_adjustment_models(
             # so dividing by 100 creates a scaling factor (0.0-1.0) applied to the
             # player's current per-90.
             # Use league mean per-90 if available (Improvement 4); fall back to
-            # scaled player metric when league stats could not be fetched
+            # player's own per-90 as a neutral baseline when league stats unavailable
             league_means = meta.get("league_means", {})
-            fallback_expectation = (league_ability_target / 100.0 * player_prev) if player_prev else 0.0
-            naive_expectation = league_means.get(m, fallback_expectation)
+            naive_expectation = league_means.get(m, player_prev)
 
             team_rows.append({
                 "metric": m,
