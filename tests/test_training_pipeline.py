@@ -902,3 +902,50 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
 
         # Player metrics should reflect season agg (0.8)
         self.assertAlmostEqual(result["player_expected_goals"], 0.8, places=1)
+
+
+class TestDiscoverTransfersMinutesKey(unittest.TestCase):
+    """Bug 1: verify minutes_played key is read correctly from league stats."""
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    def test_discover_transfers_minutes_key_correct(self, mock_client):
+        """Players with >=450 minutes_played must NOT be skipped;
+        players with <450 minutes_played MUST be skipped."""
+        from backend.models.training_pipeline import discover_transfers
+
+        player_high = {
+            "id": 5001,
+            "name": "Enough Minutes",
+            "position": "Forward",
+            "minutes_played": 900,
+        }
+        player_low = {
+            "id": 5002,
+            "name": "Too Few Minutes",
+            "position": "Midfielder",
+            "minutes_played": 200,
+        }
+
+        mock_client.get_season_list.return_value = [
+            {"id": 100, "name": "2023/2024"},
+            {"id": 200, "name": "2022/2023"},
+        ]
+        mock_client.get_league_player_stats.return_value = [player_high, player_low]
+        mock_client.get_player_transfer_history.return_value = [
+            {
+                "transfer_date": "2023-07-01",
+                "from_team": {"id": 10, "name": "Club A"},
+                "to_team": {"id": 20, "name": "Club B"},
+            }
+        ]
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
+
+        result = discover_transfers(["ENG1"], seasons_back=2)
+
+        # Player with 900 minutes should have been processed (transfer history checked)
+        called_pids = [
+            call.args[0]
+            for call in mock_client.get_player_transfer_history.call_args_list
+        ]
+        self.assertIn(5001, called_pids, "Player with 900 min should NOT be skipped")
+        self.assertNotIn(5002, called_pids, "Player with 200 min should be skipped")

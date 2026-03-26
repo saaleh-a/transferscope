@@ -339,6 +339,7 @@ def get_league_player_stats(
 
     # Fetch multiple stat types to get broad coverage
     for stat_type in ("rating", "expectedGoals", "accuratePasses"):
+        endpoint = f"top-players/{stat_type}"
         page = 1
         while page <= (limit // 100 + 1):
             raw = _get(
@@ -347,6 +348,12 @@ def get_league_player_stats(
                 f"?accumulation=total&order=desc&group=overall&page={page}"
             )
             if not isinstance(raw, dict):
+                if page == 1:
+                    _log.debug(
+                        "Endpoint %s not available, skipping pagination.",
+                        endpoint,
+                    )
+                    break
                 # Fall back to alternate endpoint format
                 raw = _get(
                     f"/unique-tournament/{tournament_id}/season/{season_id}"

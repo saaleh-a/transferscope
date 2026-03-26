@@ -517,3 +517,45 @@ class TestGetPlayerMatchLogs(unittest.TestCase):
             self.assertIn("minutes_played", match)
             self.assertIn("per90", match)
             self.assertGreater(match["minutes_played"], 0)
+
+
+class TestLeagueStats404ShortCircuit(unittest.TestCase):
+    """Bug 3: page 1 returning 404 must stop pagination for that stat type."""
+
+    @patch("backend.data.sofascore_client._get")
+    @patch("backend.data.sofascore_client.cache")
+    def test_league_stats_stops_pagination_on_404(self, mock_cache, mock_get):
+        """When page 1 returns None (404), pages 2-4 must never be called."""
+        mock_cache.make_key.return_value = "test_key"
+        mock_cache.get.return_value = None  # no cache
+
+        # _get returns None for all top-players endpoints (simulates 404)
+        mock_get.return_value = None
+
+        result = sofascore_client.get_league_player_stats(17, 50000, limit=200)
+
+        # The function should still return a list (possibly empty)
+        self.assertIsInstance(result, list)
+
+        # Check which URLs were called
+        called_urls = [call.args[0] for call in mock_get.call_args_list]
+
+        # For each stat type, only page 1 should have been tried (no fallback,
+        # no page 2-4) because page 1 returned None → immediate break
+        for stat_type in ("rating", "expectedGoals", "accuratePasses"):
+            page1_calls = [
+                u for u in called_urls
+                if f"top-players/{stat_type}" in u and "page=1" in u
+            ]
+            page2_calls = [
+                u for u in called_urls
+                if f"top-players/{stat_type}" in u and "page=2" in u
+            ]
+            self.assertTrue(
+                len(page1_calls) >= 1,
+                f"Page 1 for {stat_type} should have been called",
+            )
+            self.assertEqual(
+                len(page2_calls), 0,
+                f"Page 2 for {stat_type} should NOT have been called",
+            )
