@@ -426,39 +426,54 @@ def auto_train_from_player_history(
 # vs individual skill (paper Sections 2.3, 4.2).
 # Higher = more team-dependent (adapts more to new team's style).
 # Lower = more individual (retains player's own level).
+#
+# Calibration evidence from paper:
+#   - De Jong to Man Utd: up to 50% drop in creative metrics — team style
+#     dominance for passing/creative metrics (paper Section 5)
+#   - Doku take-ons: barely change across destinations — "irreducible"
+#     individual skill (paper Section 4.3.1, Fig 15e)
+#   - Sterling to Barcelona: pattern carries over — team-relative production
+#     retained (paper Section 5)
 _TEAM_INFLUENCE: Dict[str, float] = {
-    "expected_goals": 0.35,           # Team creates chances, moderate influence
-    "expected_assists": 0.40,         # Passing system drives assists
-    "shots": 0.30,                    # Team creates shooting situations
+    "expected_goals": 0.40,           # Team creates chances, moderate influence
+    "expected_assists": 0.50,         # Passing system drives assists strongly
+    "shots": 0.35,                    # Team creates shooting situations
     "successful_dribbles": 0.15,      # Highly individual, "irreducible" per paper
-    "successful_crosses": 0.45,       # Tactical role dictates crossing volume
-    "touches_in_opposition_box": 0.50,  # Team attacking approach drives box presence
-    "successful_passes": 0.50,        # Passing style is heavily tactical
-    "pass_completion_pct": 0.35,      # Mix of individual quality + system
-    "accurate_long_balls": 0.45,      # Tactical approach to build-up play
-    "chances_created": 0.40,          # Team's attacking system
-    "clearances": 0.50,               # Defensive approach/press height
-    "interceptions": 0.45,            # Press intensity and defensive line
-    "possession_won_final_3rd": 0.35,  # Press style, moderate team influence
+    "successful_crosses": 0.55,       # Tactical role dictates crossing volume
+    "touches_in_opposition_box": 0.55,  # Team attacking approach drives box presence
+    "successful_passes": 0.60,        # Passing style is heavily tactical
+    "pass_completion_pct": 0.40,      # Mix of individual quality + system
+    "accurate_long_balls": 0.50,      # Tactical approach to build-up play
+    "chances_created": 0.50,          # Team's attacking system
+    "clearances": 0.55,               # Defensive approach/press height
+    "interceptions": 0.50,            # Press intensity and defensive line
+    "possession_won_final_3rd": 0.40,  # Press style, moderate team influence
 }
 
 # Per-metric sensitivity to relative ability changes (paper Section 2.2).
 # Offensive metrics scale positively (better team → more output).
 # Defensive workload scales inversely (better team → less defending).
+#
+# Calibration targets from paper:
+#   - Mbappé to Real Madrid: 8-15% decrease (Ligue 1 → La Liga, Section 5)
+#   - Healey to Brighton: ~30% drop in shooting (Ligue 2 → PL, Section 5)
+#   - Adeyemi to Dortmund: top 20% → top 33% (Austrian BL → Bundesliga, Section 5)
+#   - De Jong to Man Utd: up to 50% in creative (large style gap, Section 5)
+#   - Doku take-ons: near-zero change ("irreducible", Section 4.3.1)
 _ABILITY_SENSITIVITY: Dict[str, float] = {
-    "expected_goals": 0.50,
-    "expected_assists": 0.42,         # Slightly higher than shots — creative output scales more
-    "shots": 0.38,                    # Volume metric, moderate scaling
-    "successful_dribbles": 0.15,      # Barely affected by team quality
-    "successful_crosses": 0.30,
-    "touches_in_opposition_box": 0.50,
-    "successful_passes": 0.22,        # Possession teams pass more, but also individual
-    "pass_completion_pct": 0.10,
-    "accurate_long_balls": 0.18,      # Direct play slightly decreases at top teams
-    "chances_created": 0.45,          # Creative output scales strongly with team quality
-    "clearances": -0.40,              # Better team → less clearances
-    "interceptions": -0.30,           # Better team → less interceptions
-    "possession_won_final_3rd": 0.25, # Better team → more high press
+    "expected_goals": 0.82,
+    "expected_assists": 0.70,         # Creative output scales strongly with team quality
+    "shots": 0.62,                    # Volume metric, good scaling
+    "successful_dribbles": 0.18,      # Barely affected by team quality — "irreducible"
+    "successful_crosses": 0.50,
+    "touches_in_opposition_box": 0.85,
+    "successful_passes": 0.35,        # Possession teams pass more, but also individual
+    "pass_completion_pct": 0.15,
+    "accurate_long_balls": 0.28,      # Direct play slightly decreases at top teams
+    "chances_created": 0.75,          # Creative output scales strongly with team quality
+    "clearances": -0.65,              # Better team → much less clearances
+    "interceptions": -0.50,           # Better team → less interceptions
+    "possession_won_final_3rd": 0.40, # Better team → more high press
 }
 
 
@@ -469,20 +484,24 @@ _ABILITY_SENSITIVITY: Dict[str, float] = {
 # - Stronger teams: higher attacking outputs, lower defensive workload
 # - Different metrics respond to team quality at different rates
 # - Individual skills (dribbling) barely change between leagues
+#
+# Increased from prior values to produce meaningful per-metric differentiation
+# when real team-position data is unavailable.  Without these, all 13 metrics
+# would change by nearly identical percentages (flat, uninformative).
 _LEAGUE_STYLE_COEFF: Dict[str, float] = {
-    "expected_goals": 0.12,           # Team creates more chances
-    "expected_assists": 0.18,         # Better passing systems produce more xA
-    "shots": 0.08,                    # More attacking play at stronger teams
-    "successful_dribbles": 0.02,      # Near-pure individual skill
-    "successful_crosses": 0.11,       # Depends on team's width of play
-    "touches_in_opposition_box": 0.14,  # More box presence at attacking teams
-    "successful_passes": 0.07,        # More possession at stronger teams
-    "pass_completion_pct": 0.03,      # Slightly better pass accuracy
-    "accurate_long_balls": -0.04,     # Direct teams use MORE long balls (often weaker)
-    "chances_created": 0.16,          # Team attacking quality drives this
-    "clearances": -0.14,              # Less defending at stronger teams
-    "interceptions": -0.09,           # Less defensive work needed
-    "possession_won_final_3rd": 0.09,  # More high pressing at stronger teams
+    "expected_goals": 0.30,           # Team creates more chances
+    "expected_assists": 0.40,         # Better passing systems produce more xA
+    "shots": 0.20,                    # More attacking play at stronger teams
+    "successful_dribbles": 0.04,      # Near-pure individual skill
+    "successful_crosses": 0.25,       # Depends on team's width of play
+    "touches_in_opposition_box": 0.30,  # More box presence at attacking teams
+    "successful_passes": 0.15,        # More possession at stronger teams
+    "pass_completion_pct": 0.06,      # Slightly better pass accuracy
+    "accurate_long_balls": -0.08,     # Direct teams use MORE long balls (often weaker)
+    "chances_created": 0.35,          # Team attacking quality drives this
+    "clearances": -0.30,              # Less defending at stronger teams
+    "interceptions": -0.20,           # Less defensive work needed
+    "possession_won_final_3rd": 0.20,  # More high pressing at stronger teams
 }
 
 
@@ -499,31 +518,57 @@ _LEAGUE_STYLE_COEFF: Dict[str, float] = {
 #   league_gap = (source_league_mean − target_league_mean) / 100
 #   opposition_boost = player_val * _OPP_QUALITY_SENS[m] * league_gap
 #
-# Paper evidence (Section 4.3.1):
+# Paper evidence (Section 4.3.1, Section 5):
 #   - Doku xG INCREASES at Gwangju (much weaker league) despite weak team
 #   - Doku take-ons barely change (individual / "irreducible" per paper)
-#   - Final-third passes drop slightly but Doku still in 73rd percentile
 #   - Mbappé: 8-15% decrease moving to HARDER league (La Liga)
+#   - Healey: ~30% drop in shooting metrics (Ligue 2 → Premier League)
+#   - Mooy: top metrics "hold up well" despite weaker → stronger league
 #
 # Positive values: weaker opposition → higher per-90 output.
 # Near-zero: individual metrics unaffected by opposition quality.
 # Negative: defensive metrics increase when facing weaker opposition
 #           (team has less defending to do).
 _OPP_QUALITY_SENS: Dict[str, float] = {
-    "expected_goals": 0.85,           # Weaker defenders/GK → significantly more xG per 90
-    "expected_assists": 0.55,         # Less pressing → more creative freedom
-    "shots": 0.65,                    # More space → more shooting opportunities
-    "successful_dribbles": 0.08,      # "Irreducible" — barely affected by opposition
-    "successful_crosses": 0.40,       # More space on the flanks
-    "touches_in_opposition_box": 0.70,  # More dominant possession in box
-    "successful_passes": 0.20,        # Slightly easier passing against weaker press
-    "pass_completion_pct": 0.10,      # Marginal improvement
-    "accurate_long_balls": 0.05,      # Barely affected
-    "chances_created": 0.60,          # More creative opportunities vs weaker defence
-    "clearances": -0.35,              # Less defending when opposition is weaker
-    "interceptions": -0.30,           # Less defending needed
-    "possession_won_final_3rd": 0.20,  # Easier to win ball vs weaker opposition
+    "expected_goals": 1.30,           # Weaker defenders/GK → significantly more xG per 90
+    "expected_assists": 0.85,         # Less pressing → more creative freedom
+    "shots": 1.00,                    # More space → more shooting opportunities
+    "successful_dribbles": 0.12,      # "Irreducible" — barely affected by opposition
+    "successful_crosses": 0.60,       # More space on the flanks
+    "touches_in_opposition_box": 1.10,  # More dominant possession in box
+    "successful_passes": 0.30,        # Slightly easier passing against weaker press
+    "pass_completion_pct": 0.15,      # Marginal improvement
+    "accurate_long_balls": 0.08,      # Barely affected
+    "chances_created": 0.90,          # More creative opportunities vs weaker defence
+    "clearances": -0.55,              # Less defending when opposition is weaker
+    "interceptions": -0.45,           # Less defending needed
+    "possession_won_final_3rd": 0.30,  # Easier to win ball vs weaker opposition
 }
+
+
+# ── Structural parameters for paper_heuristic_predict ─────────────────────────
+# These control the formula shape, not per-metric behavior. Extracted as named
+# constants for clarity and future tuning (code review feedback).
+
+# Paper A.3 β2 coefficient: how strongly a player conforms to the new team's
+# position-level averages. Higher = more adaptation to new team's style.
+# Increased from 0.15 to 0.25 to produce paper-scale style effects.
+_CONFORMITY_COEFF = 0.25
+
+# Quadratic damping on the team quality polynomial (paper A.3 x4² term).
+# Prevents unrealistically large effects for extreme transfers. Reduced from
+# 0.15 to 0.08 to allow bigger predictions for large ability gaps — paper shows
+# 30%+ changes for extreme moves (Healey Ligue 2→PL, de Jong Barça→Man Utd).
+_DAMPING_FACTOR = 0.08
+
+# League-quality attenuation: scales down style_diff for cross-league moves
+# where position-average differences reflect league quality, not tactics.
+# Factor: how aggressively style is attenuated per unit of league gap.
+# Floor: minimum style influence even for extreme cross-league moves.
+# Reduced from (2.0, 0.15) to (1.5, 0.25) — paper shows style effects persist
+# in cross-league moves (Doku's xA differs at Liverpool vs Barcelona, Section 4.3.1).
+_LEAGUE_ATTN_FACTOR = 1.5
+_LEAGUE_ATTN_FLOOR = 0.25
 
 
 def paper_heuristic_predict(
@@ -667,29 +712,26 @@ def paper_heuristic_predict(
         # not because of tactical style).  The paper's trained model handles
         # this via the separate league_ability features.  We approximate by
         # attenuating style_diff proportionally to the league gap.
-        # Same-league: full style_diff (league_attn=1.0).
-        # Large cross-league gap: mostly due to league quality, not style.
-        # League-quality adjustment: when teams are in different leagues,
-        # much of the position-average difference is due to league quality
-        # (e.g., Gwangju wingers have lower xG because of weaker league,
-        # not because of tactical style).  The paper's trained model handles
-        # this via the separate league_ability features.  We approximate by
-        # attenuating style_diff proportionally to the league gap.
         # Same-league (league_gap≈0): full style_diff (league_attn≈1.0).
-        # Large cross-league gap (|league_gap|≥0.30): mostly league quality,
+        # Large cross-league gap (|league_gap|≥0.40): mostly league quality,
         # so attn drops to 0.40 or below.
-        # Factor of 2.0 chosen so that a 30-point gap (e.g., Ligue 1 → K-League)
-        # reduces style influence to ~40%, matching the paper's observation
-        # that Doku retains elite output at Gwangju.
-        # Floor of 0.15 ensures some style adaptation always occurs.
-        league_attn = max(0.15, 1.0 - abs(league_gap) * 2.0)
+        # Factor of 1.5 chosen so that a 30-point gap (e.g., Ligue 1 → K-League)
+        # reduces style influence to ~55%, while a 40-point gap (extreme) drops
+        # to ~40%.  This is less aggressive than before — the paper's examples
+        # show style effects persist even in cross-league moves (Doku's xA
+        # changes differently at Liverpool vs Barcelona, Section 4.3.1).
+        # Floor of 0.25 ensures meaningful style adaptation always occurs.
+        league_attn = max(_LEAGUE_ATTN_FLOOR, 1.0 - abs(league_gap) * _LEAGUE_ATTN_FACTOR)
 
         # Paper A.3 β3·x3: style adaptation
         style_shift = effective_team_inf * style_diff * league_attn
 
         # Paper A.3 β2·x2: conformity to new team's position average.
-        # Small pull — attenuated for cross-league moves.
-        conformity_pull = 0.15 * effective_team_inf * (tgt_avg - player_val) * league_attn
+        # The paper notes players partly conform to how the target team uses
+        # their position (Section 2.3, Appendix A.3).  Attenuated for
+        # cross-league moves where position averages reflect league quality
+        # more than tactical style.
+        conformity_pull = _CONFORMITY_COEFF * effective_team_inf * (tgt_avg - player_val) * league_attn
 
         # Base: player retains their level + small style/conformity adjustments
         base = player_val + style_shift + conformity_pull
@@ -704,7 +746,10 @@ def paper_heuristic_predict(
 
         # Team quality: moving to a better/worse team.
         # Uses team_gap (positive = better team → more output for offensive).
-        team_effect = sensitivity * team_gap * (1.0 - 0.15 * abs(team_gap))
+        # Damping factor 0.08 (reduced from 0.15) allows larger effects for
+        # big transfers — paper shows 30%+ changes for extreme moves
+        # (Healey Ligue 2→PL, de Jong Barça→Man Utd).
+        team_effect = sensitivity * team_gap * (1.0 - _DAMPING_FACTOR * abs(team_gap))
 
         # Opposition quality: moving to a weaker/stronger league.
         # Uses league_gap (positive = weaker league → more per-90 output).

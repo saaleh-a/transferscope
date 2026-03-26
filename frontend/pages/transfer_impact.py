@@ -312,8 +312,32 @@ def render():
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
     pct_changes = compute_percentage_changes(baseline, predicted_target)
+
+    # Transfer context summary — paper Section 4.3 style
+    _ra_label = "stronger" if change_ra > 0 else ("weaker" if change_ra < 0 else "equivalent")
+    st.markdown(
+        f'<div style="display:flex; gap:1.5rem; margin:0.8rem 0 1.2rem; flex-wrap:wrap;">'
+        f'<div class="ts-stat-card" style="flex:1; min-width:160px;">'
+        f'<span class="ts-stat-label">Relative Ability Δ</span>'
+        f'<span class="ts-stat-value" style="font-size:1.3rem;">{change_ra:+.1f}</span>'
+        f'<span style="font-size:0.72rem; color:var(--text-muted);">{_ra_label} position</span>'
+        f'</div>'
+        f'<div class="ts-stat-card" style="flex:1; min-width:160px;">'
+        f'<span class="ts-stat-label">Source Power</span>'
+        f'<span class="ts-stat-value" style="font-size:1.3rem;">{source_norm:.0f}</span>'
+        f'<span style="font-size:0.72rem; color:var(--text-muted);">league avg {source_league_mean:.0f}</span>'
+        f'</div>'
+        f'<div class="ts-stat-card" style="flex:1; min-width:160px;">'
+        f'<span class="ts-stat-label">Target Power</span>'
+        f'<span class="ts-stat-value" style="font-size:1.3rem;">{target_norm:.0f}</span>'
+        f'<span style="font-size:0.72rem; color:var(--text-muted);">league avg {target_league_mean:.0f}</span>'
+        f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
     metric_bar.show(baseline, predicted_target, pct_changes,
-                    title=f"Predicted Changes: {player_name} -> {target_club_display}")
+                    title=f"Predicted Changes: {player_name} → {target_club_display}")
 
     # ── Summary table — right after metric bars for easy comparison ──────
     _LABELS = {
@@ -326,12 +350,25 @@ def render():
         "possession_won_final_3rd": "Def Att 3rd",
     }
 
-    section_header("Detailed Predictions", "Per-90 breakdown across all 13 core metrics")
+    # Paper Table 1 group labels
+    _GROUPS = {
+        "expected_goals": "Shooting", "shots": "Shooting",
+        "expected_assists": "Passing", "successful_crosses": "Passing",
+        "successful_passes": "Passing", "pass_completion_pct": "Passing",
+        "accurate_long_balls": "Passing", "chances_created": "Passing",
+        "touches_in_opposition_box": "Passing",
+        "successful_dribbles": "Dribbling",
+        "clearances": "Defending", "interceptions": "Defending",
+        "possession_won_final_3rd": "Defending",
+    }
+
+    section_header("Detailed Predictions", "Per-90 breakdown across all 13 core metrics (paper Table 1 groups)")
     import pandas as pd
     rows = []
     for m in CORE_METRICS:
         change = pct_changes.get(m, 0)
         rows.append({
+            "Group": _GROUPS.get(m, ""),
             "Metric": _LABELS.get(m, m),
             "Simulated Current": round(baseline.get(m, 0), 3),
             "Predicted (per 90)": round(predicted_target.get(m, 0), 3),
@@ -341,8 +378,8 @@ def render():
     df_table = pd.DataFrame(rows)
     st.dataframe(
         df_table.style.map(
-            lambda v: "color: #3FB950" if isinstance(v, (int, float)) and v > 0
-            else ("color: #DA3633" if isinstance(v, (int, float)) and v < 0 else ""),
+            lambda v: "color: #2DD4A8" if isinstance(v, (int, float)) and v > 0
+            else ("color: #F45B69" if isinstance(v, (int, float)) and v < 0 else ""),
             subset=["Change %"],
         ),
         use_container_width=True,
