@@ -449,7 +449,7 @@ Input (group-specific feature subset)
 | Defending | 13 | 128 → 64 | 3 | Clearances, Interceptions, Possession Won |
 
 > **In plain English:**
-> - Each specialist brain only sees the information relevant to its job — the shooting brain doesn't need to know about long pass accuracy at the target team.
+> - Each specialist brain only sees the information relevant to its job (ranging from 7 to 25 features per group) — e.g., the Dribbling group excludes passing and defending team-position metrics, while the Shooting group excludes defensive metrics.
 > - **Dense layer** = a layer of artificial neurons. 128 neurons in the first layer, 64 in the second. Each neuron looks at the group's inputs and learns to focus on certain patterns.
 > - **ReLU activation** = "if the answer is negative, just output zero; otherwise output the answer." This helps the network learn non-linear patterns (like "moving up 30 power ranking points affects stats differently than moving up 5").
 > - **Dropout 30%** = during training, randomly turn off 30% of neurons. This is like studying by covering up parts of your notes — it forces the model to not rely too heavily on any single piece of information and makes it better at generalizing.
@@ -457,7 +457,7 @@ Input (group-specific feature subset)
 
 ### 8.2 Input Features (43-key feature dict, per-group slicing)
 
-`build_feature_dict()` assembles a 43-key dictionary from components. Each model group then slices only its relevant features internally via GROUP_FEATURE_SUBSETS.
+`build_feature_dict()` assembles a 43-key dictionary from components. Each model group then slices only its relevant features internally via GROUP_FEATURE_SUBSETS — e.g., the Dribbling group (7 features) only sees player dribbles, the 4 ability scores, and source/target team-position dribbles, excluding all passing and defending metrics.
 
 ```
 Full feature dict (43 keys):
