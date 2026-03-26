@@ -543,13 +543,15 @@ def paper_heuristic_predict(
     _has_style_data = _check_has_style_data(player_per90, source_pos_avg, target_pos_avg)
 
     # Player quality modifier: elite players retain more individual output.
-    # Centered at 6.5 (average Sofascore rating), scaled so that:
-    #   - 7.5+ rated player: quality_mod ~= 0.15+ (retains ~15%+ more)
-    #   - 6.0 rated player: quality_mod ~= -0.075 (adapts more to team)
-    # Only affects team_influence blending, not ability polynomial.
-    quality_mod = 0.0
+    # Centered at 6.5 (average Sofascore rating), scaled multiplicatively so
+    # that higher-rated players have reduced (but never zero) team influence.
+    # e.g. rating=7.5 → quality_scale=0.85 (15% less team-dependent)
+    #      rating=6.0 → quality_scale=1.075 (slightly more team-dependent)
+    quality_scale = 1.0
     if player_rating is not None and isinstance(player_rating, (int, float)):
-        quality_mod = (player_rating - 6.5) * 0.15
+        raw_mod = (player_rating - 6.5) * 0.15
+        # Clamp so team influence is scaled between 0.7x and 1.3x
+        quality_scale = max(0.7, min(1.3, 1.0 - raw_mod))
 
     predicted: Dict[str, float] = {}
     for m in CORE_METRICS:
@@ -572,8 +574,8 @@ def paper_heuristic_predict(
             style_diff = estimated_style_diff
 
         # Modulate team influence by player quality: elite players are
-        # less team-dependent (lower effective team_inf).
-        effective_team_inf = max(0.0, min(1.0, team_inf - quality_mod))
+        # less team-dependent (lower effective team_inf), multiplicatively.
+        effective_team_inf = team_inf * quality_scale
 
         # Base prediction: player's stats shifted toward target team's style
         base = player_val + effective_team_inf * style_diff

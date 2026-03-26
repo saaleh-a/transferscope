@@ -394,7 +394,7 @@ def render():
             "Team": c.team,
             "League": c.league or "",
             "Position": c.position,
-            "Rating": f"{c.rating:.2f}" if c.rating else "—",
+            "Rating": f"{c.rating:.2f}" if c.rating is not None else "—",
             "Score": f"{c.score:.3f}",
             "Top Changes": top_str,
         })
