@@ -537,10 +537,10 @@ _STRIP_ABBREVS = re.compile(
 )
 
 # Minimum similarity ratio (0-1) for SequenceMatcher to accept a match.
-# 0.65 rejects false positives like "Arsenal" matching "Marseille" (0.625).
-# Edge cases below 0.65 (ManCity ↔ ManchesterCity = 0.667, ManUtd ↔
+# 0.70 rejects false positives like "Orlando City" matching "Man City" (0.667).
+# Edge cases below 0.70 (ManCity ↔ ManchesterCity = 0.667, ManUtd ↔
 # ManchesterUnited = 0.545) are handled by _EXTREME_ABBREVS instead.
-_FUZZY_THRESHOLD = 0.65
+_FUZZY_THRESHOLD = 0.70
 
 # Abbreviation map for cases where SequenceMatcher mathematically fails
 # (ratio < 0.5) and substring matching can't help.  These cover common
@@ -696,6 +696,48 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "atleticomineiro": ["atleticomg", "camatleticomineiro"],
     "riverplate": ["cariverplate"],
     "bocajuniors": ["cabocajuniors"],
+    # MLS — prevent false positives with European "City" / "United" teams
+    "orlandocity": ["orlandocitysc", "orlando"],
+    "newyorkcity": ["newyorkcityfc", "nycfc", "nyc"],
+    "nycfc": ["newyorkcity", "newyorkcityfc"],
+    "intermiami": ["intermiamifc", "intermiamicf"],
+    "intermiamifc": ["intermiami"],
+    "intermiamicf": ["intermiami"],
+    "losangelesfc": ["lafc"],
+    "lafc": ["losangelesfc"],
+    "losangelesgalaxy": ["lagalaxy", "galaxy"],
+    "lagalaxy": ["losangelesgalaxy"],
+    "galaxy": ["losangelesgalaxy"],
+    "atlantaunited": ["atlantaunitedfc", "atlanta"],
+    "atlantaunitedfc": ["atlantaunited"],
+    "dcunited": ["dcunitedfc"],
+    "dcunitedfc": ["dcunited"],
+    "portlandtimbers": ["portland", "timbers"],
+    "seattlesounders": ["seattle", "sounders", "seattlesoundersfc"],
+    "seattlesoundersfc": ["seattlesounders"],
+    "cincinnatitied": ["cincinnatidied", "fccincinnati"],
+    "fccincinnati": ["cincinnati"],
+    "nashvillesc": ["nashville"],
+    "charlottefc": ["charlotte"],
+    "columbusc": ["columbuscrew", "crew"],
+    "columbuscrew": ["columbusc", "crew"],
+    "minnesotaunited": ["minnesota"],
+    "newyorkredbulls": ["nyredbulls", "redbulls", "nyrb"],
+    "redbulls": ["newyorkredbulls"],
+    "sportingkansascity": ["sportingkc", "kansascity"],
+    "sportingkc": ["sportingkansascity"],
+    "houstondy": ["houstondynamo"],
+    "houstondynamo": ["houstondy", "dynamo"],
+    # Saudi Arabia
+    "alhilal": ["alhilalfc", "hilal"],
+    "alahli": ["alahlifc", "ahli"],
+    "alnassr": ["alnassrfc", "nassr"],
+    "alittihad": ["alittihadfc", "ittihad"],
+    # Japan
+    "urawareddiamonds": ["urawareds", "urawa"],
+    "yokohamamarinos": ["yokohamafmarinos", "marinos"],
+    "visselkobe": ["kobe", "vissel"],
+    "kawasakifrontale": ["kawasaki"],
 }
 
 
