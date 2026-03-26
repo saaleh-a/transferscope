@@ -379,6 +379,31 @@ def get_league_player_stats(
                         merged_stats[k] = v
                 per90 = _parse_stats(merged_stats, minutes)
 
+                # Extract player age from dateOfBirthTimestamp if available
+                dob_ts = player_data.get("dateOfBirthTimestamp")
+                player_age = None
+                if dob_ts is not None:
+                    try:
+                        # Use current time as reference; cached entries will
+                        # refresh daily so drift is at most ~1 day.
+                        age_seconds = time.time() - int(dob_ts)
+                        if age_seconds > 0:
+                            player_age = int(age_seconds / (365.25 * 86400))
+                    except (ValueError, TypeError):
+                        pass
+
+                # Extract average match rating (Sofascore 0-10 scale)
+                avg_rating = (
+                    merged_stats.get("rating")
+                    or stats_dict.get("rating")
+                    or item.get("rating")
+                )
+                if avg_rating is not None:
+                    try:
+                        avg_rating = float(avg_rating)
+                    except (ValueError, TypeError):
+                        avg_rating = None
+
                 players_map[pid] = {
                     "id": pid,
                     "name": player_data.get("name") or player_data.get("shortName", ""),
@@ -387,8 +412,10 @@ def get_league_player_stats(
                     "position": _map_position(
                         player_data.get("position") or ""
                     ),
+                    "age": player_age,
                     "minutes_played": minutes,
                     "per90": per90,
+                    "rating": avg_rating,
                 }
                 if len(players_map) >= limit:
                     break
@@ -642,6 +669,13 @@ def get_player_stats(
             )
             result["per90"] = _parse_stats(stats, result["minutes_played"])
             result["raw"] = stats_raw
+            # Extract average match rating (Sofascore 0-10 scale)
+            avg_rating = stats.get("rating")
+            if avg_rating is not None:
+                try:
+                    result["rating"] = float(avg_rating)
+                except (ValueError, TypeError):
+                    pass
     else:
         result["raw"] = {}
 
@@ -903,6 +937,7 @@ def _make_empty_result() -> Dict[str, Any]:
         "minutes_played": 0,
         "appearances": 0,
         "per90": {m: None for m in ALL_METRICS},
+        "rating": None,
         "raw": {},
     }
 
