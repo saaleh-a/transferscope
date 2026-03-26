@@ -246,7 +246,7 @@ Any league available on Sofascore can be added by extending the league registry.
 
 ## References
 
-- Dinsdale, J. & Gallagher, J. (2022). *The Transfer Portal: Predicting the Impact of a Player Transfer on the Receiving Club.* [Paper](https://doi.org/10.1007/978-3-031-02044-5_14)
+- Dinsdale, J. & Gallagher, J. (2022). *The Transfer Portal: Predicting the Impact of a Player Transfer on the Receiving Club.* [Paper](https://doi.org/10.48550/arXiv.2201.11533)
 - ClubElo: [clubelo.com](http://clubelo.com)
 - WorldFootballElo: [eloratings.net](http://eloratings.net)
 - Sofascore: [sofascore.com](https://www.sofascore.com)
