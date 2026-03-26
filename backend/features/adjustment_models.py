@@ -486,6 +486,46 @@ _LEAGUE_STYLE_COEFF: Dict[str, float] = {
 }
 
 
+# Per-metric sensitivity to opposition quality (paper Section 4.3, Appendix A.3).
+#
+# The paper's trained model receives league_ability_current and
+# league_ability_target as separate features (build_feature_dict), so it
+# learns that moving to a weaker league means facing weaker opposition,
+# which boosts offensive per-90 output.  Our heuristic only receives
+# change_relative_ability = (tgt_team−tgt_league) − (src_team−src_league),
+# which collapses the absolute league quality gap.
+#
+# This dict restores the paper's opposition-quality signal:
+#   league_gap = (source_league_mean − target_league_mean) / 100
+#   opposition_boost = player_val * _OPP_QUALITY_SENS[m] * league_gap
+#
+# Paper evidence (Section 4.3.1):
+#   - Doku xG INCREASES at Gwangju (much weaker league) despite weak team
+#   - Doku take-ons barely change (individual / "irreducible" per paper)
+#   - Final-third passes drop slightly but Doku still in 73rd percentile
+#   - Mbappé: 8-15% decrease moving to HARDER league (La Liga)
+#
+# Positive values: weaker opposition → higher per-90 output.
+# Near-zero: individual metrics unaffected by opposition quality.
+# Negative: defensive metrics increase when facing weaker opposition
+#           (team has less defending to do).
+_OPP_QUALITY_SENS: Dict[str, float] = {
+    "expected_goals": 0.55,           # Weaker defenders/GK → more xG per 90
+    "expected_assists": 0.35,         # Less pressing → more creative freedom
+    "shots": 0.40,                    # More space → more shooting opportunities
+    "successful_dribbles": 0.08,      # "Irreducible" — barely affected by opposition
+    "successful_crosses": 0.25,       # Somewhat more space on the flanks
+    "touches_in_opposition_box": 0.45,  # More dominant possession in box
+    "successful_passes": 0.15,        # Slightly easier passing against weaker press
+    "pass_completion_pct": 0.08,      # Marginal improvement
+    "accurate_long_balls": 0.05,      # Barely affected
+    "chances_created": 0.38,          # More creative opportunities vs weaker defence
+    "clearances": -0.25,              # Less defending when opposition is weaker
+    "interceptions": -0.20,           # Less defending needed
+    "possession_won_final_3rd": 0.15,  # Easier to win ball vs weaker opposition
+}
+
+
 def paper_heuristic_predict(
     player_per90: Dict[str, float],
     source_pos_avg: Dict[str, float],
