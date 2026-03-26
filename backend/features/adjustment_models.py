@@ -716,7 +716,7 @@ def paper_heuristic_predict(
         if not _has_style_data:
             league_coeff = _LEAGUE_STYLE_COEFF.get(m, 0.05)
             # Attenuate for extreme moves: |ra|=0.15 → 70% retained,
-            # |ra|=0.30 → 40% retained, |ra|=0.50+ → 30% floor.
+            # |ra|=0.30 → 40% retained, |ra|≥0.35 → 30% floor.
             style_scale = max(0.3, 1.0 - abs(ra) * 2.0)
             estimated_style_diff = src_avg * league_coeff * ra * style_scale
             style_diff = estimated_style_diff

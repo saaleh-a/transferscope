@@ -84,8 +84,8 @@ Moving to a weaker league means facing weaker defenders and goalkeepers — boos
 per-90 offensive output *even if the team is worse*. This is independent of team
 quality:
 
-- **Kvaratskhelia → Championship:** xG rises because Championship defenders are weaker,
-  even though Southampton creates fewer chances than PSG
+- **Elite player → weaker league (hypothetical):** xG rises because weaker-league defenders are
+  easier to beat, even though the team itself creates fewer chances
 - **Player → K-League:** xG increases significantly despite much weaker team (paper
   Section 4.3.1 — Doku at Gwangju)
 - **Dribbling:** Barely changes (0.12 sensitivity) — individual skill
@@ -210,7 +210,7 @@ player has in the rolling window:
 
 | Badge | Weight | Meaning |
 |-------|--------|---------|
-| 🟢 GREEN | > 0.7 | 700+ of 1000 target minutes — data-rich, reliable prediction |
+| 🟢 GREEN | > 0.7 | 700+ minutes played — data-rich, reliable prediction |
 | 🟡 AMBER | 0.3–0.7 | Mixed data — prediction blends observed stats with prior estimates |
 | 🔴 RED | < 0.3 | Heavily prior-dependent — treat prediction with caution |
 
