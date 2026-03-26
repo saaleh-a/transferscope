@@ -12,7 +12,7 @@ from typing import Dict, Optional
 import streamlit as st
 
 from backend.data import sofascore_client
-from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
+from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS, normalize_position
 from backend.features import power_rankings, rolling_windows
 from backend.features.adjustment_models import paper_heuristic_predict
 from backend.models.shortlist_scorer import compute_percentage_changes
@@ -257,36 +257,30 @@ def render():
     # matter more; for defenders, defensive metrics matter more. This
     # prevents a forward being rated TEPID just because their defensive
     # metrics are stable while attacking metrics are improving.
-    from backend.data.sofascore_client import normalize_position
     norm_pos = normalize_position(position)
 
+    def _metric_weight(metric: str) -> float:
+        """Return position-aware weight for a metric."""
+        if norm_pos == "Forward" and metric in OFFENSIVE_METRICS:
+            return 1.5
+        if norm_pos == "Forward" and metric in DEFENSIVE_METRICS:
+            return 0.5
+        if norm_pos == "Defender" and metric in DEFENSIVE_METRICS:
+            return 1.5
+        if norm_pos == "Defender" and metric in OFFENSIVE_METRICS:
+            return 0.5
+        return 1.0
+
     weighted_changes: list = []
+    weight_sum = 0.0
     for m, change in pct_changes.items():
         if change == 0:
             continue
-        weight = 1.0
-        if norm_pos == "Forward" and m in OFFENSIVE_METRICS:
-            weight = 1.5
-        elif norm_pos == "Forward" and m in DEFENSIVE_METRICS:
-            weight = 0.5
-        elif norm_pos == "Defender" and m in DEFENSIVE_METRICS:
-            weight = 1.5
-        elif norm_pos == "Defender" and m in OFFENSIVE_METRICS:
-            weight = 0.5
-        weighted_changes.append(change * weight)
+        w = _metric_weight(m)
+        weighted_changes.append(change * w)
+        weight_sum += w
 
-    if weighted_changes:
-        total_weight_sum = sum(
-            1.5 if (norm_pos == "Forward" and m in OFFENSIVE_METRICS)
-            or (norm_pos == "Defender" and m in DEFENSIVE_METRICS)
-            else 0.5 if (norm_pos == "Forward" and m in DEFENSIVE_METRICS)
-            or (norm_pos == "Defender" and m in OFFENSIVE_METRICS)
-            else 1.0
-            for m, c in pct_changes.items() if c != 0
-        )
-        avg_change = sum(weighted_changes) / total_weight_sum if total_weight_sum > 0 else 0
-    else:
-        avg_change = 0
+    avg_change = sum(weighted_changes) / weight_sum if weight_sum > 0 else 0
 
     verdict, color, emoji = _verdict(avg_change, has_data=has_real_data)
 
