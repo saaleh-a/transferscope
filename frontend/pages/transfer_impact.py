@@ -141,7 +141,8 @@ def render():
         minutes = 0
     current_per90 = player_stats.get("per90", {})
 
-    player_info_card(player_name, current_team, position, minutes, selected_season_label)
+    player_info_card(player_name, current_team, position, minutes, selected_season_label,
+                     rating=player_stats.get("rating"))
 
     # ── Power Rankings ───────────────────────────────────────────────────
     with st.spinner("Computing Power Rankings..."):
@@ -283,11 +284,13 @@ def render():
     # relative ability polynomial to give per-metric predictions
     # (not flat group adjustments).
     if not predicted_target:
+        player_rating = player_stats.get("rating")
         predicted_target = paper_heuristic_predict(
             player_per90=current_per90_clean,
             source_pos_avg=source_pos_avg,
             target_pos_avg=target_pos_avg,
             change_relative_ability=change_ra,
+            player_rating=player_rating,
         )
         # Paper Section 4: baseline = simulate at current club (ra=0, same team)
         predicted_current = paper_heuristic_predict(
@@ -295,6 +298,7 @@ def render():
             source_pos_avg=source_pos_avg,
             target_pos_avg=source_pos_avg,
             change_relative_ability=0.0,
+            player_rating=player_rating,
         )
 
     # Paper-faithful baseline: compare predicted-at-target vs predicted-at-current

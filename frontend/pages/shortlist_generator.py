@@ -291,6 +291,7 @@ def render():
                     source_pos_avg=lp_current,
                     target_pos_avg=source_pos_avg,
                     change_relative_ability=delta_ra,
+                    player_rating=lp.get("rating"),
                 )
 
                 # Normalize position for consistent filtering
@@ -302,10 +303,13 @@ def render():
                     name=lp.get("name", "Unknown"),
                     team=lp_team,
                     position=norm_pos if norm_pos != "Unknown" else raw_pos,
+                    age=lp.get("age"),
                     minutes_played=lp.get("minutes_played"),
                     league=league_info.name,
                     predicted_per90=predicted,
                     current_per90=lp_current,
+                    club_power_ranking=lp_norm,
+                    rating=lp.get("rating"),
                 ))
 
         league_progress.empty()
@@ -360,6 +364,7 @@ def render():
                 league=teammate_league,
                 predicted_per90=tp_current.copy(),
                 current_per90=tp_current,
+                club_power_ranking=source_norm,
             ))
 
     if not candidates:
@@ -389,6 +394,7 @@ def render():
             "Team": c.team,
             "League": c.league or "",
             "Position": c.position,
+            "Rating": f"{c.rating:.2f}" if c.rating else "—",
             "Score": f"{c.score:.3f}",
             "Top Changes": top_str,
         })

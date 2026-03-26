@@ -31,6 +31,7 @@ class Candidate:
     minutes_played: Optional[int] = None
     league: Optional[str] = None
     club_power_ranking: Optional[float] = None
+    rating: Optional[float] = None
     predicted_per90: Dict[str, float] = field(default_factory=dict)
     current_per90: Dict[str, float] = field(default_factory=dict)
     score: float = 0.0
