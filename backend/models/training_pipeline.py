@@ -289,6 +289,97 @@ def _try_resolve_league(team_id: int, team_name: str) -> Optional[int]:
 
 # ── Step 3: Feature and Label Extraction ─────────────────────────────────────
 
+# Rolling-window target window size (paper: first 1000 minutes at new club)
+_TARGET_WINDOW_MINUTES = 1000
+_FEATURE_WINDOW_MINUTES = 1000
+
+
+def _accumulate_first_n_minutes(
+    match_logs: List[Dict[str, Any]],
+    target_minutes: int = _TARGET_WINDOW_MINUTES,
+) -> Optional[Dict[str, float]]:
+    """Accumulate per-90 stats from the first N minutes of match logs.
+
+    match_logs must be sorted ascending (oldest first).
+    Returns a dict of metric -> weighted-average per-90, or None if
+    insufficient minutes.
+    """
+    totals: Dict[str, float] = {m: 0.0 for m in CORE_METRICS}
+    counts: Dict[str, int] = {m: 0 for m in CORE_METRICS}
+    total_minutes = 0
+
+    for match in match_logs:
+        mins = match.get("minutes_played", 0)
+        if mins is None or mins <= 0:
+            continue
+        if total_minutes >= target_minutes:
+            break
+        total_minutes += mins
+        per90 = match.get("per90") or {}
+        for m in CORE_METRICS:
+            v = per90.get(m)
+            if v is not None:
+                try:
+                    totals[m] += float(v) * mins
+                    counts[m] += mins
+                except (ValueError, TypeError):
+                    pass
+
+    if total_minutes < MIN_MINUTES_THRESHOLD:
+        return None
+
+    result: Dict[str, float] = {}
+    for m in CORE_METRICS:
+        if counts[m] > 0:
+            result[m] = totals[m] / counts[m]
+        else:
+            result[m] = 0.0
+    return result
+
+
+def _accumulate_last_n_minutes(
+    match_logs: List[Dict[str, Any]],
+    target_minutes: int = _FEATURE_WINDOW_MINUTES,
+) -> Optional[Dict[str, float]]:
+    """Accumulate per-90 stats from the last N minutes of match logs.
+
+    match_logs must be sorted ascending (oldest first).
+    Walks backwards from the end.
+    Returns a dict of metric -> weighted-average per-90, or None if
+    insufficient minutes.
+    """
+    totals: Dict[str, float] = {m: 0.0 for m in CORE_METRICS}
+    counts: Dict[str, int] = {m: 0 for m in CORE_METRICS}
+    total_minutes = 0
+
+    for match in reversed(match_logs):
+        mins = match.get("minutes_played", 0)
+        if mins is None or mins <= 0:
+            continue
+        if total_minutes >= target_minutes:
+            break
+        total_minutes += mins
+        per90 = match.get("per90") or {}
+        for m in CORE_METRICS:
+            v = per90.get(m)
+            if v is not None:
+                try:
+                    totals[m] += float(v) * mins
+                    counts[m] += mins
+                except (ValueError, TypeError):
+                    pass
+
+    if total_minutes < MIN_MINUTES_THRESHOLD:
+        return None
+
+    result: Dict[str, float] = {}
+    for m in CORE_METRICS:
+        if counts[m] > 0:
+            result[m] = totals[m] / counts[m]
+        else:
+            result[m] = 0.0
+    return result
+
 
 def build_training_sample(
     record: TransferRecord,
@@ -301,13 +392,34 @@ def build_training_sample(
     confidence, from_club, to_club — or None if data is insufficient.
     """
     # Block 1 — Player pre-transfer per-90 (13 values)
-    pre_stats = sofascore_client.get_player_stats_for_season(
+    # Strategy: try match logs first (rolling window of last 1000 minutes)
+    pre_match_logs = sofascore_client.get_player_match_logs(
         record.player_id,
         record.pre_transfer_tournament_id,
         record.pre_transfer_season_id,
     )
-    pre_per90 = pre_stats.get("per90") or {}
-    pre_minutes = pre_stats.get("minutes_played", 0)
+
+    used_match_logs_for_features = False
+    if pre_match_logs:
+        rolling_per90 = _accumulate_last_n_minutes(pre_match_logs)
+        if rolling_per90 is not None:
+            pre_per90 = rolling_per90
+            pre_minutes = sum(m.get("minutes_played", 0) for m in pre_match_logs)
+            used_match_logs_for_features = True
+        else:
+            pre_per90 = None
+    else:
+        pre_per90 = None
+
+    # Fallback: full season aggregate
+    if pre_per90 is None:
+        pre_stats = sofascore_client.get_player_stats_for_season(
+            record.player_id,
+            record.pre_transfer_tournament_id,
+            record.pre_transfer_season_id,
+        )
+        pre_per90 = pre_stats.get("per90") or {}
+        pre_minutes = pre_stats.get("minutes_played", 0)
 
     if pre_minutes < MIN_MINUTES_THRESHOLD:
         _log.warning(
@@ -415,21 +527,54 @@ def build_training_sample(
     # Replace any NaN with 0.0
     features = np.nan_to_num(features, nan=0.0)
 
-    # ── Labels: post-transfer per-90 (13 values) ────────────────────────
-    post_stats = sofascore_client.get_player_stats_for_season(
+    # ── Labels: post-transfer per-90 (first 1000 minutes — paper target) ──
+    # Strategy A: match logs available → accumulate first 1000 minutes
+    post_match_logs = sofascore_client.get_player_match_logs(
         record.player_id,
         record.post_transfer_tournament_id,
         record.post_transfer_season_id,
     )
-    post_per90 = post_stats.get("per90") or {}
-    post_minutes = post_stats.get("minutes_played", 0)
 
-    if post_minutes < MIN_MINUTES_THRESHOLD:
-        _log.warning(
-            "Player %d post-transfer minutes %d < %d, skipping",
-            record.player_id, post_minutes, MIN_MINUTES_THRESHOLD,
+    used_match_logs_for_labels = False
+    minutes_accumulated = 0
+    if post_match_logs:
+        first_1000 = _accumulate_first_n_minutes(post_match_logs)
+        if first_1000 is not None:
+            post_per90 = first_1000
+            minutes_accumulated = sum(
+                m.get("minutes_played", 0)
+                for m in post_match_logs
+                if sum(mm.get("minutes_played", 0) for mm in post_match_logs[:post_match_logs.index(m)+1]) <= _TARGET_WINDOW_MINUTES + 90
+            )
+            used_match_logs_for_labels = True
+        else:
+            post_per90 = None
+    else:
+        post_per90 = None
+
+    # Strategy B: fallback to full-season stats
+    if post_per90 is None:
+        post_stats = sofascore_client.get_player_stats_for_season(
+            record.player_id,
+            record.post_transfer_tournament_id,
+            record.post_transfer_season_id,
         )
-        return None
+        post_per90 = post_stats.get("per90") or {}
+        post_minutes = post_stats.get("minutes_played", 0)
+        minutes_accumulated = post_minutes
+
+        # Apply minutes filter for fallback
+        if post_minutes < 700:
+            _log.warning(
+                "Player %d post-transfer minutes %d < 700 (fallback), skipping",
+                record.player_id, post_minutes,
+            )
+            return None
+        if post_minutes > 1300:
+            _log.warning(
+                "Player %d post-transfer minutes %d > 1300, using full-season as-is",
+                record.player_id, post_minutes,
+            )
 
     labels = []
     for m in CORE_METRICS:
@@ -463,6 +608,7 @@ def build_training_sample(
         "from_club": record.from_club_name,
         "to_club": record.to_club_name,
         "position": record.position,
+        "is_transfer": True,
         # Extra metadata for adjustment model training
         "team_ability_current": float(team_ability_current),
         "team_ability_target": float(team_ability_target),
@@ -471,6 +617,9 @@ def build_training_sample(
         "pre_per90": {m: float(player_metrics[i]) for i, m in enumerate(CORE_METRICS)},
         "from_pos_avg": {m: float(team_pos_current[i]) for i, m in enumerate(CORE_METRICS)},
         "to_pos_avg": {m: float(team_pos_target[i]) for i, m in enumerate(CORE_METRICS)},
+        "used_match_logs_features": used_match_logs_for_features,
+        "used_match_logs_labels": used_match_logs_for_labels,
+        "minutes_accumulated": minutes_accumulated,
     }
 
 

@@ -299,3 +299,81 @@ class TestFullDatasetNoNans(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Improvement 2 tests ─────────────────────────────────────────────────────
+
+
+class TestFirst1000MinuteTargets(unittest.TestCase):
+    """Test first-1000-minute label accumulation logic."""
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    @mock.patch("backend.models.training_pipeline.power_rankings")
+    def test_labels_accumulate_first_1000_minutes_only(self, mock_pr, mock_client):
+        """Mock 15 matches totalling 1350 minutes. Assert labels use only
+        the first matches summing to >= 1000 minutes, not all 1350."""
+        from backend.models.training_pipeline import build_training_sample
+
+        record = _make_mock_transfer_record()
+
+        # Pre-transfer match logs (for features)
+        pre_logs = [
+            {"match_id": i, "match_date": f"2022-{(i%12)+1:02d}-01",
+             "minutes_played": 90,
+             "per90": _make_mock_per90(0.5)}
+            for i in range(12)
+        ]
+        # Post-transfer match logs: 15 matches of 90 mins = 1350 total
+        # First ~11 matches sum to 990 min, 12th brings to 1080 (>= 1000)
+        # Matches 13-15 (extra 270 min) should NOT be included in labels
+        post_logs = []
+        for i in range(15):
+            per90 = _make_mock_per90(0.3 if i < 12 else 0.9)
+            post_logs.append({
+                "match_id": 100 + i,
+                "match_date": f"2023-{(i%12)+1:02d}-01",
+                "minutes_played": 90,
+                "per90": per90,
+            })
+
+        mock_client.get_player_match_logs.side_effect = [pre_logs, post_logs]
+
+        # Fallback season stats (should not be used for labels if logs work)
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(1350, 0.7)
+        mock_client.get_team_position_averages.return_value = (
+            _make_mock_per90(0.3), []
+        )
+        mock_pr.compute_daily_rankings.return_value = ({}, {})
+        mock_pr.get_team_ranking.return_value = None
+
+        result = build_training_sample(record)
+        self.assertIsNotNone(result)
+        # Labels should be dominated by 0.3 (first 12 matches), not 0.7 (season agg)
+        xg_label = result["labels"][0]  # expected_goals index 0
+        self.assertLess(xg_label, 0.5, "Labels should reflect first-1000-min (0.3), not full season")
+        self.assertTrue(result.get("used_match_logs_labels", False))
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    @mock.patch("backend.models.training_pipeline.power_rankings")
+    def test_labels_fall_back_when_no_match_logs(self, mock_pr, mock_client):
+        """Mock get_player_match_logs returning []. Assert
+        get_player_stats_for_season is called for labels."""
+        from backend.models.training_pipeline import build_training_sample
+
+        record = _make_mock_transfer_record()
+
+        mock_client.get_player_match_logs.return_value = []
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.8)
+        mock_client.get_team_position_averages.return_value = (
+            _make_mock_per90(0.3), []
+        )
+        mock_pr.compute_daily_rankings.return_value = ({}, {})
+        mock_pr.get_team_ranking.return_value = None
+
+        result = build_training_sample(record)
+        self.assertIsNotNone(result)
+        # Should have used season aggregate
+        self.assertFalse(result.get("used_match_logs_labels", True))
+        # Labels should reflect the 0.8 base value from season stats
+        xg_label = result["labels"][0]
+        self.assertAlmostEqual(xg_label, 0.8, places=1)
