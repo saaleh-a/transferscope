@@ -575,7 +575,7 @@ python -m pytest tests/ -v
 
 ## References
 
-1. Dinsdale, J. & Gallagher, J. (2022). *The Transfer Portal: Predicting the Impact of a Player Transfer on the Receiving Club.* Springer. https://doi.org/10.1007/978-3-031-02044-5_14
+1. Dinsdale, J. & Gallagher, J. (2022). *The Transfer Portal: Predicting the Impact of a Player Transfer on the Receiving Club.* Springer. https://doi.org/10.48550/arXiv.2201.11533
 
 2. Elo, A.E. (1978). *The Rating of Chessplayers, Past and Present.* Arco Publishing.
 
