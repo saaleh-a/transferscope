@@ -151,7 +151,7 @@ A Streamlit application with three pages, styled with a custom "Tactical Noir" d
 - Swarm plots showing the player's position in their current league distribution
 - A detailed predictions table with "Simulated Current" vs "Predicted" columns
 
-**Shortlist Generator.** The user selects a player to replace and assigns weights to each metric. The system scans players across selected leagues (defaulting to 11 major leagues for speed, expandable to all 37+), clusters candidates by playing style using k-means (k=√(n/2), capped 3–10), scores them by weighted Euclidean distance to the reference player with a 15% same-cluster bonus, and returns a ranked table with filters for age, position, league, minutes played, and club Power Ranking cap.
+**Shortlist Generator.** The user selects a player to replace and assigns weights to each metric. The system scans players across selected leagues (defaulting to the Big 5 European leagues for reliability — Sofascore rate-limits rapid sequential requests, so a 1.5-second delay is inserted between league API calls), clusters candidates by playing style using k-means (k=√(n/2), capped 3–10), scores them by weighted Euclidean distance to the reference player with a 15% same-cluster bonus, and returns a ranked table with filters for age, position, league, minutes played, and club Power Ranking cap. The player's own league is always scanned first. Filters use a None-passthrough design — candidates with unknown age or minutes pass through rather than being silently excluded, since Sofascore API data is often sparse. A per-league diagnostic panel shows which leagues returned data and how many candidates were found.
 
 **Hot or Not.** A rapid rumour validator. Enter a player and a target club; receive an instant HOT / TEPID / NOT verdict with the top 3 predicted metric changes, a summary of improving vs declining metrics, the player's transfer history, and Power Ranking context. Uses **dual simulation** (same as Transfer Impact) — compares model-predicted-at-target vs model-predicted-at-current, per paper Section 4. The verdict uses position-aware weighting: offensive metrics count 1.5× for forwards, defensive metrics count 1.5× for defenders. Thresholds are ±3% average predicted change.
 
@@ -180,9 +180,9 @@ TransferScope covers 37+ leagues across 4 continents:
 While TransferScope faithfully implements the Dinsdale & Gallagher methodology, it extends the original work in several ways:
 
 ### 4.1 Multi-League Shortlist Search with K-Means Clustering
-The original paper focused on predicting individual transfers. TransferScope adds the ability to scan players across all 37+ registered leagues, cluster candidates by playing style using k-means (k=√(n/2), capped 3–10), and rank them by weighted Euclidean distance to a reference player with a 15% same-cluster bonus — turning the model into a **scouting tool**, not just a prediction engine.
+The original paper focused on predicting individual transfers. TransferScope adds the ability to scan players across all 37+ registered leagues (defaulting to Big 5 for reliability), cluster candidates by playing style using k-means (k=√(n/2), capped 3–10), and rank them by weighted Euclidean distance to a reference player with a 15% same-cluster bonus — turning the model into a **scouting tool**, not just a prediction engine. Rate-limit protection (1.5s inter-league delay, player's own league scanned first) prevents Sofascore API throttling that previously caused 0 results. Filters use a None-passthrough design so candidates with incomplete metadata (unknown age, minutes) aren't silently dropped.
 
-> **In plain English:** The paper told you how to predict *one* transfer. We turned it into a tool that can search *thousands* of players, group them by playing style, and find the best fits — prioritizing players who not only have similar numbers but play a similar type of game.
+> **In plain English:** The paper told you how to predict *one* transfer. We turned it into a tool that can search *thousands* of players, group them by playing style, and find the best fits — prioritizing players who not only have similar numbers but play a similar type of game. We also solved the rate-limiting problem that was causing 0 results by adding brief pauses between league scans and starting with the most reliable league first.
 
 ### 4.2 Dynamic Data Sources
 The original paper used static datasets. TransferScope pulls live data from Sofascore, ClubElo, and WorldFootballElo, with intelligent caching. Power Rankings update daily. Player stats refresh automatically. The system never goes stale.
@@ -265,7 +265,7 @@ Per-match statistics are available via `get_player_match_logs()`, enabling true 
 | UI | Streamlit | The web interface you interact with |
 | Caching | diskcache (SQLite-backed) | Remembers API responses so we don't re-download |
 | Visualization | Plotly | Draws the interactive charts |
-| Testing | pytest + unittest (188 tests) | Makes sure nothing is broken |
+| Testing | pytest + unittest (208 tests) | Makes sure nothing is broken |
 
 ---
 
@@ -279,6 +279,8 @@ Per-match statistics are available via `get_player_match_logs()`, enabling true 
 - **Training pipeline requires API access.** The end-to-end training pipeline needs live Sofascore data; there is no bundled offline training dataset.
 - **Single-tournament season selector.** The season dropdown only shows seasons from the player's primary tournament. Multi-tournament aggregation is used when the primary returns 0 minutes, but the season selector doesn't yet expose all tournaments.
 - **No historical data in predictions.** The current system uses single-season snapshot stats. Multi-season trend analysis (is the player improving or declining?) is not yet incorporated into the prediction model.
+- **Shortlist default scope.** The shortlist generator defaults to Big 5 leagues only (to avoid Sofascore rate-limiting). Users must manually select additional leagues, which then requires longer scan times with rate-limit delays.
+- **Sparse metadata.** Sofascore API doesn't always return player age or complete position data. The None-passthrough filter design mitigates this but means some results lack metadata.
 
 > **In plain English:**
 > - Match-by-match data is accessible but not yet wired into the rolling windows for predictions.
