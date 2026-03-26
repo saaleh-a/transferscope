@@ -679,6 +679,39 @@ def get_player_stats(
     else:
         result["raw"] = {}
 
+    # Step 4 — Multi-tournament fallback: if the primary tournament returned
+    # 0 minutes, try ALL tournaments the player's team participates in and
+    # use the one with the most minutes. This fixes players like Kroupi who
+    # have significant minutes across cup/European competitions but 0 in the
+    # primary domestic league season.
+    if result["minutes_played"] == 0 and result.get("team_id"):
+        best = _try_all_tournaments_for_player(
+            player_id, result["team_id"], tournament_id,
+        )
+        if best is not None:
+            best_stats, best_tid, best_sid = best
+            b_stats = best_stats.get("statistics") or {}
+            if isinstance(b_stats, dict):
+                mins = int(b_stats.get("minutesPlayed") or 0)
+                if mins > result["minutes_played"]:
+                    result["minutes_played"] = mins
+                    result["appearances"] = int(
+                        b_stats.get("appearances")
+                        or b_stats.get("matchesStarted")
+                        or 0
+                    )
+                    result["per90"] = _parse_stats(b_stats, mins)
+                    result["raw"] = best_stats
+                    avg_rating = b_stats.get("rating")
+                    if avg_rating is not None:
+                        try:
+                            result["rating"] = float(avg_rating)
+                        except (ValueError, TypeError):
+                            pass
+                    # Update cached tournament so season selector uses the
+                    # correct tournament next time.
+                    _cache_player_meta(player_id, best_tid)
+
     cache.set(key, result)
     return result
 
@@ -925,6 +958,62 @@ def _discover_tournament_for_team(team_id: int) -> Optional[int]:
     if best is not None:
         cache.set(key, best)
     return best
+
+
+def _try_all_tournaments_for_player(
+    player_id: int,
+    team_id: int,
+    already_tried_tid: Optional[int] = None,
+) -> Optional[tuple]:
+    """Try all tournaments for a team and return stats from the one with most minutes.
+
+    When the primary domestic tournament returns 0 minutes, this function
+    iterates through every tournament the team participates in (cups,
+    European competitions, secondary divisions) to find one where the
+    player actually has data.
+
+    Returns ``(stats_raw, tournament_id, season_id)`` for the tournament
+    with the most minutes, or ``None`` if no tournament yields data.
+    """
+    raw = _get(f"/team/{team_id}/unique-tournaments")
+    if not isinstance(raw, dict):
+        return None
+
+    tournaments = raw.get("uniqueTournaments") or []
+    if not tournaments:
+        return None
+
+    best_mins = 0
+    best_result: Optional[tuple] = None
+
+    for t in tournaments:
+        if not isinstance(t, dict):
+            continue
+        tid = t.get("id")
+        if tid is None:
+            continue
+        tid = int(tid)
+        if tid == already_tried_tid:
+            continue  # already fetched this one
+
+        sid = _get_current_season_id(tid)
+        if sid is None:
+            continue
+
+        stats_raw = _get(
+            f"/player/{player_id}/unique-tournament/{tid}"
+            f"/season/{sid}/statistics/overall"
+        )
+        if not isinstance(stats_raw, dict):
+            continue
+
+        stats = stats_raw.get("statistics") or {}
+        mins = int(stats.get("minutesPlayed") or 0)
+        if mins > best_mins:
+            best_mins = mins
+            best_result = (stats_raw, tid, sid)
+
+    return best_result
 
 
 def _make_empty_result() -> Dict[str, Any]:
