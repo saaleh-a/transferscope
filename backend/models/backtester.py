@@ -83,6 +83,12 @@ def run_backtest(
 
     has_trained = model.fitted and scaler is not None
 
+    # Pre-scale all test features at once for efficiency
+    if has_trained:
+        X_test_scaled = scaler.transform(X_test)
+    else:
+        X_test_scaled = X_test
+
     # Per-metric collectors
     trained_abs_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
     trained_pct_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
@@ -101,8 +107,7 @@ def run_backtest(
 
         # Trained model prediction
         if has_trained:
-            X_scaled = scaler.transform(X_test[i:i+1])
-            feature_dict = {key: float(X_scaled[0, j]) for j, key in enumerate(keys)}
+            feature_dict = {key: float(X_test_scaled[0 + i, j]) for j, key in enumerate(keys)}
             try:
                 trained_pred = model.predict(feature_dict)
             except Exception:

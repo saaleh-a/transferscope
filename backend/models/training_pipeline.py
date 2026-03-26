@@ -230,7 +230,9 @@ def discover_transfers(
                     to_league_id = tid  # Same league by default
 
                     # Try to detect cross-league transfers
-                    _try_resolve_league(to_id, to_name)
+                    resolved_tid = _try_resolve_league(to_id, to_name)
+                    if resolved_tid is not None and resolved_tid != tid:
+                        to_league_id = resolved_tid
 
                     record = TransferRecord(
                         player_id=pid,
@@ -663,7 +665,11 @@ def train_adjustment_models(
             avg_pos_new = to_pos_avg.get(m, 0.0)
             avg_pos_old = from_pos_avg.get(m, 0.0)
 
-            # Team adjustment row
+            # Team adjustment row:
+            # naive_league_expectation approximates what the player's metric would be
+            # at the target league's average level. league_ability is 0-100 normalized,
+            # so dividing by 100 creates a scaling factor (0.0-1.0) applied to the
+            # player's current per-90.
             team_rows.append({
                 "metric": m,
                 "team_relative_feature": from_ra,
