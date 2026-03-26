@@ -326,28 +326,114 @@ def _clubelo_to_code(clubelo_league: Optional[str]) -> Optional[str]:
 # ── Fuzzy team name matching ─────────────────────────────────────────────────
 
 # Only strip short abbreviation suffixes that never form the core name.
+# NOTE: "Club" removed — stripping it turns "Athletic Club" into just
+# "athletic" which loses identity.  "AC" is kept because "AC Milan" → "Milan"
+# is unambiguous (there is no other "AC" team that conflicts).
 _STRIP_ABBREVS = re.compile(
     r"\b(FC|CF|SC|AC|AS|SS|SK|FK|BK|IF|SV|VfB|VfL|TSG|BSC|"
-    r"1\.\s*FC|Calcio|Club|Futbol)\b",
+    r"1\.\s*FC|Calcio|Futbol)\b",
     re.IGNORECASE,
 )
 
 # Minimum similarity ratio (0-1) for SequenceMatcher to accept a match.
-# 0.65 avoids false positives like "Arsenal" matching "Marseille" (0.625)
-# while still catching most legitimate matches.
+# 0.65 rejects false positives like "Arsenal" matching "Marseille" (0.625).
+# Edge cases below 0.65 (ManCity ↔ ManchesterCity = 0.667, ManUtd ↔
+# ManchesterUnited = 0.545) are handled by _EXTREME_ABBREVS instead.
 _FUZZY_THRESHOLD = 0.65
 
-# Tiny abbreviation map ONLY for extreme cases where SequenceMatcher
-# mathematically fails (ratio < 0.5).  These are ClubElo-specific
-# abbreviations with no string similarity to the full name.
-# Everything else is handled automatically by SequenceMatcher.
+# Abbreviation map for cases where SequenceMatcher mathematically fails
+# (ratio < 0.5) and substring matching can't help.  These cover common
+# ClubElo ↔ Sofascore naming discrepancies.
 _EXTREME_ABBREVS: Dict[str, List[str]] = {
-    "manchesterunited": ["manutd", "manunited"],
+    # England
+    "manchesterunited": ["manutd", "manunited", "manu"],
     "manutd": ["manchesterunited"],
-    "parissaintgermain": ["psg"],
-    "psg": ["parissaintgermain"],
-    "wolverhamptonwanderers": ["wolves"],
+    "manunited": ["manchesterunited"],
+    "manchestercity": ["mancity"],
+    "mancity": ["manchestercity"],
+    "wolverhamptonwanderers": ["wolves", "wolverhampton"],
     "wolves": ["wolverhamptonwanderers", "wolverhampton"],
+    "wolverhampton": ["wolverhamptonwanderers", "wolves"],
+    "nottinghamforest": ["nottmforest", "nforest"],
+    "nottmforest": ["nottinghamforest"],
+    "sheffieldunited": ["sheffutd", "sheffieldutd"],
+    "sheffutd": ["sheffieldunited"],
+    "westhamunited": ["westham"],
+    "westham": ["westhamunited"],
+    "tottenhamhotspur": ["tottenham", "spurs"],
+    "tottenham": ["tottenhamhotspur"],
+    "spurs": ["tottenhamhotspur"],
+    "newcastleunited": ["newcastle"],
+    "newcastle": ["newcastleunited"],
+    "brightonhovealbion": ["brighton"],
+    "brighton": ["brightonhovealbion"],
+    "leicestercity": ["leicester"],
+    "leicester": ["leicestercity"],
+    # France
+    "parissaintgermain": ["psg", "parissaint-germain", "parissggermain"],
+    "psg": ["parissaintgermain"],
+    # Germany
+    "borussiadortmund": ["dortmund", "bvb", "bvbdortmund"],
+    "dortmund": ["borussiadortmund"],
+    "bvb": ["borussiadortmund"],
+    "bvbdortmund": ["borussiadortmund"],
+    "bayernmunich": ["bayernmunchen", "bayern", "bayernmunich"],
+    "bayernmunchen": ["bayernmunich", "bayern"],
+    "bayern": ["bayernmunchen", "bayernmunich"],
+    "borussiamonchengladbach": ["gladbach", "borussiamgladbach", "monchengladbach"],
+    "borussiamgladbach": ["gladbach", "borussiamonchengladbach", "monchengladbach"],
+    "gladbach": ["borussiamonchengladbach", "borussiamgladbach"],
+    "monchengladbach": ["borussiamonchengladbach", "borussiamgladbach"],
+    "bayerleverkusen": ["leverkusen", "bayer04leverkusen"],
+    "leverkusen": ["bayerleverkusen"],
+    "rbleipzig": ["leipzig", "rbleipzig"],
+    "leipzig": ["rbleipzig"],
+    "eintrachtfrankfurt": ["frankfurt", "efrankfurt"],
+    "frankfurt": ["eintrachtfrankfurt"],
+    # Spain
+    "atleticomadrid": ["atletico", "atleticodemadrid", "atlmadrid"],
+    "atletico": ["atleticomadrid"],
+    "atlmadrid": ["atleticomadrid"],
+    "athleticclub": ["athleticbilbao", "athletic", "bilbao"],
+    "athleticbilbao": ["athleticclub", "athletic", "bilbao"],
+    "athletic": ["athleticclub", "athleticbilbao"],
+    "realbetis": ["betis", "realbetisbalompie"],
+    "betis": ["realbetis"],
+    "realsociedad": ["rsociedad", "lasociedad"],
+    "deportivoalaves": ["alaves"],
+    "alaves": ["deportivoalaves"],
+    "celtavigo": ["celta", "rceltadevigo"],
+    "celta": ["celtavigo"],
+    "rayovallecano": ["rayo"],
+    "rayo": ["rayovallecano"],
+    # Italy
+    "internazionale": ["inter", "intermilan", "intermilanfc"],
+    "internazionalemilano": ["inter", "intermilan", "internazionale"],
+    "inter": ["internazionale", "intermilan", "internazionalemilano"],
+    "intermilan": ["internazionale", "inter", "internazionalemilano"],
+    # Portugal
+    "sportinglisbon": ["sportingcp", "sporting"],
+    "sportingcp": ["sportinglisbon", "sporting"],
+    "sporting": ["sportinglisbon", "sportingcp"],
+    # Netherlands
+    "azmaalkmaar": ["az", "azalkmaar"],
+    "azalkmaar": ["az", "azmaalkmaar"],
+    "az": ["azalkmaar", "azmaalkmaar"],
+    "psv": ["psveindhoven"],
+    "psveindhoven": ["psv"],
+    # Turkey
+    "galatasaray": ["galatasaraysk"],
+    "fenerbahce": ["fenerbahcesk"],
+    "besiktas": ["besiktasjk"],
+    # South America
+    "flamengo": ["flamengobj", "crflamengo"],
+    "palmeiras": ["sepalmeiras"],
+    "corinthians": ["sccorinthians", "corinthianspaulista"],
+    "saopaulfc": ["saopaulo"],
+    "saopaulo": ["saopaulfc"],
+    "atleticomineiro": ["atleticomg", "camatleticomineiro"],
+    "riverplate": ["cariverplate"],
+    "bocajuniors": ["cabocajuniors"],
 }
 
 
@@ -375,13 +461,14 @@ def _fuzzy_find_team(
     """Find the best-matching team name from *teams* for *query*.
 
     Uses automatic fuzzy matching that scales to any number of teams
-    from any league — no hardcoded alias list.
+    from any league — no hardcoded alias list (except extreme abbrevs).
 
     Matching strategy (in priority order):
     1. Exact normalized match (fast path)
-    2. Substring containment (one name contains the other)
-    3. SequenceMatcher similarity ratio (handles abbreviations,
-       reorderings, and partial names across all leagues)
+    2. Extreme abbreviation lookup (PSG ↔ Paris Saint-Germain, etc.)
+    3. Substring containment with overlap ratio guard
+    4. Word-level matching (shared significant words)
+    5. SequenceMatcher similarity ratio
 
     Returns the original key from *teams*, or None if no match.
     """
@@ -400,24 +487,8 @@ def _fuzzy_find_team(
     if q in candidates:
         return candidates[q]
 
-    # 2. Substring containment — one name fully inside the other
-    #    e.g. "bayern" in "bayernmunich", "tottenham" in "tottenhamhotspur"
-    #    Prefer longest overlap to avoid false positives.
-    best_sub: Optional[str] = None
-    best_sub_len = 0
-    for norm, orig in candidates.items():
-        if len(norm) < 4 or len(q) < 4:
-            continue
-        if q in norm or norm in q:
-            overlap = min(len(q), len(norm))
-            if overlap > best_sub_len:
-                best_sub = orig
-                best_sub_len = overlap
-    if best_sub is not None:
-        return best_sub
-
-    # 3. Extreme abbreviation lookup — only for the handful of cases where
-    #    SequenceMatcher fails (ManUtd ↔ Manchester United, PSG, Wolves)
+    # 2. Extreme abbreviation lookup — must come before substring to prevent
+    #    false positives like "Paris FC" beating "PSG" for "Paris Saint-Germain"
     q_aliases = _EXTREME_ABBREVS.get(q, [])
     for alias in q_aliases:
         if alias in candidates:
@@ -428,7 +499,50 @@ def _fuzzy_find_team(
             if alias == q:
                 return orig
 
-    # 4. SequenceMatcher fuzzy matching — works for any team, any league
+    # 3. Substring containment — one name fully inside the other.
+    #    Guard: require the shorter name to be at least 6 chars AND
+    #    represent >= 45% of the longer name.  This prevents
+    #    "paris" (5 chars, 29% of "parissaintgermain") from matching.
+    best_sub: Optional[str] = None
+    best_sub_len = 0
+    for norm, orig in candidates.items():
+        shorter, longer = (norm, q) if len(norm) <= len(q) else (q, norm)
+        if len(shorter) < 6:
+            continue
+        if shorter not in longer:
+            continue
+        ratio = len(shorter) / len(longer)
+        if ratio < 0.45:
+            continue
+        if len(shorter) > best_sub_len:
+            best_sub = orig
+            best_sub_len = len(shorter)
+    if best_sub is not None:
+        return best_sub
+
+    # 4. Word-level matching — tokenize into "words" (alpha runs ≥ 4 chars)
+    #    and check if any significant word from the query matches a word
+    #    in a candidate or vice versa.  This catches "Borussia Dortmund"
+    #    sharing "dortmund" with just "Dortmund" even when full-string
+    #    substring fails.
+    q_words = set(re.findall(r"[a-z]{4,}", q))
+    if q_words:
+        best_word_match: Optional[str] = None
+        best_word_overlap = 0
+        for norm, orig in candidates.items():
+            c_words = set(re.findall(r"[a-z]{4,}", norm))
+            shared = q_words & c_words
+            if shared:
+                # Weight by total characters in shared words
+                overlap = sum(len(w) for w in shared)
+                if overlap > best_word_overlap:
+                    best_word_overlap = overlap
+                    best_word_match = orig
+        # Only accept if shared words represent meaningful overlap
+        if best_word_match is not None and best_word_overlap >= 5:
+            return best_word_match
+
+    # 5. SequenceMatcher fuzzy matching — works for any team, any league
     #    Handles "ManCity" ↔ "manchestercity", "Flamengo" ↔ "Flamengo RJ",
     #    "São Paulo" ↔ "SaoPaulo", etc.
     best_match: Optional[str] = None
