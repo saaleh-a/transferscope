@@ -66,6 +66,7 @@ DEFAULT_LEAGUE_CODES = [
 ]
 
 MIN_MINUTES_THRESHOLD = 450
+API_CALL_DELAY_SECONDS = 2.0
 
 
 # ── Data structures ──────────────────────────────────────────────────────────
@@ -89,6 +90,23 @@ class TransferRecord:
     post_transfer_season_id: int
     pre_transfer_tournament_id: int
     post_transfer_tournament_id: int
+
+
+@dataclass
+class NonTransferRecord:
+    """A player who stayed at the same club across consecutive seasons."""
+
+    player_id: int
+    player_name: str
+    position: str
+    club_id: int
+    club_name: str
+    league_id: int
+    pre_season_id: int
+    post_season_id: int
+    pre_tournament_id: int
+    post_tournament_id: int
+    is_transfer: bool = False
 
 
 # ── Step 2: Transfer Discovery ───────────────────────────────────────────────
@@ -418,6 +436,8 @@ def build_training_sample(
             record.pre_transfer_tournament_id,
             record.pre_transfer_season_id,
         )
+        if pre_stats is None:
+            return None
         pre_per90 = pre_stats.get("per90") or {}
         pre_minutes = pre_stats.get("minutes_played", 0)
 
@@ -559,6 +579,8 @@ def build_training_sample(
             record.post_transfer_tournament_id,
             record.post_transfer_season_id,
         )
+        if post_stats is None:
+            return None
         post_per90 = post_stats.get("per90") or {}
         post_minutes = post_stats.get("minutes_played", 0)
         minutes_accumulated = post_minutes
@@ -598,6 +620,11 @@ def build_training_sample(
         )
     labels_arr = np.nan_to_num(labels_arr, nan=0.0)
 
+    # Compute league means for target league
+    league_means = _compute_league_means(
+        record.post_transfer_tournament_id, record.post_transfer_season_id
+    )
+
     return {
         "features": features,
         "labels": labels_arr,
@@ -617,6 +644,7 @@ def build_training_sample(
         "pre_per90": {m: float(player_metrics[i]) for i, m in enumerate(CORE_METRICS)},
         "from_pos_avg": {m: float(team_pos_current[i]) for i, m in enumerate(CORE_METRICS)},
         "to_pos_avg": {m: float(team_pos_target[i]) for i, m in enumerate(CORE_METRICS)},
+        "league_means": league_means,
         "used_match_logs_features": used_match_logs_for_features,
         "used_match_logs_labels": used_match_logs_for_labels,
         "minutes_accumulated": minutes_accumulated,
@@ -631,8 +659,315 @@ def _find_league_code(tournament_id: int) -> Optional[str]:
     return None
 
 
+def _rate_limit_delay() -> None:
+    """Sleep to respect API rate limits during data collection."""
+    import time
+    time.sleep(API_CALL_DELAY_SECONDS)
+
+
+def _compute_league_means(
+    tournament_id: int,
+    season_id: int,
+) -> Dict[str, float]:
+    """Compute league mean per-90 for players with >= 450 minutes.
+
+    Falls back to empty dict on failure.
+    """
+    try:
+        players = sofascore_client.get_league_player_stats(tournament_id, season_id, limit=300)
+        if not players:
+            return {}
+
+        metric_sums: Dict[str, float] = {m: 0.0 for m in CORE_METRICS}
+        metric_counts: Dict[str, int] = {m: 0 for m in CORE_METRICS}
+
+        for p in players:
+            if p.get("minutes_played", 0) < MIN_MINUTES_THRESHOLD:
+                continue
+            per90 = p.get("per90") or {}
+            for m in CORE_METRICS:
+                v = per90.get(m)
+                if v is not None:
+                    try:
+                        metric_sums[m] += float(v)
+                        metric_counts[m] += 1
+                    except (ValueError, TypeError):
+                        pass
+
+        return {
+            m: metric_sums[m] / metric_counts[m] if metric_counts[m] > 0 else 0.0
+            for m in CORE_METRICS
+        }
+    except Exception as exc:
+        _log.warning("Failed to compute league means for tid=%d sid=%d: %s",
+                     tournament_id, season_id, exc)
+        return {}
+
+
+def discover_non_transfers(
+    league_codes: Optional[List[str]] = None,
+    seasons_back: int = 5,
+) -> List[NonTransferRecord]:
+    """Discover players who stayed at the same club across consecutive seasons.
+
+    For each league & consecutive season pair, finds players with >= 450 minutes
+    in both seasons and no intervening transfer to a different club.
+    """
+    if league_codes is None:
+        league_codes = DEFAULT_LEAGUE_CODES
+
+    records: List[NonTransferRecord] = []
+    seen: set = set()
+
+    for league_code in league_codes:
+        info = LEAGUES.get(league_code)
+        if info is None or info.sofascore_tournament_id is None:
+            continue
+
+        tid = info.sofascore_tournament_id
+        seasons = sofascore_client.get_season_list(tid)
+        if not seasons:
+            continue
+
+        target_seasons = seasons[:seasons_back]
+
+        for idx in range(len(target_seasons) - 1):
+            pre_season = target_seasons[idx + 1]  # older
+            post_season = target_seasons[idx]       # newer
+            pre_sid = pre_season["id"]
+            post_sid = post_season["id"]
+
+            players = sofascore_client.get_league_player_stats(tid, pre_sid, limit=300)
+
+            for player in players:
+                pid = player.get("id")
+                if pid is None:
+                    continue
+                if player.get("minutes_played", 0) < MIN_MINUTES_THRESHOLD:
+                    continue
+
+                dedup_key = (pid, pre_sid, post_sid)
+                if dedup_key in seen:
+                    continue
+
+                # Check transfer history — did the player stay?
+                transfers = sofascore_client.get_player_transfer_history(pid)
+                moved = False
+                if transfers:
+                    for t in transfers:
+                        from_team = (t.get("from_team") or {}).get("id")
+                        to_team = (t.get("to_team") or {}).get("id")
+                        if from_team and to_team and from_team != to_team:
+                            moved = True
+                            break
+
+                if moved:
+                    continue
+
+                # Verify minutes in post season
+                post_stats = sofascore_client.get_player_stats_for_season(
+                    pid, tid, post_sid
+                )
+                if not post_stats or post_stats.get("minutes_played", 0) < MIN_MINUTES_THRESHOLD:
+                    continue
+
+                club_id = player.get("team_id") or player.get("teamId") or 0
+                club_name = player.get("team_name") or player.get("teamName") or ""
+
+                records.append(NonTransferRecord(
+                    player_id=pid,
+                    player_name=player.get("name", ""),
+                    position=player.get("position", "Unknown"),
+                    club_id=club_id,
+                    club_name=club_name,
+                    league_id=tid,
+                    pre_season_id=pre_sid,
+                    post_season_id=post_sid,
+                    pre_tournament_id=tid,
+                    post_tournament_id=tid,
+                ))
+                seen.add(dedup_key)
+
+    _log.info("Discovered %d non-transfer samples", len(records))
+    return records
+
+
+def build_non_transfer_sample(
+    record: NonTransferRecord,
+) -> Optional[Dict[str, Any]]:
+    """Build a training sample for a player who stayed at the same club.
+
+    Same structure as build_training_sample() but from_club == to_club,
+    change_relative_ability = 0, and team_pos_current == team_pos_target.
+    """
+    # Pre-transfer features (match logs first, then season aggregate)
+    pre_match_logs = sofascore_client.get_player_match_logs(
+        record.player_id,
+        record.pre_tournament_id,
+        record.pre_season_id,
+    )
+
+    used_match_logs_for_features = False
+    if pre_match_logs:
+        rolling_per90 = _accumulate_last_n_minutes(pre_match_logs)
+        if rolling_per90 is not None:
+            pre_per90 = rolling_per90
+            pre_minutes = sum(m.get("minutes_played", 0) for m in pre_match_logs)
+            used_match_logs_for_features = True
+        else:
+            pre_per90 = None
+    else:
+        pre_per90 = None
+
+    if pre_per90 is None:
+        pre_stats = sofascore_client.get_player_stats_for_season(
+            record.player_id,
+            record.pre_tournament_id,
+            record.pre_season_id,
+        )
+        if pre_stats is None:
+            return None
+        pre_per90 = pre_stats.get("per90") or {}
+        pre_minutes = pre_stats.get("minutes_played", 0)
+
+    if pre_minutes < MIN_MINUTES_THRESHOLD:
+        return None
+
+    weight = blend_weight(pre_minutes)
+
+    player_metrics = []
+    for m in CORE_METRICS:
+        v = pre_per90.get(m)
+        if v is None:
+            val = 0.0
+        elif np.isnan(v):
+            val = 0.0
+        else:
+            val = float(v)
+        player_metrics.append(val)
+
+    # Power rankings — same club so current == target
+    try:
+        team_rankings, league_snapshots = power_rankings.compute_daily_rankings()
+    except Exception:
+        team_rankings, league_snapshots = {}, {}
+
+    ranking = power_rankings.get_team_ranking(record.club_name)
+    if ranking is not None:
+        team_ability = ranking.normalized_score
+    else:
+        lc = _find_league_code(record.league_id)
+        snap = league_snapshots.get(lc) if lc else None
+        team_ability = snap.mean_normalized if snap else 50.0
+
+    league_code = _find_league_code(record.league_id)
+    league_snap = league_snapshots.get(league_code) if league_code else None
+    league_ability = league_snap.mean_normalized if league_snap else 50.0
+
+    # Team-position per-90 — same club for both
+    position = normalize_position(record.position) or "Forward"
+    try:
+        pos_avg, _ = sofascore_client.get_team_position_averages(
+            record.club_id, position
+        )
+    except Exception:
+        pos_avg = {m: 0.0 for m in CORE_METRICS}
+
+    team_pos = []
+    for m in CORE_METRICS:
+        v = pos_avg.get(m, 0.0)
+        team_pos.append(float(v) if v is not None else 0.0)
+
+    # Same team → current == target for all ability and position features
+    features = np.array(
+        player_metrics
+        + [team_ability, team_ability, league_ability, league_ability]
+        + team_pos
+        + team_pos,  # team_pos_target == team_pos_current
+        dtype=np.float32,
+    )
+
+    if features.shape != (FEATURE_DIM,):
+        raise ValueError(
+            f"Feature vector shape {features.shape} != expected ({FEATURE_DIM},)"
+        )
+    features = np.nan_to_num(features, nan=0.0)
+
+    # Labels: post-season per-90 (first 1000 minutes)
+    post_match_logs = sofascore_client.get_player_match_logs(
+        record.player_id,
+        record.post_tournament_id,
+        record.post_season_id,
+    )
+
+    used_match_logs_for_labels = False
+    if post_match_logs:
+        first_1000 = _accumulate_first_n_minutes(post_match_logs)
+        if first_1000 is not None:
+            post_per90 = first_1000
+            used_match_logs_for_labels = True
+        else:
+            post_per90 = None
+    else:
+        post_per90 = None
+
+    if post_per90 is None:
+        post_stats = sofascore_client.get_player_stats_for_season(
+            record.player_id,
+            record.post_tournament_id,
+            record.post_season_id,
+        )
+        if post_stats is None:
+            return None
+        post_per90 = post_stats.get("per90") or {}
+        post_minutes = post_stats.get("minutes_played", 0)
+        if post_minutes < MIN_MINUTES_THRESHOLD:
+            return None
+
+    labels = []
+    for m in CORE_METRICS:
+        v = post_per90.get(m)
+        if v is None:
+            val = 0.0
+        elif np.isnan(v):
+            val = 0.0
+        else:
+            val = float(v)
+        labels.append(val)
+
+    labels_arr = np.array(labels, dtype=np.float32)
+    labels_arr = np.nan_to_num(labels_arr, nan=0.0)
+
+    # Compute league means for target league (same league)
+    league_means = _compute_league_means(record.league_id, record.post_season_id)
+
+    return {
+        "features": features,
+        "labels": labels_arr,
+        "player_id": record.player_id,
+        "player_name": record.player_name,
+        "transfer_date": "",  # no transfer date for non-transfers
+        "confidence": float(weight),
+        "from_club": record.club_name,
+        "to_club": record.club_name,
+        "position": record.position,
+        "is_transfer": False,
+        "team_ability_current": float(team_ability),
+        "team_ability_target": float(team_ability),
+        "league_ability_current": float(league_ability),
+        "league_ability_target": float(league_ability),
+        "pre_per90": {m: float(player_metrics[i]) for i, m in enumerate(CORE_METRICS)},
+        "from_pos_avg": {m: float(team_pos[i]) for i, m in enumerate(CORE_METRICS)},
+        "to_pos_avg": {m: float(team_pos[i]) for i, m in enumerate(CORE_METRICS)},
+        "league_means": league_means,
+        "used_match_logs_features": used_match_logs_for_features,
+        "used_match_logs_labels": used_match_logs_for_labels,
+    }
+
+
 def build_full_dataset(
     transfer_records: List[TransferRecord],
+    non_transfer_records: Optional[List[NonTransferRecord]] = None,
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
     """Build the full training dataset from transfer records.
 
@@ -668,6 +1003,32 @@ def build_full_dataset(
 
         samples.append(sample)
 
+    # Process non-transfer records
+    n_transfer_samples = len(samples)
+    if non_transfer_records:
+        nt_total = len(non_transfer_records)
+        for i, nt_record in enumerate(non_transfer_records):
+            if (i + 1) % 50 == 0 or i == 0:
+                _log.info("Building non-transfer sample %d / %d ...", i + 1, nt_total)
+
+            try:
+                nt_sample = build_non_transfer_sample(nt_record)
+            except Exception as exc:
+                _log.warning(
+                    "Error building non-transfer sample for player %d: %s",
+                    nt_record.player_id, exc,
+                )
+                drop_reasons["nt_error"] = drop_reasons.get("nt_error", 0) + 1
+                continue
+
+            if nt_sample is None:
+                drop_reasons["nt_insufficient_data"] = (
+                    drop_reasons.get("nt_insufficient_data", 0) + 1
+                )
+                continue
+
+            samples.append(nt_sample)
+
     if not samples:
         _log.error("No valid training samples built!")
         return np.empty((0, FEATURE_DIM)), np.empty((0, len(CORE_METRICS))), []
@@ -689,6 +1050,8 @@ def build_full_dataset(
 
     print(f"\nDataset Summary:")
     print(f"  Valid samples: {len(samples)}")
+    print(f"    Transfer samples: {n_transfer_samples}")
+    print(f"    Non-transfer samples: {len(samples) - n_transfer_samples}")
     print(f"  Dropped: {sum(drop_reasons.values())}")
     for reason, count in sorted(drop_reasons.items(), key=lambda x: -x[1]):
         print(f"    {reason}: {count}")
@@ -756,6 +1119,35 @@ def split_dataset(
     y_test = sorted_y[n_train + n_val:]
     meta_test = sorted_meta[n_train + n_val:]
 
+    # Player-level deduplication: remove from train+val any player_id in test set
+    test_player_ids = {m.get("player_id") for m in meta_test if m.get("player_id") is not None}
+    if test_player_ids:
+        def _filter_by_player_ids(
+            X_split: np.ndarray, y_split: np.ndarray,
+            meta_split: List[Dict[str, Any]], excluded_ids: set, label: str,
+        ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+            """Remove samples whose player_id is in *excluded_ids*."""
+            mask = [m.get("player_id") not in excluded_ids for m in meta_split]
+            removed = sum(1 for keep in mask if not keep)
+            if removed == 0:
+                return X_split, y_split, meta_split
+            _log.info("Removed %d %s samples (player overlap with test)", removed, label)
+            indices = [i for i, keep in enumerate(mask) if keep]
+            if indices:
+                return X_split[indices], y_split[indices], [meta_split[i] for i in indices]
+            return (
+                np.empty((0, X.shape[1] if X.ndim > 1 else FEATURE_DIM)),
+                np.empty((0, y.shape[1] if y.ndim > 1 else len(CORE_METRICS))),
+                [],
+            )
+
+        X_train, y_train, meta_train = _filter_by_player_ids(
+            X_train, y_train, meta_train, test_player_ids, "training",
+        )
+        X_val, y_val, meta_val = _filter_by_player_ids(
+            X_val, y_val, meta_val, test_player_ids, "validation",
+        )
+
     # Print split summary
     def _date_range(meta: List[Dict]) -> str:
         if not meta:
@@ -819,10 +1211,15 @@ def train_adjustment_models(
             # at the target league's average level. league_ability is 0-100 normalized,
             # so dividing by 100 creates a scaling factor (0.0-1.0) applied to the
             # player's current per-90.
+            # Use league mean per-90 if available; fall back to scaled player metric
+            league_means = meta.get("league_means", {})
+            fallback_expectation = (league_ability_target / 100.0 * player_prev) if player_prev else 0.0
+            naive_expectation = league_means.get(m, fallback_expectation)
+
             team_rows.append({
                 "metric": m,
                 "team_relative_feature": from_ra,
-                "naive_league_expectation": league_ability_target / 100.0 * player_prev if player_prev else 0.0,
+                "naive_league_expectation": naive_expectation,
                 "actual": actual,
             })
 
@@ -833,7 +1230,8 @@ def train_adjustment_models(
                 "player_previous_per90": player_prev,
                 "avg_position_feature_new_team": avg_pos_new,
                 "diff_avg_position_old_vs_new": avg_pos_new - avg_pos_old,
-                "change_relative_ability": change_ra,
+                # Normalize change_ra to [-1, 1] range for polynomial stability
+                "change_relative_ability": change_ra / 50.0,
                 "actual": actual,
             })
 
@@ -1153,7 +1551,16 @@ def main() -> None:
         default=0.10,
         help="Test split ratio (default: 0.10)",
     )
+    parser.add_argument(
+        "--api-delay",
+        type=float,
+        default=2.0,
+        help="Delay between API calls in seconds (default: 2.0)",
+    )
     args = parser.parse_args()
+
+    global API_CALL_DELAY_SECONDS
+    API_CALL_DELAY_SECONDS = args.api_delay
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
@@ -1188,7 +1595,13 @@ def main() -> None:
 
     # Step 3: Build full dataset
     print("\nStep 3: Building training dataset...")
-    X, y, metadata = build_full_dataset(records)
+
+    # Discover non-transfer samples
+    print("\nDiscovering non-transfer samples...")
+    non_transfer_records = discover_non_transfers(league_codes, args.seasons_back)
+    print(f"Found {len(non_transfer_records)} non-transfer records")
+
+    X, y, metadata = build_full_dataset(records, non_transfer_records)
 
     if len(metadata) < 10:
         print(f"\n⚠️ Only {len(metadata)} valid samples. Insufficient for training.")
