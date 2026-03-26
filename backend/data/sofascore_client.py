@@ -708,8 +708,10 @@ def get_player_stats(
                             result["rating"] = float(avg_rating)
                         except (ValueError, TypeError):
                             pass
-                    # Update cached tournament so season selector uses the
-                    # correct tournament next time.
+                    # Cache the tournament where data was found, so
+                    # subsequent calls and season selectors default to
+                    # this tournament (note: the UI season selector
+                    # currently only shows seasons for one tournament).
                     _cache_player_meta(player_id, best_tid)
 
     cache.set(key, result)
