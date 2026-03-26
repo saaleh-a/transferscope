@@ -707,10 +707,18 @@ def paper_heuristic_predict(
         style_diff = tgt_avg - src_avg
 
         # When no real team-position data is available, estimate style
-        # differences from the league quality gap (paper Section 4.2).
+        # differences from the relative ability change (paper Section 4.2).
+        # For extreme transfers (large |ra|), quality differences dominate
+        # over style differences — attenuate the estimate proportionally.
+        # This prevents double-counting: team_effect + opp_effect already
+        # handle quality; the style estimate should capture only the
+        # residual tactical differences between teams.
         if not _has_style_data:
             league_coeff = _LEAGUE_STYLE_COEFF.get(m, 0.05)
-            estimated_style_diff = src_avg * league_coeff * ra
+            # Attenuate for extreme moves: |ra|=0.15 → 70% retained,
+            # |ra|=0.30 → 40% retained, |ra|=0.50+ → 30% floor.
+            style_scale = max(0.3, 1.0 - abs(ra) * 2.0)
+            estimated_style_diff = src_avg * league_coeff * ra * style_scale
             style_diff = estimated_style_diff
 
         # League-quality adjustment: when teams are in different leagues,
