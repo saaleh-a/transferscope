@@ -44,7 +44,7 @@ The system predicts 13 core metrics simultaneously. These cover the full spectru
 |---|---|---|
 | `/search/players?q={name}` | `search_player()` — find players by name | 7 days |
 | `/search/teams?q={name}` | `search_team()` — find clubs by name | 7 days |
-| `/player/{id}` | `get_player_stats()` — profile + season aggregate stats | 1 day |
+| `/player/{id}` | `get_player_stats()` — profile + season aggregate stats + age | 1 day |
 | `/player/{id}/unique-tournament/{tid}/season/{sid}/statistics/overall` | `get_player_stats_for_season()` — stats for a specific season | 1 day |
 | `/player/{id}/transfer-history` | `get_player_transfer_history()` — career transfer records | 7 days |
 | `/unique-tournament/{tid}/season/{sid}/statistics` | `get_league_player_stats()` — bulk league-wide player stats | 1 day |
@@ -58,6 +58,8 @@ Sofascore returns **raw totals** (e.g. 15 goals in 2,000 minutes), not per-90 va
 **Multi-tournament fallback:** `get_player_stats()` first tries the player's primary domestic league. If that returns 0 minutes (common for youth players or mid-season signings), it iterates through **all tournaments** the player's team participates in (cups, European competitions, secondary divisions) and uses the one with the most minutes. This prevents false "no data" results.
 
 **Match logs:** `get_player_match_logs()` fetches per-match statistics for a player in a specific tournament/season. Paginates up to 10 pages, excludes matches with 0 minutes, returns an empty list if fewer than 3 valid matches. Results sorted ascending by match date for rolling window computation.
+
+**Age extraction:** `get_player_stats()` computes the player's age from the Sofascore profile `dateOfBirthTimestamp` field. This is used by the shortlist generator's age filter to allow age-based candidate filtering. The `_make_empty_result()` template includes `age: None` as a default.
 
 > **In plain English:** Sofascore is where we get the player numbers. When you search for "Bukayo Saka," we hit their search API, get his ID, then fetch his full stats for the season. We also pull team rosters (to populate league context), transfer histories (to train our models), and league-wide data (to build shortlists). Everything gets saved locally so we don't re-download it every time.
 
@@ -515,7 +517,25 @@ Group slicing examples:
 
 The shortlist generator needs to rank hundreds of players by "how well do they match what the user wants?" This is a weighted similarity problem.
 
-### 9.2 Algorithm
+### 9.2 Rate-Limit Protection
+
+Sofascore applies aggressive rate-limiting (HTTP 403/429) after 2-3 rapid sequential requests. Without protection, scanning multiple leagues in quick succession results in all subsequent leagues failing silently — producing 0 candidates.
+
+**Solution:** A configurable `_INTER_LEAGUE_DELAY` (default 1.5 seconds) is inserted between league API calls. The default scan is limited to the **Big 5 European leagues** (ENG1, ESP1, GER1, ITA1, FRA1) instead of all 37+ leagues. The **player's own league is always scanned first** (most likely to succeed since season resolution is already cached from the player search). Users can explicitly select additional leagues via the UI.
+
+A per-league diagnostic panel shows which leagues returned data and how many candidates were found from each, making it easy to diagnose API issues.
+
+> **In plain English:** Sofascore blocks you if you ask for too much data too quickly. We solve this by: (1) adding a brief pause between league requests, (2) only searching the top 5 leagues by default instead of all 37+, and (3) always starting with the player's own league since it's most likely to already have cached data. A diagnostic panel shows exactly which leagues succeeded and which didn't.
+
+### 9.3 Filter Design — None-Passthrough
+
+Filter fields (age, minutes played, league, power ranking) use a **None-passthrough** design: when a candidate has `None` for a filtered field (e.g. age unknown from the Sofascore API), the candidate **passes through** the filter rather than being excluded. This means `max_age=30` selects "players aged ≤30 OR players with unknown age."
+
+This is intentional — Sofascore API data is sparse, and excluding unknowns would silently drop valid candidates, giving the false impression of 0 results. Users see "—" in the results table for missing fields and can judge quality themselves.
+
+> **In plain English:** If we don't know a player's age (because Sofascore didn't provide it), we include them anyway rather than silently dropping them. This prevents the tool from showing "0 candidates" when there are actually hundreds of valid players whose metadata is just incomplete.
+
+### 9.4 Algorithm
 
 Implemented in `backend/models/shortlist_scorer.py` → `score_candidates()`:
 
@@ -550,7 +570,7 @@ metric_score[m] = max(0.0, 1.0 - abs(metric_diff) / 3.0)
 
 **Step 6 — Sort descending.** Best match first. Candidate dataclass includes `same_cluster_as_reference` boolean.
 
-### 9.3 Percentage Changes
+### 9.5 Percentage Changes
 
 `compute_percentage_changes()` calculates the percent change from current to predicted per-90 for each metric:
 
@@ -574,7 +594,7 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
    → Sofascore returns team ID, tournament ID
 
 3. get_player_stats(961995)
-   → Returns per-90 stats, team, position, minutes
+   → Returns per-90 stats, team, position, minutes, age
 
 4. get_season_list(tournament_id) → optional season selector
 
@@ -620,7 +640,7 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
 
 ### 11.1 Unit Tests
 
-188 tests across 11 test files, all using `unittest` with `mock.patch` for external API calls:
+208 tests across 13 test files, all using `unittest` with `mock.patch` for external API calls:
 
 | Test File | What It Tests | Count |
 |---|---|---|
@@ -635,10 +655,12 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
 | `test_fuzzy_matching.py` | Extreme abbreviations, accent normalization, substring/word matching, ClubElo canonicalization | 64 |
 | `test_training_pipeline.py` | First-1000-min targets, non-transfer samples, league means, per-group features, change_ra normalization | 23 |
 | `test_backtester.py` | Backtester predictions vs actuals, hold-out evaluation | 3 |
+| `test_shortlist_scorer.py` | Filter None-passthrough, score_candidates with clustering, compute_percentage_changes edge cases | 15 |
+| `test_new_features.py` | Team search, transfer history, league stats, seasons, season-specific stats | 5 |
 
 All tests use mocked HTTP responses — no network access required. Temporary cache directories are created per test module and cleaned up in `tearDownModule()`.
 
-> **In plain English:** We have 188 automated checks that verify the system works correctly. They use fake data (so they don't need the internet), and they cover everything from "does the search work?" to "is the per-90 math right?" to "does the cache actually cache things?" to "does fuzzy team name matching handle accents and abbreviations?" If anyone changes the code and breaks something, these tests catch it immediately.
+> **In plain English:** We have 208 automated checks that verify the system works correctly. They use fake data (so they don't need the internet), and they cover everything from "does the search work?" to "is the per-90 math right?" to "does the cache actually cache things?" to "does fuzzy team name matching handle accents and abbreviations?" to "do the shortlist filters correctly handle missing data?" If anyone changes the code and breaks something, these tests catch it immediately.
 
 ### 11.2 Run Tests
 
