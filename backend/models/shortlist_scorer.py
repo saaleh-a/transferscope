@@ -69,10 +69,13 @@ def filter_candidates(
 
     Design: when a candidate has ``None`` for a filtered field (e.g. age
     unknown), the candidate **passes through** the filter rather than being
-    excluded.  This is intentional — excluding unknowns would silently drop
-    players whose data is incomplete from the Sofascore API, giving the
-    impression that 0 candidates exist when in reality the data is just
-    sparse.  Users can inspect the results and see "—" for missing fields.
+    excluded.  This means ``max_age=30`` selects "players aged ≤30 OR
+    players with unknown age" — not strictly "players aged ≤30 only".
+
+    This is intentional — excluding unknowns would silently drop players
+    whose data is incomplete from the Sofascore API, giving the impression
+    that 0 candidates exist when in reality the data is just sparse.
+    Users can inspect the results and see "—" for missing fields.
     """
     from backend.data.sofascore_client import normalize_position
 
