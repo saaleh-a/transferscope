@@ -419,3 +419,101 @@ class TestSofascoreClient(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGetPlayerMatchLogs(unittest.TestCase):
+    """Test get_player_match_logs returns sorted, filtered match data."""
+
+    @patch("backend.data.sofascore_client._get")
+    def test_get_player_match_logs_sorted_ascending(self, mock_get):
+        """Mock a 2-page response with 5 matches in random date order.
+
+        Assert return list is sorted by match_date ascending.
+        Assert each dict has: match_id, match_date, minutes_played, per90.
+        Assert matches with minutes_played=0 are excluded.
+        """
+        cache.clear()
+
+        page0_response = {
+            "events": [
+                {
+                    "id": 103,
+                    "startTimestamp": 1690000000,  # 2023-07-22
+                    "statistics": {
+                        "minutesPlayed": 90,
+                        "expectedGoals": 0.5,
+                        "shots": 3,
+                    },
+                },
+                {
+                    "id": 105,
+                    "startTimestamp": 1691000000,  # 2023-08-02
+                    "statistics": {
+                        "minutesPlayed": 45,
+                        "expectedGoals": 0.2,
+                        "shots": 1,
+                    },
+                },
+                {
+                    "id": 101,
+                    "startTimestamp": 1688000000,  # 2023-06-29
+                    "statistics": {
+                        "minutesPlayed": 0,  # should be excluded
+                        "expectedGoals": 0.0,
+                    },
+                },
+            ]
+        }
+
+        page1_response = {
+            "events": [
+                {
+                    "id": 104,
+                    "startTimestamp": 1690500000,  # 2023-07-28
+                    "statistics": {
+                        "minutesPlayed": 67,
+                        "expectedGoals": 0.3,
+                        "shots": 2,
+                    },
+                },
+                {
+                    "id": 102,
+                    "startTimestamp": 1689000000,  # 2023-07-10
+                    "statistics": {
+                        "minutesPlayed": 90,
+                        "expectedGoals": 0.8,
+                        "shots": 4,
+                    },
+                },
+            ]
+        }
+
+        page2_response = {"events": []}  # empty — stops pagination
+
+        def side_effect(path):
+            if "events/last/0" in path:
+                return page0_response
+            elif "events/last/1" in path:
+                return page1_response
+            elif "events/last/2" in path:
+                return page2_response
+            return None
+
+        mock_get.side_effect = side_effect
+
+        result = sofascore_client.get_player_match_logs(1001, 17, 50000)
+
+        # Should have 4 matches (1 excluded for minutes_played=0)
+        self.assertEqual(len(result), 4)
+
+        # Sorted ascending by match_date
+        dates = [m["match_date"] for m in result]
+        self.assertEqual(dates, sorted(dates))
+
+        # Each dict has required keys
+        for match in result:
+            self.assertIn("match_id", match)
+            self.assertIn("match_date", match)
+            self.assertIn("minutes_played", match)
+            self.assertIn("per90", match)
+            self.assertGreater(match["minutes_played"], 0)
