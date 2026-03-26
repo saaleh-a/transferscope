@@ -19,7 +19,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -1529,8 +1529,126 @@ def _feature_keys_list() -> List[str]:
 # ── Step 9: Main Entry Point ────────────────────────────────────────────────
 
 
+def run_pipeline(
+    *,
+    league_codes: Optional[List[str]] = None,
+    seasons_back: int = 5,
+    skip_discovery: bool = False,
+    skip_training: bool = False,
+    val_ratio: float = 0.15,
+    test_ratio: float = 0.10,
+    api_delay: float = 2.0,
+    progress_callback: Optional[Callable[[str, str], None]] = None,
+) -> bool:
+    """Run the full training pipeline programmatically.
+
+    Parameters
+    ----------
+    league_codes : list of str, optional
+        League codes to scan. Defaults to ``DEFAULT_LEAGUE_CODES``.
+    seasons_back : int
+        Number of historical seasons to use.
+    skip_discovery : bool
+        If True, load cached transfer records instead of discovering.
+    skip_training : bool
+        If True, skip model training (backtest only).
+    val_ratio, test_ratio : float
+        Validation and test split ratios.
+    api_delay : float
+        Seconds between Sofascore API calls.
+    progress_callback : callable, optional
+        Called with ``(step: str, detail: str)`` to report progress.
+        When *None*, messages go to ``print()``.
+
+    Returns
+    -------
+    bool
+        True if training completed successfully, False otherwise.
+    """
+    global API_CALL_DELAY_SECONDS
+    API_CALL_DELAY_SECONDS = api_delay
+
+    if league_codes is None:
+        league_codes = list(DEFAULT_LEAGUE_CODES)
+
+    def _report(step: str, detail: str = "") -> None:
+        if progress_callback is not None:
+            progress_callback(step, detail)
+        else:
+            msg = step if not detail else f"{step} — {detail}"
+            print(msg)
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    _report("Starting", "TransferScope Training Pipeline")
+
+    records_path = os.path.join(_MODELS_DIR, "transfer_records.json")
+
+    # Step 2: Discover transfers
+    if skip_discovery and os.path.exists(records_path):
+        _report("Loading cached transfers")
+        with open(records_path, "r") as f:
+            raw_records = json.load(f)
+        records = [TransferRecord(**r) for r in raw_records]
+        _report("Loaded transfers", f"{len(records)} records from cache")
+    else:
+        _report("Discovering transfers", f"{len(league_codes)} leagues, {seasons_back} seasons")
+        records = discover_transfers(league_codes, seasons_back)
+
+        os.makedirs(_MODELS_DIR, exist_ok=True)
+        with open(records_path, "w") as f:
+            json.dump([asdict(r) for r in records], f, indent=2, default=str)
+        _report("Transfers found", f"{len(records)} records saved")
+
+    if len(records) < 10:
+        _report("Insufficient data", f"Only {len(records)} transfers found — need ≥10")
+        return False
+
+    # Step 3: Build full dataset
+    _report("Building dataset", "Discovering non-transfer samples…")
+    non_transfer_records = discover_non_transfers(league_codes, seasons_back)
+    _report("Non-transfers found", f"{len(non_transfer_records)} records")
+
+    X, y, metadata = build_full_dataset(records, non_transfer_records)
+
+    if len(metadata) < 10:
+        _report("Insufficient data", f"Only {len(metadata)} valid samples")
+        return False
+
+    # Step 4: Split dataset
+    _report("Splitting dataset", "Temporal train/val/test split")
+    (
+        X_train, y_train, X_val, y_val, X_test, y_test,
+        meta_train, meta_val, meta_test,
+    ) = split_dataset(X, y, metadata, val_ratio, test_ratio)
+
+    if not skip_training:
+        # Step 5: Train adjustment models
+        _report("Training adjustment models", "sklearn LinearRegression × 13 metrics")
+        train_adjustment_models(X_train, y_train, meta_train)
+
+        # Step 6: Train neural network
+        _report("Training neural network", "4-group multi-head TensorFlow model")
+        train_neural_network(X_train, y_train, X_val, y_val)
+    else:
+        _report("Skipping training", "—skip-training flag set")
+
+    # Step 8: Backtesting
+    if len(meta_test) > 0:
+        _report("Running backtest", f"{len(meta_test)} test samples")
+        from backend.models.backtester import run_backtest, show_example_predictions
+
+        run_backtest(X_test, y_test, meta_test)
+        show_example_predictions(meta_test, n=10)
+    else:
+        _report("Backtesting", "No test data available")
+
+    _report("Complete", "Models saved to data/models/")
+    return True
+
+
 def main() -> None:
-    """Run the full training pipeline."""
+    """Run the full training pipeline (CLI entry point)."""
     parser = argparse.ArgumentParser(
         description="TransferScope Training Pipeline"
     )
@@ -1576,92 +1694,30 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    global API_CALL_DELAY_SECONDS
-    API_CALL_DELAY_SECONDS = args.api_delay
-
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-
     print("=" * 60)
     print("TransferScope Training Pipeline")
     print("=" * 60)
 
     league_codes = [c.strip() for c in args.leagues.split(",")]
-    records_path = os.path.join(_MODELS_DIR, "transfer_records.json")
 
-    # Step 2: Discover transfers
-    if args.skip_discovery and os.path.exists(records_path):
-        print("\nLoading cached transfer records...")
-        with open(records_path, "r") as f:
-            raw_records = json.load(f)
-        records = [TransferRecord(**r) for r in raw_records]
-        print(f"Loaded {len(records)} transfer records from cache")
+    success = run_pipeline(
+        league_codes=league_codes,
+        seasons_back=args.seasons_back,
+        skip_discovery=args.skip_discovery,
+        skip_training=args.skip_training,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        api_delay=args.api_delay,
+    )
+
+    if success:
+        print("\n" + "=" * 60)
+        print("Training complete. Models saved to data/models/")
+        print("=" * 60)
     else:
-        print("\nStep 2: Discovering transfers...")
-        records = discover_transfers(league_codes, args.seasons_back)
-
-        # Save transfer records
-        os.makedirs(_MODELS_DIR, exist_ok=True)
-        with open(records_path, "w") as f:
-            json.dump([asdict(r) for r in records], f, indent=2, default=str)
-        print(f"Transfer records saved to {records_path}")
-
-    if len(records) < 10:
-        print(f"\n⚠️ Only {len(records)} transfers found. Need more data for training.")
-        print("Possible causes:")
-        print("  • Sofascore API is unreachable (Cloudflare block, rate-limited, or no internet)")
-        print("  • Try increasing --api-delay (e.g. --api-delay 5.0)")
-        print("  • Try expanding league coverage (e.g. --leagues ENG1,ESP1,GER1,ITA1,FRA1)")
-        print("  • Try more seasons (e.g. --seasons-back 5)")
-        print("  • Check if Sofascore works in your browser at https://www.sofascore.com")
-        return
-
-    # Step 3: Build full dataset
-    print("\nStep 3: Building training dataset...")
-
-    # Discover non-transfer samples
-    print("\nDiscovering non-transfer samples...")
-    non_transfer_records = discover_non_transfers(league_codes, args.seasons_back)
-    print(f"Found {len(non_transfer_records)} non-transfer records")
-
-    X, y, metadata = build_full_dataset(records, non_transfer_records)
-
-    if len(metadata) < 10:
-        print(f"\n⚠️ Only {len(metadata)} valid samples. Insufficient for training.")
-        return
-
-    # Step 4: Split dataset
-    print("\nStep 4: Splitting dataset (temporal)...")
-    (
-        X_train, y_train, X_val, y_val, X_test, y_test,
-        meta_train, meta_val, meta_test,
-    ) = split_dataset(X, y, metadata, args.val_ratio, args.test_ratio)
-
-    if not args.skip_training:
-        # Step 5: Train adjustment models
-        print("\nStep 5: Training adjustment models...")
-        team_model, player_model = train_adjustment_models(
-            X_train, y_train, meta_train
-        )
-
-        # Step 6: Train neural network
-        print("\nStep 6: Training neural network...")
-        nn_model = train_neural_network(X_train, y_train, X_val, y_val)
-    else:
-        print("\nSkipping training (--skip-training)")
-
-    # Step 8: Backtesting
-    if len(meta_test) > 0:
-        print("\nStep 8: Running backtest...")
-        from backend.models.backtester import run_backtest, show_example_predictions
-
-        report = run_backtest(X_test, y_test, meta_test)
-        show_example_predictions(meta_test, n=10)
-    else:
-        print("\nNo test data for backtesting.")
-
-    print("\n" + "=" * 60)
-    print("Training complete. Models saved to data/models/")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print("Training failed — see messages above.")
+        print("=" * 60)
 
 
 if __name__ == "__main__":

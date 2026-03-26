@@ -10,6 +10,8 @@ Now supports multi-league search via Sofascore tournament stats.
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Dict, List, Optional
 
 import pandas as pd
@@ -29,6 +31,13 @@ from backend.models.shortlist_scorer import (
 )
 from backend.utils.league_registry import LEAGUES
 from frontend.theme import section_header, player_info_card
+
+_log = logging.getLogger(__name__)
+
+# Delay between league API calls to avoid Sofascore rate-limiting (seconds).
+# Sofascore returns 403/429 after rapid sequential requests.  A small delay
+# between leagues dramatically improves success rate.
+_INTER_LEAGUE_DELAY = 1.5
 
 _LABELS: Dict[str, str] = {
     "expected_goals": "xG",
@@ -58,6 +67,87 @@ _WEIGHTS_EXPLANATION = (
     "For example, set xG and xA to 1.0 and everything else to 0.0 to find "
     "the most prolific attackers."
 )
+
+
+def _collect_league_candidates(
+    tid: int,
+    season_id: Optional[int],
+    player_id: int,
+    source_norm: float,
+    source_league: float,
+    source_pos_avg: Dict[str, float],
+    league_name: str,
+) -> List[Candidate]:
+    """Fetch player stats for one league and build Candidate objects.
+
+    Separated from render() for clarity and testability.
+    """
+    try:
+        league_players = sofascore_client.get_league_player_stats(
+            tid, season_id, limit=100,
+        )
+    except Exception as exc:
+        _log.info("Failed to fetch league %s (tid=%d): %s", league_name, tid, exc)
+        return []
+
+    candidates: List[Candidate] = []
+    for lp in league_players:
+        lp_id = lp.get("id")
+        if lp_id == player_id:
+            continue
+
+        lp_per90 = lp.get("per90") or {}
+        # Use `is not None` to avoid skipping legitimate 0.0 values
+        if not any(lp_per90.get(m) is not None for m in CORE_METRICS):
+            continue
+
+        lp_current = {}
+        for m in CORE_METRICS:
+            v = lp_per90.get(m)
+            lp_current[m] = v if v is not None else 0
+
+        # Paper-aligned prediction: use team-position style data
+        # to predict how this candidate would perform at the source team.
+        lp_team = lp.get("team", "")
+        lp_ranking = power_rankings.get_team_ranking(lp_team)
+        lp_norm = lp_ranking.normalized_score if lp_ranking else 50.0
+        lp_league = lp_ranking.league_mean_normalized if lp_ranking else 50.0
+        # Relative ability change if player moved to the source team
+        delta_ra = (source_norm - source_league) - (lp_norm - lp_league)
+
+        # Use the candidate's own stats as a proxy for their team's
+        # position average (fetching each candidate's team would be
+        # too many API calls).  The source team's position average
+        # is the real tactical style target.
+        predicted = paper_heuristic_predict(
+            player_per90=lp_current,
+            source_pos_avg=lp_current,
+            target_pos_avg=source_pos_avg,
+            change_relative_ability=delta_ra,
+            player_rating=lp.get("rating"),
+            source_league_mean=lp_league,
+            target_league_mean=source_league,
+        )
+
+        # Normalize position for consistent filtering
+        raw_pos = lp.get("position", "Unknown")
+        norm_pos = normalize_position(raw_pos)
+
+        candidates.append(Candidate(
+            player_id=lp_id,
+            name=lp.get("name", "Unknown"),
+            team=lp_team,
+            position=norm_pos if norm_pos != "Unknown" else raw_pos,
+            age=lp.get("age"),
+            minutes_played=lp.get("minutes_played"),
+            league=league_name,
+            predicted_per90=predicted,
+            current_per90=lp_current,
+            club_power_ranking=lp_norm,
+            rating=lp.get("rating"),
+        ))
+
+    return candidates
 
 
 def render():
@@ -133,8 +223,11 @@ def render():
     section_header("Filters", "Narrow the candidate pool")
     fcol1, fcol2, fcol3 = st.columns(3)
     with fcol1:
-        max_age = st.number_input("Max age", 16, 45, 30, key="f_age")
-        min_minutes = st.number_input("Min minutes played", 0, 5000, 500, key="f_mins")
+        # Defaults: age 35 (wide enough for experienced targets), min 200 mins
+        # (low to avoid excluding sparse-data candidates — None-passthrough
+        # filter design means unknowns pass through anyway).
+        max_age = st.number_input("Max age", 16, 45, 35, key="f_age")
+        min_minutes = st.number_input("Min minutes played", 0, 5000, 200, key="f_mins")
     with fcol2:
         league_names = ["Any"] + [l.name for l in LEAGUES.values()]
         selected_leagues = st.multiselect("Leagues", league_names, default=["Any"], key="f_leagues")
@@ -224,20 +317,35 @@ def render():
                 if info.name in selected_leagues
             ]
         else:
-            # Default to major leagues for speed; scanning all 37+ would be slow
-            _MAJOR_LEAGUES = {
-                "ENG1", "ESP1", "GER1", "ITA1", "FRA1",  # Big 5
-                "NED1", "POR1", "BEL1", "TUR1",           # Strong European
-                "BRA1", "ARG1",                             # South America
+            # Default: scan Big 5 only for reliability and speed.
+            # Scanning 11+ leagues triggers Sofascore rate-limiting (403/429)
+            # which causes 0 results.  Users can select more leagues explicitly.
+            _DEFAULT_LEAGUES = {
+                "ENG1", "ESP1", "GER1", "ITA1", "FRA1",
             }
             target_leagues = [
                 (code, info) for code, info in LEAGUES.items()
-                if code in _MAJOR_LEAGUES
+                if code in _DEFAULT_LEAGUES
             ]
+
+        # Always include the player's own league first (most likely to succeed
+        # since season resolution is already cached from the player search).
+        player_league_tid = player.get("tournament_id")
+        if player_league_tid:
+            from backend.utils.league_registry import get_by_sofascore_id
+            player_league_info = get_by_sofascore_id(player_league_tid)
+            if player_league_info:
+                # Insert at front so it's scanned first
+                already = {code for code, _ in target_leagues}
+                for code, info in LEAGUES.items():
+                    if info is player_league_info and code not in already:
+                        target_leagues.insert(0, (code, info))
+                        break
 
         league_progress = st.progress(0, text="Scanning leagues...")
         total_leagues = len(target_leagues)
         leagues_with_data = 0
+        league_diagnostics: List[str] = []
 
         for li, (league_code, league_info) in enumerate(target_leagues):
             league_progress.progress(
@@ -248,80 +356,49 @@ def render():
             if tid is None:
                 continue
 
-            try:
-                league_players = sofascore_client.get_league_player_stats(
-                    tid, selected_season_id, limit=100,
-                )
-            except Exception:
-                continue
+            # Rate-limit protection: delay between league API calls.
+            # Without this, Sofascore returns 403/429 after 2-3 rapid calls,
+            # causing all subsequent leagues to fail → 0 candidates.
+            if li > 0:
+                time.sleep(_INTER_LEAGUE_DELAY)
 
-            if league_players:
+            league_candidates = _collect_league_candidates(
+                tid=tid,
+                season_id=selected_season_id,
+                player_id=player["id"],
+                source_norm=source_norm,
+                source_league=source_league,
+                source_pos_avg=source_pos_avg,
+                league_name=league_info.name,
+            )
+
+            if league_candidates:
                 leagues_with_data += 1
-
-            for lp in league_players:
-                lp_id = lp.get("id")
-                if lp_id == player["id"]:
-                    continue
-
-                lp_per90 = lp.get("per90") or {}
-                # Use `is not None` to avoid skipping legitimate 0.0 values
-                if not any(lp_per90.get(m) is not None for m in CORE_METRICS):
-                    continue
-
-                lp_current = {}
-                for m in CORE_METRICS:
-                    v = lp_per90.get(m)
-                    lp_current[m] = v if v is not None else 0
-
-                # Paper-aligned prediction: use team-position style data
-                # to predict how this candidate would perform at the source team.
-                lp_team = lp.get("team", "")
-                lp_ranking = power_rankings.get_team_ranking(lp_team)
-                lp_norm = lp_ranking.normalized_score if lp_ranking else 50.0
-                lp_league = lp_ranking.league_mean_normalized if lp_ranking else 50.0
-                # Relative ability change if player moved to the source team
-                delta_ra = (source_norm - source_league) - (lp_norm - lp_league)
-
-                # Use the candidate's own stats as a proxy for their team's
-                # position average (fetching each candidate's team would be
-                # too many API calls).  The source team's position average
-                # is the real tactical style target.
-                predicted = paper_heuristic_predict(
-                    player_per90=lp_current,
-                    source_pos_avg=lp_current,
-                    target_pos_avg=source_pos_avg,
-                    change_relative_ability=delta_ra,
-                    player_rating=lp.get("rating"),
-                    source_league_mean=lp_league,
-                    target_league_mean=source_league,
+                candidates.extend(league_candidates)
+                league_diagnostics.append(
+                    f"✅ {league_info.name}: {len(league_candidates)} players"
                 )
-
-                # Normalize position for consistent filtering
-                raw_pos = lp.get("position", "Unknown")
-                norm_pos = normalize_position(raw_pos)
-
-                candidates.append(Candidate(
-                    player_id=lp_id,
-                    name=lp.get("name", "Unknown"),
-                    team=lp_team,
-                    position=norm_pos if norm_pos != "Unknown" else raw_pos,
-                    age=lp.get("age"),
-                    minutes_played=lp.get("minutes_played"),
-                    league=league_info.name,
-                    predicted_per90=predicted,
-                    current_per90=lp_current,
-                    club_power_ranking=lp_norm,
-                    rating=lp.get("rating"),
-                ))
+            else:
+                league_diagnostics.append(f"⚠️ {league_info.name}: 0 players")
 
         league_progress.empty()
 
-        if leagues_with_data == 0:
-            st.warning(
-                "⚠️ Could not fetch player data from any league. "
-                "Sofascore API may be rate-limiting requests. "
-                "Try again in a few minutes or select specific leagues."
-            )
+        # Show diagnostic info so user knows what happened per league
+        with st.expander(
+            f"📊 League scan results — {leagues_with_data}/{total_leagues} leagues returned data",
+            expanded=leagues_with_data == 0,
+        ):
+            for diag in league_diagnostics:
+                st.text(diag)
+            if leagues_with_data == 0:
+                st.warning(
+                    "**No data from any league.** This is usually caused by "
+                    "Sofascore API rate-limiting.\n\n"
+                    "**Try:**\n"
+                    "1. Wait 2-3 minutes and try again\n"
+                    "2. Select just 1-2 specific leagues instead of 'Any'\n"
+                    "3. Clear the cache (sidebar) if data seems stale"
+                )
 
         # Also include current teammates for completeness
         try:
@@ -355,13 +432,18 @@ def render():
             # Teammates are already on the same team — no transfer adjustment
             teammate_league = ""
             if source_ranking:
-                league_info = LEAGUES.get(source_ranking.league_code)
-                teammate_league = league_info.name if league_info else ""
+                li_info = LEAGUES.get(source_ranking.league_code)
+                teammate_league = li_info.name if li_info else ""
+
+            # Extract teammate age for consistent filter behavior
+            tp_age = tp_stats.get("age")
+
             candidates.append(Candidate(
                 player_id=tp_id,
                 name=tp_stats.get("name", tp.get("name", "Unknown")),
                 team=tp_stats.get("team", ""),
                 position=norm_pos if norm_pos != "Unknown" else raw_pos,
+                age=tp_age,
                 minutes_played=tp_stats.get("minutes_played"),
                 league=teammate_league,
                 predicted_per90=tp_current.copy(),
@@ -370,7 +452,13 @@ def render():
             ))
 
     if not candidates:
-        st.warning("No candidates found. Try broadening your filters or searching more leagues.")
+        st.warning(
+            "No candidates found. This usually means Sofascore API is rate-limiting requests.\n\n"
+            "**Try:**\n"
+            "- Wait 2-3 minutes and try again\n"
+            "- Select just 1-2 specific leagues\n"
+            "- Clear the cache using the sidebar button"
+        )
         return
 
     # Build reference per90 for the player being replaced (clean None → 0.0)
@@ -380,14 +468,23 @@ def render():
     }
 
     # Score candidates using k-means clustering + weighted distance
+    total_before_filter = len(candidates)
     scored = score_candidates(candidates, weights, filters, reference_per90=reference_per90)
 
     if not scored:
-        st.warning("No candidates match your filters.")
+        st.warning(
+            f"No candidates match your filters ({total_before_filter} candidates "
+            f"found, all filtered out).\n\n"
+            f"**Try:** increase Max Age, decrease Min Minutes, or set Positions to 'Any'."
+        )
         return
 
     # ── Display results ──────────────────────────────────────────────────
-    section_header(f"Top {min(len(scored), 20)} Candidates", "Ranked by style similarity (k-means clustering)")
+    section_header(
+        f"Top {min(len(scored), 20)} of {len(scored)} Candidates",
+        f"Ranked by style similarity (k-means clustering) — {total_before_filter} scanned, "
+        f"{len(scored)} passed filters",
+    )
 
     rows = []
     for c in scored[:20]:
@@ -402,6 +499,7 @@ def render():
             "Team": c.team,
             "League": c.league or "",
             "Position": c.position,
+            "Age": c.age if c.age is not None else "—",
             "Rating": f"{c.rating:.2f}" if c.rating is not None else "—",
             "Similarity": f"{c.score:.1%}",
             "Cluster": "✓ Same" if c.same_cluster_as_reference else ("○ Diff" if c.cluster >= 0 else "—"),

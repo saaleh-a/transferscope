@@ -741,6 +741,16 @@ def get_player_stats(
                 player_data.get("positionDescription", {}) or position_data
             )
 
+            # Age — compute from dateOfBirthTimestamp if available
+            dob_ts = player_data.get("dateOfBirthTimestamp")
+            if dob_ts is not None:
+                try:
+                    age_seconds = time.time() - int(dob_ts)
+                    if age_seconds > 0:
+                        result["age"] = int(age_seconds / (365.25 * 86400))
+                except (ValueError, TypeError):
+                    pass
+
     # Step 2 — Discover current tournament + season
     tournament_id = _get_cached_tournament_id(player_id)
 
@@ -1127,6 +1137,7 @@ def _make_empty_result() -> Dict[str, Any]:
         "team": "",
         "team_id": None,
         "position": "",
+        "age": None,
         "minutes_played": 0,
         "appearances": 0,
         "per90": {m: None for m in ALL_METRICS},
