@@ -546,6 +546,31 @@ _OPP_QUALITY_SENS: Dict[str, float] = {
 }
 
 
+# ── Structural parameters for paper_heuristic_predict ─────────────────────────
+# These control the formula shape, not per-metric behavior. Extracted as named
+# constants for clarity and future tuning (code review feedback).
+
+# Paper A.3 β2 coefficient: how strongly a player conforms to the new team's
+# position-level averages. Higher = more adaptation to new team's style.
+# Increased from 0.15 to 0.25 to produce paper-scale style effects.
+_CONFORMITY_COEFF = 0.25
+
+# Quadratic damping on the team quality polynomial (paper A.3 x4² term).
+# Prevents unrealistically large effects for extreme transfers. Reduced from
+# 0.15 to 0.08 to allow bigger predictions for large ability gaps — paper shows
+# 30%+ changes for extreme moves (Healey Ligue 2→PL, de Jong Barça→Man Utd).
+_DAMPING_FACTOR = 0.08
+
+# League-quality attenuation: scales down style_diff for cross-league moves
+# where position-average differences reflect league quality, not tactics.
+# Factor: how aggressively style is attenuated per unit of league gap.
+# Floor: minimum style influence even for extreme cross-league moves.
+# Reduced from (2.0, 0.15) to (1.5, 0.25) — paper shows style effects persist
+# in cross-league moves (Doku's xA differs at Liverpool vs Barcelona, Section 4.3.1).
+_LEAGUE_ATTN_FACTOR = 1.5
+_LEAGUE_ATTN_FLOOR = 0.25
+
+
 def paper_heuristic_predict(
     player_per90: Dict[str, float],
     source_pos_avg: Dict[str, float],
@@ -696,7 +721,7 @@ def paper_heuristic_predict(
         # show style effects persist even in cross-league moves (Doku's xA
         # changes differently at Liverpool vs Barcelona, Section 4.3.1).
         # Floor of 0.25 ensures meaningful style adaptation always occurs.
-        league_attn = max(0.25, 1.0 - abs(league_gap) * 1.5)
+        league_attn = max(_LEAGUE_ATTN_FLOOR, 1.0 - abs(league_gap) * _LEAGUE_ATTN_FACTOR)
 
         # Paper A.3 β3·x3: style adaptation
         style_shift = effective_team_inf * style_diff * league_attn
@@ -706,7 +731,7 @@ def paper_heuristic_predict(
         # their position (Section 2.3, Appendix A.3).  Attenuated for
         # cross-league moves where position averages reflect league quality
         # more than tactical style.
-        conformity_pull = 0.25 * effective_team_inf * (tgt_avg - player_val) * league_attn
+        conformity_pull = _CONFORMITY_COEFF * effective_team_inf * (tgt_avg - player_val) * league_attn
 
         # Base: player retains their level + small style/conformity adjustments
         base = player_val + style_shift + conformity_pull
@@ -724,7 +749,7 @@ def paper_heuristic_predict(
         # Damping factor 0.08 (reduced from 0.15) allows larger effects for
         # big transfers — paper shows 30%+ changes for extreme moves
         # (Healey Ligue 2→PL, de Jong Barça→Man Utd).
-        team_effect = sensitivity * team_gap * (1.0 - 0.08 * abs(team_gap))
+        team_effect = sensitivity * team_gap * (1.0 - _DAMPING_FACTOR * abs(team_gap))
 
         # Opposition quality: moving to a weaker/stronger league.
         # Uses league_gap (positive = weaker league → more per-90 output).
