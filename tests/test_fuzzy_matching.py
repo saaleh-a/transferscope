@@ -313,5 +313,116 @@ class TestFuzzyEdgeCases(unittest.TestCase):
         self.assertEqual(result, "PSV")
 
 
+class TestDirectMapping(unittest.TestCase):
+    """Test the _CLUBELO_TO_SOFASCORE direct mapping and canonicalization."""
+
+    def test_psg_canonical(self):
+        from backend.features.power_rankings import _CLUBELO_TO_SOFASCORE
+        self.assertEqual(_CLUBELO_TO_SOFASCORE["PSG"], "Paris Saint-Germain")
+
+    def test_mancity_canonical(self):
+        from backend.features.power_rankings import _CLUBELO_TO_SOFASCORE
+        self.assertEqual(_CLUBELO_TO_SOFASCORE["ManCity"], "Manchester City")
+
+    def test_bayern_canonical(self):
+        from backend.features.power_rankings import _CLUBELO_TO_SOFASCORE
+        self.assertEqual(_CLUBELO_TO_SOFASCORE["Bayern"], "Bayern Munich")
+
+    def test_atletico_canonical(self):
+        from backend.features.power_rankings import _CLUBELO_TO_SOFASCORE
+        self.assertEqual(_CLUBELO_TO_SOFASCORE["Atletico"], "Atlético Madrid")
+
+    def test_reverse_mapping_exists(self):
+        from backend.features.power_rankings import _SOFASCORE_TO_CLUBELO
+        self.assertIn("Paris Saint-Germain", _SOFASCORE_TO_CLUBELO)
+        self.assertIn("Manchester City", _SOFASCORE_TO_CLUBELO)
+
+    def test_canonicalized_teams_match_sofascore_names(self):
+        """After canonicalization, Sofascore dropdown names should match exactly."""
+        from backend.features.power_rankings import _CLUBELO_TO_SOFASCORE
+
+        # Simulate building teams dict with canonical names
+        raw_clubelo = ["PSG", "ManCity", "ManUtd", "Bayern", "Dortmund",
+                       "RealMadrid", "Atletico", "Wolves", "Tottenham"]
+        canonical_names = {_CLUBELO_TO_SOFASCORE.get(n, n) for n in raw_clubelo}
+
+        # These Sofascore names should all be in the canonical set
+        sofascore_names = [
+            "Paris Saint-Germain", "Manchester City", "Manchester United",
+            "Bayern Munich", "Borussia Dortmund", "Real Madrid",
+            "Atlético Madrid", "Wolverhampton Wanderers", "Tottenham Hotspur",
+        ]
+        for name in sofascore_names:
+            self.assertIn(name, canonical_names, f"{name!r} not in canonical set")
+
+    def test_parissg_alias_in_extreme_abbrevs(self):
+        """'parissg' alias handles ClubElo returning 'Paris SG' variant."""
+        from backend.features.power_rankings import _EXTREME_ABBREVS
+        self.assertIn("parissg", _EXTREME_ABBREVS)
+        self.assertIn("parissaintgermain", _EXTREME_ABBREVS["parissg"])
+
+
+class TestCountryLevelFallback(unittest.TestCase):
+    """Test _clubelo_to_code_from_country for the soccerdata NaN league fix."""
+
+    def test_france_level1(self):
+        from backend.features.power_rankings import _clubelo_to_code_from_country
+        self.assertEqual(_clubelo_to_code_from_country("FRA", 1), "FRA1")
+
+    def test_england_level2(self):
+        from backend.features.power_rankings import _clubelo_to_code_from_country
+        self.assertEqual(_clubelo_to_code_from_country("ENG", 2), "ENG2")
+
+    def test_netherlands_level1(self):
+        from backend.features.power_rankings import _clubelo_to_code_from_country
+        self.assertEqual(_clubelo_to_code_from_country("NED", 1), "NED1")
+
+    def test_turkey_level1(self):
+        from backend.features.power_rankings import _clubelo_to_code_from_country
+        self.assertEqual(_clubelo_to_code_from_country("TUR", 1), "TUR1")
+
+    def test_portugal_level1(self):
+        from backend.features.power_rankings import _clubelo_to_code_from_country
+        self.assertEqual(_clubelo_to_code_from_country("POR", 1), "POR1")
+
+    def test_unknown_country_returns_none(self):
+        from backend.features.power_rankings import _clubelo_to_code_from_country
+        self.assertIsNone(_clubelo_to_code_from_country("ZZZ", 1))
+
+    def test_nan_country_returns_none(self):
+        import math
+        from backend.features.power_rankings import _clubelo_to_code_from_country
+        self.assertIsNone(_clubelo_to_code_from_country(float("nan"), 1))
+
+    def test_none_country_returns_none(self):
+        from backend.features.power_rankings import _clubelo_to_code_from_country
+        self.assertIsNone(_clubelo_to_code_from_country(None, 1))
+
+
+class TestStripAccents(unittest.TestCase):
+    """Test accent normalization helper."""
+
+    def test_atletico(self):
+        from backend.features.power_rankings import _strip_accents
+        self.assertEqual(_strip_accents("Atlético Madrid"), "Atletico Madrid")
+
+    def test_monchengladbach(self):
+        from backend.features.power_rankings import _strip_accents
+        self.assertEqual(_strip_accents("Borussia Mönchengladbach"),
+                         "Borussia Monchengladbach")
+
+    def test_fenerbahce(self):
+        from backend.features.power_rankings import _strip_accents
+        self.assertEqual(_strip_accents("Fenerbahçe SK"), "Fenerbahce SK")
+
+    def test_no_accents_unchanged(self):
+        from backend.features.power_rankings import _strip_accents
+        self.assertEqual(_strip_accents("Arsenal"), "Arsenal")
+
+    def test_preserves_case_and_spacing(self):
+        from backend.features.power_rankings import _strip_accents
+        self.assertEqual(_strip_accents("São Paulo FC"), "Sao Paulo FC")
+
+
 if __name__ == "__main__":
     unittest.main()
