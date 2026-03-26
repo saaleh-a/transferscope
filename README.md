@@ -27,9 +27,9 @@ Enter a player and a target club. TransferScope predicts how each of 13 core per
 
 ### Shortlist Generator
 
-Select a player to replace and weight the metrics that matter. TransferScope scans players across 37+ leagues (defaulting to 11 major leagues for speed), clusters candidates by playing style using k-means, scores them by weighted Euclidean distance to the reference player (with a 15% same-cluster bonus), and returns a ranked shortlist with filters for age, position, league, minutes played, and club power ranking.
+Select a player to replace and weight the metrics that matter. TransferScope scans players across 37+ leagues (defaulting to the Big 5 European leagues for reliability — scanning too many leagues triggers Sofascore rate-limiting), clusters candidates by playing style using k-means, scores them by weighted Euclidean distance to the reference player (with a 15% same-cluster bonus), and returns a ranked shortlist with filters for age, position, league, minutes played, and club power ranking. The player's own league is always scanned first. A 1.5-second delay between league API calls prevents rate-limiting (403/429 errors) that previously caused 0 results.
 
-> **In plain English:** Say Saka gets injured and you need a replacement right winger. You tell TransferScope which stats matter most to you (e.g. "I care a lot about chance creation and dribbling, less about defensive work"). It then searches through thousands of players across major leagues worldwide, groups them by playing style (using machine learning clustering), and ranks them by how closely they match what you need — with a bonus for players who play in a similar style to the reference. You can filter by age, league, how much they've played, etc.
+> **In plain English:** Say Saka gets injured and you need a replacement right winger. You tell TransferScope which stats matter most to you (e.g. "I care a lot about chance creation and dribbling, less about defensive work"). It then searches through thousands of players across major leagues worldwide, groups them by playing style (using machine learning clustering), and ranks them by how closely they match what you need — with a bonus for players who play a similar style to the reference. You can filter by age, league, how much they've played, etc. The search starts with the player's own league (most reliable) and adds the Big 5 by default — you can expand to more leagues manually.
 
 ### Hot or Not
 
@@ -131,7 +131,7 @@ transferscope/
 │   │   ├── power_ranking_chart.py      # Before/after club strength timeline
 │   │   └── metric_bar.py              # Bar chart of predicted stat changes
 │   └── theme.py                        # The dark "Tactical Noir" visual design
-├── tests/                              # 188 automated tests (no internet needed)
+├── tests/                              # 208 automated tests (no internet needed)
 ├── data/
 │   ├── cache/                          # Saved API responses (not in git)
 │   └── models/                         # Saved model weights (not in git)
@@ -176,7 +176,7 @@ The app opens at `http://localhost:8501`. No API keys required — all data sour
 python -m pytest tests/ -v
 ```
 
-All 188 tests use mocked API responses, so they run offline with no network calls.
+All 208 tests use mocked API responses, so they run offline with no network calls.
 
 ---
 
@@ -246,8 +246,10 @@ Any league available on Sofascore can be added by extending the league registry.
 | Multi-tournament fallback | When primary tournament returns 0 minutes, try all team tournaments | Fixes data loading for players in cups/European competitions |
 | Position-aware verdict | Hot or Not weights offensive metrics 1.5× for forwards, defensive for defenders | More accurate verdicts for different player types |
 | K-means shortlist scoring | Cluster candidates by playing style, 15% same-cluster bonus, weighted Euclidean distance | Finds replacements with similar playing profiles, not just similar raw numbers |
+| Shortlist rate-limit protection | 1.5s inter-league delay, Big 5 default, player's own league first | Prevents Sofascore 403/429 errors that caused 0 results when scanning too many leagues |
+| None-passthrough filters | Candidates with unknown age/minutes pass through filters instead of being excluded | Sparse API data shouldn't silently drop valid candidates |
 | Per-group feature subsets | Shooting 16, Passing 25, Dribbling 7, Defending 13 features | Each model group only sees relevant features, reducing noise |
-| 3-step team name matching | Exact → accent-normalized → fuzzy (138 abbreviation aliases) | Reliably matches team names across ClubElo, WorldFootballElo, and Sofascore |
+| 3-step team name matching | Exact → accent-normalized → fuzzy (180+ abbreviation aliases) | Reliably matches team names across ClubElo, WorldFootballElo, and Sofascore |
 | Streamlit | Fast to build; sufficient for a personal tool | Web app framework that gets us a UI without a separate frontend team |
 | diskcache | Local tool, SQLite is enough | Simple on-disk cache, no need for a database server |
 | All stats per-90 | Consistent, comparable, position-agnostic | Fair comparisons regardless of minutes played |

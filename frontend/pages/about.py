@@ -35,6 +35,12 @@ The system predicts **13 core metrics** simultaneously — covering shooting (xG
 passing (xA, crosses, passes, long balls, chances created), possession (dribbling,
 penalty area entries), and defending (clearances, interceptions, pressing).
 
+**Four tools:**
+- **Transfer Impact** — Predict how each metric changes at a new club (dual simulation)
+- **Shortlist Generator** — Find replacement candidates across Big 5 leagues (k-means clustering)
+- **Hot or Not** — Quick verdict on a transfer rumour (position-aware weighting)
+- **About & Methodology** — This page
+
 > **Key insight:** A player at a worse team *can improve or decline* at a bigger team,
 > per-metric, depending on the target team's style. It's not just "harder league =
 > everything gets worse."
@@ -116,6 +122,45 @@ predicted_target  = model(player, current_team → target_team, ra=Δ)
 
 This is more robust than comparing raw observed stats vs predicted stats, because
 both sides come from the same model process — reducing noise sensitivity.
+"""
+    )
+
+    # ── Shortlist methodology ────────────────────────────────────────────
+    section_header("Shortlist Generator", "How replacement candidates are found and ranked")
+    st.markdown(
+        """
+### Multi-League Search
+
+The shortlist generator scans players across multiple leagues simultaneously. By default,
+it searches the **Big 5 European leagues** (Premier League, La Liga, Bundesliga, Serie A,
+Ligue 1), plus the player's own league which is always scanned first.
+
+**Rate-limit protection:** Sofascore applies aggressive rate-limiting (403/429 errors)
+after 2-3 rapid requests. A **1.5-second delay** between league API calls prevents this.
+Without the delay, scanning multiple leagues causes all but the first 2-3 to fail →
+0 candidates.
+
+A diagnostic panel shows which leagues returned data and how many candidates were found
+from each.
+
+### K-Means Clustering + Weighted Distance
+
+Candidates are ranked using a two-stage process:
+
+1. **K-means clustering** groups all candidates by playing style (k=√(n/2), capped 3-10).
+   The reference player is included to identify their cluster.
+2. **Weighted Euclidean distance** measures similarity to the reference player across
+   all weighted metrics (user-configurable). Candidates in the same style cluster receive
+   a **15% score bonus**.
+
+### Filter Design
+
+Filters use a **None-passthrough** design: candidates with unknown age or minutes
+pass through filters rather than being excluded. This means `max_age=30` selects
+"players aged ≤30 OR players with unknown age."
+
+This is intentional — Sofascore API data is sparse, and excluding unknowns would
+silently drop valid candidates. Missing fields show as "—" in the results table.
 """
     )
 
@@ -279,11 +324,32 @@ league/position priors.
         except Exception:
             pass
     else:
-        st.warning(
-            "⚠️ No trained model found — using heuristic fallback. "
-            "Run the training pipeline to train on historical transfers:\n\n"
-            "```\npython backend/models/training_pipeline.py --seasons-back 3 --leagues ENG1,ESP1,GER1\n```"
-        )
+        # Check if training is currently running
+        training_status = st.session_state.get("training_status", "unknown")
+        training_step = st.session_state.get("training_step", "")
+        if training_status in ("starting", "running"):
+            st.info(
+                "🔄 **Model training is running automatically in the background.**\n\n"
+                f"Current step: {training_step}\n\n"
+                "Predictions use the paper-aligned heuristic until training completes. "
+                "The trained model will be used automatically once ready."
+            )
+        elif training_status == "failed":
+            st.warning(
+                f"⚠️ **Auto-training did not complete:** {training_step}\n\n"
+                "The app is using the heuristic fallback. You can retry from the "
+                "sidebar, or run manually:\n\n"
+                "```\npython backend/models/training_pipeline.py --seasons-back 3 "
+                "--leagues ENG1,ESP1,GER1\n```"
+            )
+        else:
+            st.warning(
+                "⚠️ No trained model found — using heuristic fallback. "
+                "Training starts automatically on app launch. "
+                "You can also run it manually:\n\n"
+                "```\npython backend/models/training_pipeline.py --seasons-back 3 "
+                "--leagues ENG1,ESP1,GER1\n```"
+            )
 
     # ── The 13 metrics ───────────────────────────────────────────────────
     section_header("The 13 Core Metrics", "What the paper predicts")
@@ -325,6 +391,8 @@ change after a transfer, using:
 
 TransferScope is a faithful recreation of this paper's methodology, with additional
 improvements for robustness: dynamic Elo-based Power Rankings, per-metric opposition
-quality modelling, asymmetric damping, fuzzy team name matching, and K-means shortlist clustering.
+quality modelling, asymmetric damping, fuzzy team name matching (180+ aliases),
+K-means shortlist clustering with rate-limit protection, None-passthrough filter design,
+per-group feature subsets (4 specialist neural networks), and 208 automated tests.
 """
     )

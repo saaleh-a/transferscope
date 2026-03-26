@@ -303,8 +303,6 @@ def render():
     weighted_changes: list = []
     weight_sum = 0.0
     for m, change in pct_changes.items():
-        if change == 0:
-            continue
         w = _metric_weight(m)
         weighted_changes.append(change * w)
         weight_sum += w

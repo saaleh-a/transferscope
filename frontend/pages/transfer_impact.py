@@ -19,12 +19,7 @@ import streamlit as st
 from backend.data import sofascore_client, elo_router
 from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
 from backend.features import power_rankings, rolling_windows
-from backend.features.adjustment_models import (
-    PlayerAdjustmentModel,
-    TeamAdjustmentModel,
-    paper_heuristic_predict,
-    scale_team_position_features,
-)
+from backend.features.adjustment_models import paper_heuristic_predict
 from backend.models.shortlist_scorer import compute_percentage_changes
 from backend.models.transfer_portal import (
     TransferPortalModel,
