@@ -577,8 +577,29 @@ def paper_heuristic_predict(
         # less team-dependent (lower effective team_inf), multiplicatively.
         effective_team_inf = team_inf * quality_scale
 
-        # Base prediction: player's stats shifted toward target team's style
-        base = player_val + effective_team_inf * style_diff
+        # Player-system-reliance scaling (paper-aligned correction).
+        #
+        # The paper's trained b3 coefficient on diff_pos_old_new
+        # implicitly learns how much of the team-average change applies
+        # to an individual player.  Our fixed coefficient (team_inf) is
+        # the same for all players, so we need an explicit correction.
+        #
+        # A player performing well BELOW their team's positional average
+        # was less boosted by the tactical system — their output is more
+        # individual.  They lose less when the team system changes.
+        # Example: a 0.15 xG/90 forward at Man City (avg 0.40) is at 37%
+        # of team level — the style shift should be scaled to 37%, not 100%.
+        #
+        # Conversely, a player at or above the team average gets the full
+        # shift (capped at 1.0 to avoid over-amplifying star players).
+        if src_avg > 0 and abs(src_avg) > 0.01:
+            system_reliance = min(1.0, max(0.3, player_val / src_avg))
+        else:
+            system_reliance = 1.0
+
+        # Base prediction: player's stats shifted toward target team's style,
+        # scaled by how much the player relied on the source team's system.
+        base = player_val + effective_team_inf * style_diff * system_reliance
 
         # 2. Ability adjustment: polynomial (linear + quadratic + cubic).
         #    Maps to paper Appendix A.3: β4*ra + β5*ra² + β6*ra³
