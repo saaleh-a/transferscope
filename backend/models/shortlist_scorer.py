@@ -44,7 +44,8 @@ class Candidate:
     current_per90: Dict[str, float] = field(default_factory=dict)
     score: float = 0.0
     metric_scores: Dict[str, float] = field(default_factory=dict)
-    cluster: int = -1  # K-means cluster label
+    cluster: int = -1  # K-means cluster label (-1 = unassigned)
+    same_cluster_as_reference: bool = False  # True if in same cluster as reference player
 
 
 @dataclass
@@ -221,13 +222,16 @@ def score_candidates(
         norm_dist = distances[i] / max_dist
         base_score = 1.0 - norm_dist
 
-        # Cluster match: positive cluster = same as reference, negative = different
-        raw_cluster = int(cand_labels[i])
-        if use_clustering and raw_cluster == ref_cluster:
+        # Cluster membership
+        c.cluster = int(cand_labels[i])
+        c.same_cluster_as_reference = (
+            use_clustering and c.cluster == ref_cluster
+        )
+
+        # Same-cluster bonus: candidates sharing the reference player's
+        # style group get a 15% score boost.
+        if c.same_cluster_as_reference:
             base_score = min(1.0, base_score * 1.15)
-            c.cluster = raw_cluster      # positive = same cluster as reference
-        else:
-            c.cluster = -(raw_cluster + 1)  # negative = different cluster
 
         c.score = base_score
 
