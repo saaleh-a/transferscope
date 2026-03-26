@@ -263,7 +263,7 @@ TransferScope demonstrates that the methodology from Dinsdale & Gallagher (2022)
 
 ## References
 
-1. Dinsdale, J. & Gallagher, J. (2022). *The Transfer Portal: Predicting the Impact of a Player Transfer on the Receiving Club.* In: Brefeld, U., Davis, J., Van Haaren, J., Zimmermann, A. (eds) Machine Learning and Data Mining for Sports Analytics. Springer. https://doi.org/10.1007/978-3-031-02044-5_14
+1. Dinsdale, J. & Gallagher, J. (2022). *The Transfer Portal: Predicting the Impact of a Player Transfer on the Receiving Club.* https://doi.org/10.48550/arXiv.2201.11533
 
 2. ClubElo — http://clubelo.com — European club Elo rating system.
 
