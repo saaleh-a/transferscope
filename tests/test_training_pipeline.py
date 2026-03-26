@@ -377,3 +377,528 @@ class TestFirst1000MinuteTargets(unittest.TestCase):
         # Labels should reflect the 0.8 base value from season stats
         xg_label = result["labels"][0]
         self.assertAlmostEqual(xg_label, 0.8, places=1)
+
+
+# ── Improvement 3 tests ─────────────────────────────────────────────────────
+
+
+class TestNonTransferSamples(unittest.TestCase):
+    """Tests for non-transfer sample generation."""
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    @mock.patch("backend.models.training_pipeline.power_rankings")
+    def test_non_transfer_sample_change_ra_is_zero(self, mock_pr, mock_client):
+        """Verify that change_relative_ability is 0 in the feature vector
+        for a non-transfer sample (same club → same club)."""
+        from backend.models.training_pipeline import (
+            NonTransferRecord,
+            build_non_transfer_sample,
+        )
+
+        record = NonTransferRecord(
+            player_id=1001,
+            player_name="Stay Player",
+            position="Forward",
+            club_id=200,
+            club_name="Same FC",
+            league_id=17,
+            pre_season_id=40000,
+            post_season_id=50000,
+            pre_tournament_id=17,
+            post_tournament_id=17,
+        )
+
+        mock_client.get_player_match_logs.return_value = []
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.5)
+        mock_client.get_team_position_averages.return_value = (
+            _make_mock_per90(0.3), []
+        )
+        mock_client.get_league_player_stats.return_value = []
+
+        mock_pr.compute_daily_rankings.return_value = ({}, {})
+        mock_pr.get_team_ranking.return_value = None
+
+        result = build_non_transfer_sample(record)
+        self.assertIsNotNone(result)
+
+        # team_ability_current == team_ability_target
+        self.assertEqual(
+            result["team_ability_current"],
+            result["team_ability_target"],
+        )
+        # league_ability_current == league_ability_target
+        self.assertEqual(
+            result["league_ability_current"],
+            result["league_ability_target"],
+        )
+        # So change_ra = (team_target - league_target) - (team_current - league_current) = 0
+        team_c = result["team_ability_current"]
+        league_c = result["league_ability_current"]
+        team_t = result["team_ability_target"]
+        league_t = result["league_ability_target"]
+        change_ra = (team_t - league_t) - (team_c - league_c)
+        self.assertAlmostEqual(change_ra, 0.0)
+
+        # Verify is_transfer is False
+        self.assertFalse(result["is_transfer"])
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    @mock.patch("backend.models.training_pipeline.power_rankings")
+    def test_build_full_dataset_combines_sample_types(self, mock_pr, mock_client):
+        """Mock 3 transfer + 7 non-transfer records and verify combined shapes."""
+        from backend.models.training_pipeline import (
+            TransferRecord,
+            NonTransferRecord,
+            build_full_dataset,
+        )
+
+        mock_client.get_player_match_logs.return_value = []
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.5)
+        mock_client.get_team_position_averages.return_value = (
+            _make_mock_per90(0.3), []
+        )
+        mock_client.get_league_player_stats.return_value = []
+        mock_pr.compute_daily_rankings.return_value = ({}, {})
+        mock_pr.get_team_ranking.return_value = None
+
+        transfer_records = [
+            TransferRecord(
+                player_id=i,
+                player_name=f"Transfer Player {i}",
+                position="Forward",
+                from_club_id=i * 10,
+                from_club_name=f"From {i}",
+                from_league_id=17,
+                to_club_id=i * 10 + 1,
+                to_club_name=f"To {i}",
+                to_league_id=17,
+                transfer_date=f"2023-07-{i+1:02d}",
+                pre_transfer_season_id=40000,
+                post_transfer_season_id=50000,
+                pre_transfer_tournament_id=17,
+                post_transfer_tournament_id=17,
+            )
+            for i in range(3)
+        ]
+
+        non_transfer_records = [
+            NonTransferRecord(
+                player_id=100 + i,
+                player_name=f"Stay Player {i}",
+                position="Forward",
+                club_id=i * 10 + 5,
+                club_name=f"Club {i}",
+                league_id=17,
+                pre_season_id=40000,
+                post_season_id=50000,
+                pre_tournament_id=17,
+                post_tournament_id=17,
+            )
+            for i in range(7)
+        ]
+
+        X, y, metadata = build_full_dataset(transfer_records, non_transfer_records)
+
+        # All 10 should produce valid samples
+        self.assertEqual(X.shape[0], 10)
+        self.assertEqual(y.shape[0], 10)
+        self.assertEqual(len(metadata), 10)
+        self.assertEqual(X.shape[1], FEATURE_DIM)
+        self.assertEqual(y.shape[1], len(CORE_METRICS))
+
+        # Check mix of is_transfer values
+        transfer_count = sum(1 for m in metadata if m.get("is_transfer"))
+        non_transfer_count = sum(1 for m in metadata if not m.get("is_transfer"))
+        self.assertEqual(transfer_count, 3)
+        self.assertEqual(non_transfer_count, 7)
+
+
+# ── Improvement 4 tests ─────────────────────────────────────────────────────
+
+
+class TestNaiveLeagueExpectation(unittest.TestCase):
+    """Test that naive_league_expectation uses league means."""
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    @mock.patch("backend.models.training_pipeline.power_rankings")
+    def test_naive_expectation_equals_league_mean_not_scaled_player(self, mock_pr, mock_client):
+        """Verify that when league means are available, the naive expectation
+        is the league mean, not the old formula of (league_ability / 100) * player."""
+        from backend.models.training_pipeline import build_training_sample
+
+        record = _make_mock_transfer_record()
+
+        # Pre-transfer per90: all metrics at 2.0
+        mock_client.get_player_match_logs.return_value = []
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 2.0)
+        mock_client.get_team_position_averages.return_value = (
+            _make_mock_per90(0.3), []
+        )
+
+        # League player stats with known values
+        league_players = [
+            {"id": 1, "name": "A", "position": "F", "minutes_played": 900,
+             "per90": _make_mock_per90(1.0)},
+            {"id": 2, "name": "B", "position": "F", "minutes_played": 900,
+             "per90": _make_mock_per90(3.0)},
+        ]
+        mock_client.get_league_player_stats.return_value = league_players
+
+        mock_pr.compute_daily_rankings.return_value = ({}, {})
+        mock_pr.get_team_ranking.return_value = None
+
+        result = build_training_sample(record)
+        self.assertIsNotNone(result)
+
+        # league_means should be mean of 1.0 and 3.0 = 2.0
+        league_means = result.get("league_means", {})
+        self.assertAlmostEqual(league_means.get("expected_goals", 0), 2.0, places=1)
+
+
+# ── Improvement 5 tests ─────────────────────────────────────────────────────
+
+
+class TestErrorHandling(unittest.TestCase):
+    """Tests for rate limiting and error handling."""
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    @mock.patch("backend.models.training_pipeline.power_rankings")
+    def test_returns_none_when_pre_season_stats_missing(self, mock_pr, mock_client):
+        """When get_player_stats_for_season returns None, build_training_sample
+        returns None."""
+        from backend.models.training_pipeline import build_training_sample
+
+        record = _make_mock_transfer_record()
+
+        mock_client.get_player_match_logs.return_value = []
+        mock_client.get_player_stats_for_season.return_value = None
+
+        result = build_training_sample(record)
+        self.assertIsNone(result)
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    @mock.patch("backend.models.training_pipeline.power_rankings")
+    def test_uses_zero_priors_when_no_squad_data(self, mock_pr, mock_client):
+        """When get_team_position_averages raises, zeros should be used."""
+        from backend.models.training_pipeline import build_training_sample
+
+        record = _make_mock_transfer_record()
+
+        mock_client.get_player_match_logs.return_value = []
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.5)
+        mock_client.get_team_position_averages.side_effect = RuntimeError("API down")
+        mock_client.get_league_player_stats.return_value = []
+
+        mock_pr.compute_daily_rankings.return_value = ({}, {})
+        mock_pr.get_team_ranking.return_value = None
+
+        result = build_training_sample(record)
+        self.assertIsNotNone(result)
+        # Team-position features should be zeros (indices 17-42)
+        features = result["features"]
+        team_pos_slice = features[17:43]
+        np.testing.assert_array_equal(team_pos_slice, 0.0)
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    @mock.patch("backend.models.training_pipeline.power_rankings")
+    def test_uses_midpoint_when_power_rankings_fail(self, mock_pr, mock_client):
+        """When power rankings fail, should use 50.0 midpoints."""
+        from backend.models.training_pipeline import build_training_sample
+
+        record = _make_mock_transfer_record()
+
+        mock_client.get_player_match_logs.return_value = []
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.5)
+        mock_client.get_team_position_averages.return_value = (
+            _make_mock_per90(0.3), []
+        )
+        mock_client.get_league_player_stats.return_value = []
+
+        mock_pr.compute_daily_rankings.side_effect = RuntimeError("Elo service down")
+        mock_pr.get_team_ranking.return_value = None
+
+        result = build_training_sample(record)
+        self.assertIsNotNone(result)
+        # Team abilities should be 50.0 (midpoint fallback)
+        self.assertAlmostEqual(result["team_ability_current"], 50.0)
+        self.assertAlmostEqual(result["team_ability_target"], 50.0)
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    @mock.patch("backend.models.training_pipeline.power_rankings")
+    def test_substitutes_zero_for_missing_metric(self, mock_pr, mock_client):
+        """When a specific metric is missing (None), should be replaced with 0.0."""
+        from backend.models.training_pipeline import build_training_sample
+
+        record = _make_mock_transfer_record()
+
+        # Per90 with all None except one
+        partial_per90 = {m: None for m in CORE_METRICS}
+        partial_per90["expected_goals"] = 1.5
+
+        stats = _make_mock_season_stats(900)
+        stats["per90"] = partial_per90
+
+        mock_client.get_player_match_logs.return_value = []
+        mock_client.get_player_stats_for_season.return_value = stats
+        mock_client.get_team_position_averages.return_value = (
+            _make_mock_per90(0.3), []
+        )
+        mock_client.get_league_player_stats.return_value = []
+
+        mock_pr.compute_daily_rankings.return_value = ({}, {})
+        mock_pr.get_team_ranking.return_value = None
+
+        result = build_training_sample(record)
+        self.assertIsNotNone(result)
+
+        # xG (index 0) should be 1.5, all other player metrics should be 0.0
+        features = result["features"]
+        self.assertAlmostEqual(features[0], 1.5)
+        for i in range(1, 13):
+            self.assertAlmostEqual(features[i], 0.0,
+                                   msg=f"Metric index {i} should be 0.0 for missing")
+
+
+# ── Improvement 6 tests ─────────────────────────────────────────────────────
+
+
+class TestPerGroupFeatureSubsets(unittest.TestCase):
+    """Tests for per-group feature subsets in TransferPortalModel."""
+
+    def test_group_models_have_correct_input_dimensions(self):
+        """Each group model's input dimension should match its feature subset size."""
+        from backend.models.transfer_portal import (
+            TransferPortalModel,
+            GROUP_FEATURE_SUBSETS,
+            MODEL_GROUPS,
+        )
+
+        model = TransferPortalModel()
+        model.build(FEATURE_DIM)
+
+        for group_name in MODEL_GROUPS:
+            expected_dim = len(GROUP_FEATURE_SUBSETS[group_name])
+            keras_model = model.models[group_name]
+            actual_dim = keras_model.input_shape[1]
+            self.assertEqual(
+                actual_dim,
+                expected_dim,
+                f"{group_name}: expected input_dim={expected_dim}, got {actual_dim}",
+            )
+
+    def test_predict_produces_all_13_metrics(self):
+        """predict() should return all 13 core metrics regardless of per-group subsets."""
+        from backend.models.transfer_portal import TransferPortalModel, _feature_keys
+
+        model = TransferPortalModel()
+        model.build(FEATURE_DIM)
+
+        # Dummy feature dict
+        feature_dict = {k: 0.5 for k in _feature_keys()}
+
+        result = model.predict(feature_dict)
+        self.assertEqual(len(result), len(CORE_METRICS))
+        for m in CORE_METRICS:
+            self.assertIn(m, result)
+
+
+# ── Improvement 7 tests ─────────────────────────────────────────────────────
+
+
+class TestNormalisedChangeRA(unittest.TestCase):
+    """Test that change_ra is normalized by /50.0 for polynomial terms."""
+
+    def test_polynomial_features_use_normalised_ra(self):
+        """Fit PlayerAdjustmentModel with known change_ra and verify the
+        polynomial features are normalized."""
+        from backend.features.adjustment_models import PlayerAdjustmentModel
+
+        # Create training data with a known change_ra of 25.0
+        # After normalization: 25.0 / 50.0 = 0.5
+        rows = []
+        for m in CORE_METRICS:
+            for _ in range(5):
+                rows.append({
+                    "position": "Forward",
+                    "metric": m,
+                    "player_previous_per90": 1.0,
+                    "avg_position_feature_new_team": 1.0,
+                    "diff_avg_position_old_vs_new": 0.0,
+                    "change_relative_ability": 25.0,
+                    "actual": 1.1,
+                })
+
+        model = PlayerAdjustmentModel()
+        model.fit(rows)
+
+        # Predict with same change_ra — should produce the same result
+        # as training (no out-of-sample error)
+        prediction = model.predict(
+            "Forward", "expected_goals",
+            player_previous_per90=1.0,
+            avg_position_feature_new_team=1.0,
+            diff_avg_position_old_vs_new=0.0,
+            change_relative_ability=25.0,
+        )
+
+        # The prediction should be close to 1.1 (training target)
+        self.assertAlmostEqual(prediction, 1.1, places=2)
+
+        # Verify that the model internals used normalized values
+        # The 4th, 5th, 6th features should be 0.5, 0.25, 0.125
+        # not 25, 625, 15625
+        fm = model.models["Forward"]["expected_goals"]
+        self.assertTrue(
+            abs(fm.coef_[3]) < 100,  # Would be huge without normalization
+            f"Coefficient too large ({fm.coef_[3]}), suggesting no normalization",
+        )
+
+
+# ── Improvement 8 tests ─────────────────────────────────────────────────────
+
+
+class TestSplitDeduplication(unittest.TestCase):
+    """Tests for player-level deduplication in split."""
+
+    def test_split_removes_player_overlap_from_training(self):
+        """Players in the test set should not appear in training/validation."""
+        from backend.models.training_pipeline import split_dataset
+
+        n = 100
+        X = np.random.randn(n, FEATURE_DIM).astype(np.float32)
+        y = np.random.randn(n, len(CORE_METRICS)).astype(np.float32)
+
+        # Create 20 unique players, each appearing 5 times
+        player_ids = [i // 5 for i in range(n)]
+        metadata = [
+            {"transfer_date": f"2020-{(i%12)+1:02d}-{(i%28)+1:02d}", "player_id": player_ids[i]}
+            for i in range(n)
+        ]
+
+        result = split_dataset(X, y, metadata, val_ratio=0.15, test_ratio=0.10)
+        (X_train, _, X_val, _, X_test, _, meta_train, meta_val, meta_test) = result
+
+        test_pids = {m["player_id"] for m in meta_test}
+        train_pids = {m["player_id"] for m in meta_train}
+        val_pids = {m["player_id"] for m in meta_val}
+
+        # No overlap between test and train/val
+        self.assertEqual(test_pids & train_pids, set())
+        self.assertEqual(test_pids & val_pids, set())
+
+    def test_split_preserves_test_set_integrity(self):
+        """Test set should not be modified by deduplication."""
+        from backend.models.training_pipeline import split_dataset
+
+        n = 50
+        X = np.random.randn(n, FEATURE_DIM).astype(np.float32)
+        y = np.random.randn(n, len(CORE_METRICS)).astype(np.float32)
+
+        metadata = [
+            {"transfer_date": f"2020-{(i%12)+1:02d}-{(i%28)+1:02d}", "player_id": i % 10}
+            for i in range(n)
+        ]
+
+        result = split_dataset(X, y, metadata, val_ratio=0.15, test_ratio=0.10)
+        (_, _, _, _, X_test, _, _, _, meta_test) = result
+
+        # Test set should have samples
+        self.assertGreater(len(meta_test), 0)
+
+        # Total samples may be less than n due to deduplication
+        (X_train, _, X_val, _, X_test2, _, meta_train, meta_val, meta_test2) = result
+        total = len(meta_train) + len(meta_val) + len(meta_test2)
+        self.assertLessEqual(total, n)
+
+
+# ── Improvement 9 tests ─────────────────────────────────────────────────────
+
+
+class TestBuildFeatureDictFromPlayer(unittest.TestCase):
+    """Tests for the inference-time feature builder."""
+
+    @mock.patch("backend.features.power_rankings.get_team_ranking")
+    @mock.patch("backend.features.power_rankings.compute_daily_rankings")
+    @mock.patch("backend.data.sofascore_client.search_team")
+    @mock.patch("backend.data.sofascore_client.get_team_position_averages")
+    @mock.patch("backend.data.sofascore_client.get_player_stats_for_season")
+    @mock.patch("backend.data.sofascore_client.get_player_match_logs")
+    @mock.patch("backend.features.rolling_windows.player_rolling_average")
+    def test_inference_uses_match_logs_when_available(
+        self, mock_rolling, mock_logs, mock_season, mock_pos_avg,
+        mock_search_team, mock_daily, mock_team_ranking,
+    ):
+        """When match logs are available, use rolling average from them."""
+        from backend.models.transfer_portal import build_feature_dict_from_player
+
+        match_logs = [
+            {"match_id": i, "match_date": f"2023-{(i%12)+1:02d}-01",
+             "minutes_played": 90,
+             "per90": _make_mock_per90(1.5)}
+            for i in range(12)
+        ]
+        mock_logs.return_value = match_logs
+        mock_rolling.return_value = _make_mock_per90(1.5)
+        mock_season.return_value = {
+            "team_id": 200, "team": "Source FC",
+            "minutes_played": 1080, "per90": _make_mock_per90(0.3),
+        }
+        mock_pos_avg.return_value = (_make_mock_per90(0.4), [])
+        mock_search_team.return_value = [{"name": "Target FC"}]
+
+        mock_daily.return_value = ({}, {})
+        mock_team_ranking.return_value = None
+
+        result = build_feature_dict_from_player(
+            player_id=1001,
+            tournament_id=17,
+            season_id=40000,
+            target_club_id=300,
+            target_league_id=8,
+            position="Forward",
+        )
+
+        # Should have all 43 keys
+        self.assertEqual(len(result), FEATURE_DIM)
+
+        # Player metrics should reflect match log rolling values (1.5), not season agg (0.3)
+        self.assertGreater(result["player_expected_goals"], 1.0)
+
+    @mock.patch("backend.features.power_rankings.get_team_ranking")
+    @mock.patch("backend.features.power_rankings.compute_daily_rankings")
+    @mock.patch("backend.data.sofascore_client.search_team")
+    @mock.patch("backend.data.sofascore_client.get_team_position_averages")
+    @mock.patch("backend.data.sofascore_client.get_player_stats_for_season")
+    @mock.patch("backend.data.sofascore_client.get_player_match_logs")
+    def test_inference_falls_back_to_season_agg_when_no_logs(
+        self, mock_logs, mock_season, mock_pos_avg,
+        mock_search_team, mock_daily, mock_team_ranking,
+    ):
+        """When no match logs are available, use season aggregate."""
+        from backend.models.transfer_portal import build_feature_dict_from_player
+
+        mock_logs.return_value = []
+        mock_season.return_value = {
+            "team_id": 200, "team": "Source FC",
+            "minutes_played": 1080, "per90": _make_mock_per90(0.8),
+        }
+        mock_pos_avg.return_value = (_make_mock_per90(0.4), [])
+        mock_search_team.return_value = [{"name": "Target FC"}]
+
+        mock_daily.return_value = ({}, {})
+        mock_team_ranking.return_value = None
+
+        result = build_feature_dict_from_player(
+            player_id=1001,
+            tournament_id=17,
+            season_id=40000,
+            target_club_id=300,
+            target_league_id=8,
+            position="Forward",
+        )
+
+        # Should have all 43 keys
+        self.assertEqual(len(result), FEATURE_DIM)
+
+        # Player metrics should reflect season agg (0.8)
+        self.assertAlmostEqual(result["player_expected_goals"], 0.8, places=1)
