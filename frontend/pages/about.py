@@ -279,11 +279,32 @@ league/position priors.
         except Exception:
             pass
     else:
-        st.warning(
-            "⚠️ No trained model found — using heuristic fallback. "
-            "Run the training pipeline to train on historical transfers:\n\n"
-            "```\npython backend/models/training_pipeline.py --seasons-back 3 --leagues ENG1,ESP1,GER1\n```"
-        )
+        # Check if training is currently running
+        training_status = st.session_state.get("training_status", "unknown")
+        training_step = st.session_state.get("training_step", "")
+        if training_status in ("starting", "running"):
+            st.info(
+                "🔄 **Model training is running automatically in the background.**\n\n"
+                f"Current step: {training_step}\n\n"
+                "Predictions use the paper-aligned heuristic until training completes. "
+                "The trained model will be used automatically once ready."
+            )
+        elif training_status == "failed":
+            st.warning(
+                f"⚠️ **Auto-training did not complete:** {training_step}\n\n"
+                "The app is using the heuristic fallback. You can retry from the "
+                "sidebar, or run manually:\n\n"
+                "```\npython backend/models/training_pipeline.py --seasons-back 3 "
+                "--leagues ENG1,ESP1,GER1\n```"
+            )
+        else:
+            st.warning(
+                "⚠️ No trained model found — using heuristic fallback. "
+                "Training starts automatically on app launch. "
+                "You can also run it manually:\n\n"
+                "```\npython backend/models/training_pipeline.py --seasons-back 3 "
+                "--leagues ENG1,ESP1,GER1\n```"
+            )
 
     # ── The 13 metrics ───────────────────────────────────────────────────
     section_header("The 13 Core Metrics", "What the paper predicts")
