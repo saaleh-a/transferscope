@@ -27,6 +27,146 @@ from backend.utils.league_registry import LEAGUES, LeagueInfo
 _ONE_DAY = 86400
 
 
+# ── ClubElo → Sofascore direct name mapping ──────────────────────────────────
+# ClubElo uses abbreviated team names (e.g. "PSG", "ManCity") while Sofascore
+# uses full display names (e.g. "Paris Saint-Germain", "Manchester City").
+# This mapping canonicalises ClubElo names at data-load time so that the
+# ``teams`` dict keys match the names that come from the Sofascore dropdowns.
+# Fuzzy matching is kept as a safety net for any unmapped teams.
+_CLUBELO_TO_SOFASCORE: Dict[str, str] = {
+    # England
+    "ManCity": "Manchester City",
+    "ManUtd": "Manchester United",
+    "Tottenham": "Tottenham Hotspur",
+    "Wolves": "Wolverhampton Wanderers",
+    "NottmForest": "Nottingham Forest",
+    "SheffUtd": "Sheffield United",
+    "WestHam": "West Ham United",
+    "Newcastle": "Newcastle United",
+    "Brighton": "Brighton & Hove Albion",
+    "Leicester": "Leicester City",
+    "WestBrom": "West Bromwich Albion",
+    "SheffWed": "Sheffield Wednesday",
+    "QPR": "Queens Park Rangers",
+    "Boro": "Middlesbrough",
+    "Coventry": "Coventry City",
+    "Stoke": "Stoke City",
+    "Cardiff": "Cardiff City",
+    "Swansea": "Swansea City",
+    "Norwich": "Norwich City",
+    "Leeds": "Leeds United",
+    "Sunderland": "Sunderland AFC",
+    "Huddersfield": "Huddersfield Town",
+    "Hull": "Hull City",
+    "Bournemouth": "AFC Bournemouth",
+    # France
+    "PSG": "Paris Saint-Germain",
+    "Monaco": "AS Monaco",
+    "Lyon": "Olympique Lyonnais",
+    "Marseille": "Olympique de Marseille",
+    "Lille": "Lille OSC",
+    "Rennes": "Stade Rennais",
+    "Nantes": "FC Nantes",
+    "Nice": "OGC Nice",
+    "Lens": "RC Lens",
+    "Strasbourg": "RC Strasbourg Alsace",
+    "StEtienne": "AS Saint-Étienne",
+    "Montpellier": "Montpellier HSC",
+    "Brest": "Stade Brestois 29",
+    "Toulouse": "Toulouse FC",
+    "Reims": "Stade de Reims",
+    "Angers": "Angers SCO",
+    "LeHavre": "Le Havre AC",
+    # Germany
+    "Bayern": "Bayern Munich",
+    "BayernMunich": "Bayern Munich",
+    "Dortmund": "Borussia Dortmund",
+    "Leverkusen": "Bayer 04 Leverkusen",
+    "Leipzig": "RB Leipzig",
+    "Frankfurt": "Eintracht Frankfurt",
+    "Gladbach": "Borussia Mönchengladbach",
+    "Wolfsburg": "VfL Wolfsburg",
+    "Freiburg": "SC Freiburg",
+    "Hoffenheim": "TSG 1899 Hoffenheim",
+    "Stuttgart": "VfB Stuttgart",
+    "Mainz": "1. FSV Mainz 05",
+    "Augsburg": "FC Augsburg",
+    "Heidenheim": "1. FC Heidenheim 1846",
+    "UnionBerlin": "1. FC Union Berlin",
+    "HerthaBerlin": "Hertha BSC",
+    "Bochum": "VfL Bochum 1848",
+    "Koln": "1. FC Köln",
+    # Spain
+    "RealMadrid": "Real Madrid",
+    "Atletico": "Atlético Madrid",
+    "AtleticoMadrid": "Atlético Madrid",
+    "AthleticBilbao": "Athletic Club",
+    "AthleticClub": "Athletic Club",
+    "Betis": "Real Betis",
+    "RSociedad": "Real Sociedad",
+    "RealSociedad": "Real Sociedad",
+    "CeltaVigo": "Celta Vigo",
+    "Alaves": "Deportivo Alavés",
+    "Vallecano": "Rayo Vallecano",
+    "RayoVallecano": "Rayo Vallecano",
+    "LasPalmas": "UD Las Palmas",
+    "Leganes": "CD Leganés",
+    "RealValladolid": "Real Valladolid",
+    "Osasuna": "CA Osasuna",
+    # Italy
+    "Inter": "Inter",
+    "InterMilan": "Inter",
+    "ACMilan": "AC Milan",
+    "Milan": "AC Milan",
+    "Napoli": "SSC Napoli",
+    "Roma": "AS Roma",
+    "Lazio": "SS Lazio",
+    "Atalanta": "Atalanta BC",
+    "Fiorentina": "ACF Fiorentina",
+    "Torino": "Torino FC",
+    "Bologna": "Bologna FC 1909",
+    "Udinese": "Udinese Calcio",
+    "Cagliari": "Cagliari Calcio",
+    "Empoli": "Empoli FC",
+    "Verona": "Hellas Verona",
+    "Monza": "AC Monza",
+    "Lecce": "US Lecce",
+    "Parma": "Parma Calcio 1913",
+    "Genoa": "Genoa CFC",
+    "Sassuolo": "US Sassuolo",
+    "Salernitana": "US Salernitana 1919",
+    "Frosinone": "Frosinone Calcio",
+    "Como": "Como 1907",
+    "Venezia": "Venezia FC",
+    # Portugal
+    "Sporting": "Sporting CP",
+    "SportingCP": "Sporting CP",
+    # Netherlands
+    "AZ": "AZ Alkmaar",
+    "AZAlkmaar": "AZ Alkmaar",
+    "PSV": "PSV Eindhoven",
+    "PSVEindhoven": "PSV Eindhoven",
+    "Feyenoord": "Feyenoord Rotterdam",
+    "Twente": "FC Twente",
+    # Turkey
+    "Galatasaray": "Galatasaray SK",
+    "Fenerbahce": "Fenerbahçe SK",
+    "Besiktas": "Beşiktaş JK",
+    # Scotland
+    "Celtic": "Celtic FC",
+    "Rangers": "Rangers FC",
+    # Belgium
+    "ClubBrugge": "Club Brugge KV",
+    "Anderlecht": "RSC Anderlecht",
+    # Austria
+    "Salzburg": "FC Red Bull Salzburg",
+    "RBSalzburg": "FC Red Bull Salzburg",
+}
+
+# Build reverse lookup (Sofascore → ClubElo) for history queries
+_SOFASCORE_TO_CLUBELO: Dict[str, str] = {v: k for k, v in _CLUBELO_TO_SOFASCORE.items()}
+
+
 @dataclass
 class LeagueSnapshot:
     """Per-league statistics for a single day."""
@@ -84,13 +224,23 @@ def compute_daily_rankings(
     try:
         ce_df = clubelo_client.get_all_by_date(query_date)
         if ce_df is not None and len(ce_df) > 0:
-            for team_name in ce_df.index:
-                elo_val = float(ce_df.loc[team_name, "elo"])
-                ce_league = ce_df.loc[team_name, "league"]
-                # Map ClubElo league to our code
+            for raw_name in ce_df.index:
+                elo_val = float(ce_df.loc[raw_name, "elo"])
+                ce_league = ce_df.loc[raw_name, "league"]
+                # Map ClubElo league to our code.  When soccerdata is used
+                # it only translates 5 major leagues — the rest become NaN.
+                # Fall back to our own mapping from country+level columns.
                 league_code = _clubelo_to_code(ce_league)
+                if league_code is None and "country" in ce_df.columns:
+                    league_code = _clubelo_to_code_from_country(
+                        ce_df.loc[raw_name, "country"],
+                        ce_df.loc[raw_name, "level"] if "level" in ce_df.columns else 1,
+                    )
                 if league_code:
-                    all_teams[team_name] = (elo_val, league_code)
+                    # Canonicalise ClubElo abbreviated name → Sofascore
+                    # full name so that dropdown selections match directly.
+                    canonical = _CLUBELO_TO_SOFASCORE.get(str(raw_name), str(raw_name))
+                    all_teams[canonical] = (elo_val, league_code)
             _log.info("ClubElo loaded %d teams", len([t for t in all_teams]))
         else:
             _log.warning("ClubElo returned empty DataFrame for %s", query_date)
@@ -188,13 +338,23 @@ def get_team_ranking(
         )
         return None
 
-    # 1. Exact match
+    # 1. Exact match (cheapest check)
     if team_name in teams:
         ranking = teams[team_name]
         ranking.match_type = "exact"
         return ranking
 
-    # 2. Build normalized lookup and try fuzzy match
+    # 2. Accent-normalized exact match — handles "Atlético Madrid" matching
+    #    "Atletico Madrid" or vice-versa without needing a fuzzy pass.
+    norm_query = _strip_accents(team_name)
+    if norm_query != team_name:
+        for key in teams:
+            if _strip_accents(key) == norm_query:
+                ranking = teams[key]
+                ranking.match_type = "exact"
+                return ranking
+
+    # 3. Build normalized lookup and try fuzzy match
     match = _fuzzy_find_team(team_name, teams)
     if match is not None:
         _log.info("Fuzzy matched '%s' → '%s'", team_name, match)
@@ -312,15 +472,56 @@ def compare_leagues(
 
 # ── Internal ─────────────────────────────────────────────────────────────────
 
+def _strip_accents(name: str) -> str:
+    """Remove diacritics from *name* while preserving case and spacing."""
+    nfkd = unicodedata.normalize("NFKD", name)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
 def _clubelo_to_code(clubelo_league: Optional[str]) -> Optional[str]:
     """Map a ClubElo league string to our league code."""
     if clubelo_league is None:
         return None
+    if isinstance(clubelo_league, float):  # NaN from soccerdata
+        return None
+    clubelo_league = str(clubelo_league)
     for code, info in LEAGUES.items():
         if info.clubelo_league == clubelo_league:
             return code
     # Unknown European league — still track it with the raw string
     return None
+
+
+# Country+level → league code mapping for the soccerdata path where
+# ``_translate_league`` only handles the Big-5 and sets everything else
+# to NaN.  Uses the same country codes that ClubElo CSV data contains.
+_COUNTRY_LEVEL_TO_CODE: Dict[str, Dict[int, str]] = {}
+for _code, _info in LEAGUES.items():
+    if _info.clubelo_league is not None:
+        # Extract country prefix from e.g. "ENG-Premier League" → "ENG"
+        _country = _info.clubelo_league.split("-")[0]
+        # Derive level from league code suffix (e.g. "ENG1" → 1, "ENG2" → 2)
+        _level = int(_code[-1]) if _code[-1].isdigit() else 1
+        _COUNTRY_LEVEL_TO_CODE.setdefault(_country, {})[_level] = _code
+
+
+def _clubelo_to_code_from_country(
+    country: Optional[str],
+    level: Optional[int] = 1,
+) -> Optional[str]:
+    """Derive league code from raw ClubElo country and level columns.
+
+    This is a fallback for when ``soccerdata``'s ``_translate_league``
+    sets the league column to NaN for non-Big-5 leagues.
+    """
+    if country is None or (isinstance(country, float) and pd.isna(country)):
+        return None
+    country = str(country).strip()
+    try:
+        level_int = int(level)
+    except (ValueError, TypeError):
+        level_int = 1
+    lvl_map = _COUNTRY_LEVEL_TO_CODE.get(country, {})
+    return lvl_map.get(level_int) or lvl_map.get(1)
 
 
 # ── Fuzzy team name matching ─────────────────────────────────────────────────
@@ -370,8 +571,23 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "leicestercity": ["leicester"],
     "leicester": ["leicestercity"],
     # France
-    "parissaintgermain": ["psg", "parissaint-germain", "parissggermain"],
-    "psg": ["parissaintgermain"],
+    "parissaintgermain": ["psg", "parissg", "parissggermain"],
+    "psg": ["parissaintgermain", "parissg"],
+    "parissg": ["parissaintgermain", "psg"],
+    "olympiquelyonnais": ["lyon", "olympiquelyon"],
+    "lyon": ["olympiquelyonnais"],
+    "olympiquedemarseille": ["marseille", "olympiquemarseille", "om"],
+    "marseille": ["olympiquedemarseille"],
+    "staderennais": ["rennes"],
+    "rennes": ["staderennais"],
+    "asmonaco": ["monaco"],
+    "monaco": ["asmonaco"],
+    "lilleosc": ["lille"],
+    "lille": ["lilleosc"],
+    "rclens": ["lens"],
+    "lens": ["rclens"],
+    "ogcnice": ["nice"],
+    "nice": ["ogcnice"],
     # Germany
     "borussiadortmund": ["dortmund", "bvb", "bvbdortmund"],
     "dortmund": ["borussiadortmund"],
@@ -385,11 +601,26 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "gladbach": ["borussiamonchengladbach", "borussiamgladbach"],
     "monchengladbach": ["borussiamonchengladbach", "borussiamgladbach"],
     "bayerleverkusen": ["leverkusen", "bayer04leverkusen"],
-    "leverkusen": ["bayerleverkusen"],
+    "bayer04leverkusen": ["leverkusen", "bayerleverkusen"],
+    "leverkusen": ["bayerleverkusen", "bayer04leverkusen"],
     "rbleipzig": ["leipzig"],
     "leipzig": ["rbleipzig"],
     "eintrachtfrankfurt": ["frankfurt", "efrankfurt"],
     "frankfurt": ["eintrachtfrankfurt"],
+    "vflwolfsburg": ["wolfsburg"],
+    "wolfsburg": ["vflwolfsburg"],
+    "scfreiburg": ["freiburg"],
+    "freiburg": ["scfreiburg"],
+    "vfbstuttgart": ["stuttgart"],
+    "stuttgart": ["vfbstuttgart"],
+    "tsg1899hoffenheim": ["hoffenheim"],
+    "hoffenheim": ["tsg1899hoffenheim"],
+    "1fcunionberlin": ["unionberlin"],
+    "unionberlin": ["1fcunionberlin"],
+    "1fsv mainz05": ["mainz", "mainz05"],
+    "mainz": ["mainz05"],
+    "1fckoln": ["koln"],
+    "koln": ["1fckoln"],
     # Spain
     "atleticomadrid": ["atletico", "atleticodemadrid", "atlmadrid"],
     "atletico": ["atleticomadrid"],
@@ -407,10 +638,24 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "rayovallecano": ["rayo"],
     "rayo": ["rayovallecano"],
     # Italy
-    "internazionale": ["inter", "intermilan", "intermilanfc"],
+    "internazionale": ["inter", "intermilan", "intermilanfc", "internazionalemilano"],
     "internazionalemilano": ["inter", "intermilan", "internazionale"],
     "inter": ["internazionale", "intermilan", "internazionalemilano"],
     "intermilan": ["internazionale", "inter", "internazionalemilano"],
+    "acmilan": ["milan"],
+    "milan": ["acmilan"],
+    "sscnapoli": ["napoli"],
+    "napoli": ["sscnapoli"],
+    "asroma": ["roma"],
+    "roma": ["asroma"],
+    "sslazio": ["lazio"],
+    "lazio": ["sslazio"],
+    "atalantabc": ["atalanta"],
+    "atalanta": ["atalantabc"],
+    "acffiorentina": ["fiorentina"],
+    "fiorentina": ["acffiorentina"],
+    "hellasverona": ["verona"],
+    "verona": ["hellasverona"],
     # Portugal
     "sportinglisbon": ["sportingcp", "sporting"],
     "sportingcp": ["sportinglisbon", "sporting"],
@@ -423,8 +668,25 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "psveindhoven": ["psv"],
     # Turkey
     "galatasaray": ["galatasaraysk"],
+    "galatasaraysk": ["galatasaray"],
     "fenerbahce": ["fenerbahcesk"],
+    "fenerbahcesk": ["fenerbahce"],
     "besiktas": ["besiktasjk"],
+    "besiktasjk": ["besiktas"],
+    # Belgium
+    "clubbrugge": ["clubbruggekv"],
+    "clubbruggekv": ["clubbrugge"],
+    "rscanderlecht": ["anderlecht"],
+    "anderlecht": ["rscanderlecht"],
+    # Scotland
+    "celticfc": ["celtic"],
+    "celtic": ["celticfc"],
+    "rangersfc": ["rangers"],
+    "rangers": ["rangersfc"],
+    # Austria
+    "fcredbullsalzburg": ["salzburg", "rbsalzburg", "redbullsalzburg"],
+    "salzburg": ["fcredbullsalzburg", "rbsalzburg"],
+    "rbsalzburg": ["fcredbullsalzburg", "salzburg"],
     # South America
     "flamengo": ["flamengobj", "crflamengo"],
     "palmeiras": ["sepalmeiras"],
