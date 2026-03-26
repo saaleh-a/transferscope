@@ -384,8 +384,11 @@ def get_league_player_stats(
                 player_age = None
                 if dob_ts is not None:
                     try:
+                        # Use current time as reference; cached entries will
+                        # refresh daily so drift is at most ~1 day.
                         age_seconds = time.time() - int(dob_ts)
-                        player_age = int(age_seconds / (365.25 * 86400))
+                        if age_seconds > 0:
+                            player_age = int(age_seconds / (365.25 * 86400))
                     except (ValueError, TypeError):
                         pass
 
