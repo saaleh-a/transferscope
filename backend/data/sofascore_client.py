@@ -171,7 +171,7 @@ _HEADERS: dict[str, str] = {
 _REQUEST_TIMEOUT = 10  # seconds
 _MAX_RETRIES = 3  # total attempts for retryable errors
 _RETRY_BASE_DELAY = 1.0  # seconds — doubles each attempt (1, 2, 4)
-_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
 
 
 def _get(path: str) -> Optional[dict]:
@@ -195,9 +195,12 @@ def _get(path: str) -> Optional[dict]:
                 continue
             resp.raise_for_status()
             return resp.json()
-        except requests.exceptions.ConnectionError:
+        except requests.exceptions.ConnectionError as ce:
             delay = _RETRY_BASE_DELAY * (2 ** attempt)
-            _log.info("Sofascore connection error on %s — retry in %.1fs", path, delay)
+            _log.info(
+                "Sofascore connection error on %s — retry %d/%d in %.1fs (%s)",
+                path, attempt + 1, _MAX_RETRIES, delay, ce,
+            )
             time.sleep(delay)
         except Exception as exc:
             _log.warning("Sofascore permanent error on %s: %s", path, exc)
