@@ -40,8 +40,10 @@ from backend.features.adjustment_models import (
 from backend.features.rolling_windows import blend_weight
 from backend.models.transfer_portal import (
     FEATURE_DIM,
+    GROUP_FEATURE_SUBSETS,
     MODEL_GROUPS,
     TransferPortalModel,
+    _feature_keys,
     build_feature_dict,
 )
 from backend.utils.league_registry import LEAGUES
@@ -561,11 +563,13 @@ def build_training_sample(
         first_1000 = _accumulate_first_n_minutes(post_match_logs)
         if first_1000 is not None:
             post_per90 = first_1000
-            minutes_accumulated = sum(
-                m.get("minutes_played", 0)
-                for m in post_match_logs
-                if sum(mm.get("minutes_played", 0) for mm in post_match_logs[:post_match_logs.index(m)+1]) <= _TARGET_WINDOW_MINUTES + 90
-            )
+            cumulative = 0
+            for m in post_match_logs:
+                mins = m.get("minutes_played", 0)
+                cumulative += mins
+                if cumulative > _TARGET_WINDOW_MINUTES + 90:
+                    break
+                minutes_accumulated += mins
             used_match_logs_for_labels = True
         else:
             post_per90 = None
@@ -1211,7 +1215,8 @@ def train_adjustment_models(
             # at the target league's average level. league_ability is 0-100 normalized,
             # so dividing by 100 creates a scaling factor (0.0-1.0) applied to the
             # player's current per-90.
-            # Use league mean per-90 if available; fall back to scaled player metric
+            # Use league mean per-90 if available (Improvement 4); fall back to
+            # scaled player metric when league stats could not be fetched
             league_means = meta.get("league_means", {})
             fallback_expectation = (league_ability_target / 100.0 * player_prev) if player_prev else 0.0
             naive_expectation = league_means.get(m, fallback_expectation)
@@ -1353,7 +1358,14 @@ def train_neural_network(
         y_group_train = y_train[:, target_indices]
         y_group_val = y_val[:, target_indices]
 
-        print(f"\n  Group: {group_name} ({len(targets)} targets)")
+        # Extract per-group feature subset from the full scaled array
+        all_keys = _feature_keys()
+        key_to_idx = {k: i for i, k in enumerate(all_keys)}
+        group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
+        X_group_train = X_train_scaled[:, group_indices]
+        X_group_val = X_val_scaled[:, group_indices]
+
+        print(f"\n  Group: {group_name} ({len(targets)} targets, {len(group_indices)} features)")
 
         # Recompile with explicit learning rate
         model.models[group_name].compile(
@@ -1373,11 +1385,11 @@ def train_neural_network(
         ]
 
         history = model.models[group_name].fit(
-            X_train_scaled,
+            X_group_train,
             y_group_train,
             epochs=100,
             batch_size=32,
-            validation_data=(X_val_scaled, y_group_val),
+            validation_data=(X_group_val, y_group_val),
             callbacks=callbacks,
             verbose=0,
         )

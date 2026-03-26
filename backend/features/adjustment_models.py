@@ -201,7 +201,7 @@ class PlayerAdjustmentModel:
 
             grouped.setdefault(pos, {}).setdefault(metric, ([], []))
 
-            cra = row.get("change_relative_ability", 0)
+            cra = row.get("change_relative_ability", 0) / 50.0
             features = [
                 row.get("player_previous_per90", 0),
                 row.get("avg_position_feature_new_team", 0),
@@ -241,7 +241,7 @@ class PlayerAdjustmentModel:
         change_relative_ability: float,
     ) -> float:
         """Predict a player's per-90 at the target club for one metric."""
-        cra = change_relative_ability
+        cra = change_relative_ability / 50.0
         features = np.array([[
             player_previous_per90,
             avg_position_feature_new_team,
