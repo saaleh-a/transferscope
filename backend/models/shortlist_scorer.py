@@ -65,7 +65,15 @@ def filter_candidates(
     candidates: List[Candidate],
     filters: ShortlistFilters,
 ) -> List[Candidate]:
-    """Apply filters to reduce candidate list."""
+    """Apply filters to reduce candidate list.
+
+    Design: when a candidate has ``None`` for a filtered field (e.g. age
+    unknown), the candidate **passes through** the filter rather than being
+    excluded.  This is intentional — excluding unknowns would silently drop
+    players whose data is incomplete from the Sofascore API, giving the
+    impression that 0 candidates exist when in reality the data is just
+    sparse.  Users can inspect the results and see "—" for missing fields.
+    """
     from backend.data.sofascore_client import normalize_position
 
     result = []
@@ -87,8 +95,10 @@ def filter_candidates(
             c_norm = normalize_position(c.position)
             if c_norm not in filters.positions and c.position not in filters.positions:
                 continue
-        if filters.leagues is not None and c.league:
-            if c.league not in filters.leagues:
+        if filters.leagues is not None:
+            # Candidates with known league must match the filter.
+            # Candidates with empty/None league pass through (data incomplete).
+            if c.league and c.league not in filters.leagues:
                 continue
         if filters.max_power_ranking is not None and c.club_power_ranking is not None:
             if c.club_power_ranking > filters.max_power_ranking:
