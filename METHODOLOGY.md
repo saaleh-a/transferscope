@@ -379,11 +379,15 @@ style_diff = target_pos_avg[metric] - source_pos_avg[metric]
 base = player_val + team_influence * style_diff
 ```
 
-When real team-position data is unavailable (both position averages equal), per-metric `_LEAGUE_STYLE_COEFF` values estimate style from the league quality gap. This ensures that **different metrics produce different percentage changes** — not a flat decline or increase:
+When real team-position data is unavailable (both position averages equal), per-metric `_LEAGUE_STYLE_COEFF` values estimate style from the relative ability gap, attenuated for extreme transfers. This ensures that **different metrics produce different percentage changes** — not a flat decline or increase:
 ```python
 # Each metric has a unique coefficient (e.g. xA=0.40, shots=0.20, dribbles=0.04)
-estimated_style_diff = source_avg * league_style_coeff * ra
+# Attenuated for extreme moves: |ra|=0.15 → 70% retained, |ra|=0.30+ → 40% retained
+style_scale = max(0.3, 1.0 - abs(ra) * 2.0)
+estimated_style_diff = source_avg * league_style_coeff * ra * style_scale
 ```
+
+The attenuation prevents double-counting of quality effects: the team_effect and opp_effect already handle how ability differences affect output. The style estimate captures only the residual tactical differences between teams, which become less meaningful for extreme cross-league transfers where quality dominates over tactics.
 
 **2. Ability factor** — polynomial in `change_relative_ability / 100`, decomposed into two orthogonal forces:
 ```python
@@ -554,7 +558,7 @@ metric_score[m] = max(0.0, 1.0 - abs(metric_diff) / 3.0)
 pct_change = ((predicted - current) / abs(current)) * 100
 ```
 
-This is displayed in metric bar charts and the Hot or Not verdict.
+This is displayed in metric bar charts and the Hot or Not verdict. Both pages use **dual simulation** per the paper's methodology — percentage changes compare model-predicted-at-target vs model-predicted-at-current (not raw stats vs predicted).
 
 ---
 

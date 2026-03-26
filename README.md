@@ -17,6 +17,7 @@ TransferScope answers three questions every sporting director asks:
 | **Transfer Impact** | "How will this player's stats change at our club?" |
 | **Shortlist Generator** | "Who are the best replacements for this player across all leagues?" |
 | **Hot or Not** | "Is this transfer rumour actually a good move?" |
+| **About & Methodology** | "How does this work? What leagues are covered?" |
 
 ### Transfer Impact
 
@@ -120,10 +121,11 @@ transferscope/
 │   └── utils/
 │       └── league_registry.py          # Master list of all 37+ leagues and their IDs
 ├── frontend/
-│   ├── pages/                          # The three main screens
+│   ├── pages/                          # The four main screens
 │   │   ├── transfer_impact.py          # "What happens if this player moves here?"
 │   │   ├── shortlist_generator.py      # "Find me a replacement across all leagues"
-│   │   └── hot_or_not.py              # "Is this rumour any good?"
+│   │   ├── hot_or_not.py              # "Is this rumour any good?"
+│   │   └── about.py                   # Methodology, league coverage, and limitations
 │   ├── components/                     # Reusable chart widgets
 │   │   ├── swarm_plot.py              # Shows where a player ranks in their league
 │   │   ├── power_ranking_chart.py      # Before/after club strength timeline
