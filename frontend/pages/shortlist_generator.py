@@ -223,6 +223,9 @@ def render():
     section_header("Filters", "Narrow the candidate pool")
     fcol1, fcol2, fcol3 = st.columns(3)
     with fcol1:
+        # Defaults: age 35 (wide enough for experienced targets), min 200 mins
+        # (low to avoid excluding sparse-data candidates — None-passthrough
+        # filter design means unknowns pass through anyway).
         max_age = st.number_input("Max age", 16, 45, 35, key="f_age")
         min_minutes = st.number_input("Min minutes played", 0, 5000, 200, key="f_mins")
     with fcol2:
