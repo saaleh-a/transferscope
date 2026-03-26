@@ -13,6 +13,7 @@ Architecture per group:
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,6 +21,8 @@ import numpy as np
 import tensorflow as tf
 
 from backend.data.sofascore_client import CORE_METRICS
+
+_log = logging.getLogger(__name__)
 
 # ── Target group definitions ─────────────────────────────────────────────────
 
@@ -76,6 +79,7 @@ class TransferPortalModel:
         self.input_dim = input_dim
         self.models: Dict[str, tf.keras.Model] = {}
         self.fitted = False
+        self._scaler: Any = None  # StandardScaler, loaded from data/models/ if trained
 
     def build(self, input_dim: int) -> None:
         """Build all 4 group models."""
@@ -150,15 +154,45 @@ class TransferPortalModel:
         self.fitted = True
         return histories
 
+    def is_trained(self) -> bool:
+        """Return True if saved TF weights and feature scaler both exist."""
+        model_dir = os.path.join(_MODELS_DIR, "transfer_portal")
+        scaler_path = os.path.join(_MODELS_DIR, "feature_scaler.pkl")
+        if not os.path.exists(scaler_path):
+            return False
+        if not os.path.isdir(model_dir):
+            return False
+        # Check at least one .keras file exists
+        for group_name in MODEL_GROUPS:
+            if os.path.exists(os.path.join(model_dir, f"{group_name}.keras")):
+                return True
+        return False
+
     def predict(self, feature_dict: Dict[str, float]) -> Dict[str, float]:
         """Predict per-90 metrics for a single transfer scenario.
 
         Returns dict mapping metric name -> predicted per-90 value.
-        """
-        if not self.models:
-            raise RuntimeError("Model not built. Call build() or fit() first.")
 
+        If trained weights and a feature scaler exist in data/models/,
+        loads them and runs the neural network.  Otherwise falls back
+        to paper_heuristic_predict() with a logged warning.
+        """
+        # Try to use trained weights if available and model not already loaded
+        if not self.models and self.is_trained():
+            try:
+                self._load_trained()
+            except Exception as exc:
+                _log.warning("Failed to load trained model: %s", exc)
+
+        if not self.models:
+            _log.warning("No trained model found, using heuristic fallback")
+            return self._heuristic_fallback(feature_dict)
+
+        # If we have a scaler, apply it
         X = self._prepare_features(feature_dict).reshape(1, -1)
+        if self._scaler is not None:
+            X = self._scaler.transform(X)
+
         result = {}
 
         for group_name, targets in MODEL_GROUPS.items():
@@ -171,6 +205,47 @@ class TransferPortalModel:
                     result[target] = float(preds[i])
 
         return result
+
+    def _load_trained(self) -> None:
+        """Load trained weights and scaler from data/models/."""
+        import joblib
+
+        model_dir = os.path.join(_MODELS_DIR, "transfer_portal")
+        self.load(model_dir)
+
+        scaler_path = os.path.join(_MODELS_DIR, "feature_scaler.pkl")
+        if os.path.exists(scaler_path):
+            self._scaler = joblib.load(scaler_path)
+
+    @staticmethod
+    def _heuristic_fallback(feature_dict: Dict[str, float]) -> Dict[str, float]:
+        """Fall back to paper_heuristic_predict() when no trained model exists."""
+        from backend.features.adjustment_models import paper_heuristic_predict
+
+        # Extract components from feature dict
+        player_per90 = {}
+        src_pos_avg = {}
+        tgt_pos_avg = {}
+        for m in CORE_METRICS:
+            player_per90[m] = feature_dict.get(f"player_{m}", 0.0)
+            src_pos_avg[m] = feature_dict.get(f"team_pos_current_{m}", 0.0)
+            tgt_pos_avg[m] = feature_dict.get(f"team_pos_target_{m}", 0.0)
+
+        team_current = feature_dict.get("team_ability_current", 50.0)
+        team_target = feature_dict.get("team_ability_target", 50.0)
+        league_current = feature_dict.get("league_ability_current", 50.0)
+        league_target = feature_dict.get("league_ability_target", 50.0)
+
+        ra_current = team_current - league_current
+        ra_target = team_target - league_target
+        change_ra = ra_target - ra_current
+
+        return paper_heuristic_predict(
+            player_per90=player_per90,
+            change_relative_ability=change_ra,
+            src_pos_avg=src_pos_avg,
+            tgt_pos_avg=tgt_pos_avg,
+        )
 
     def predict_batch(self, feature_dicts: List[Dict[str, float]]) -> List[Dict[str, float]]:
         """Predict for multiple transfer scenarios at once."""
