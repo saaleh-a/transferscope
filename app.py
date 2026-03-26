@@ -41,7 +41,7 @@ st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
     "Navigation",
-    ["Transfer Impact", "Shortlist Generator", "Hot or Not"],
+    ["Transfer Impact", "Shortlist Generator", "Hot or Not", "About & Methodology"],
     label_visibility="collapsed",
 )
 
@@ -73,4 +73,7 @@ elif page == "Shortlist Generator":
     render()
 elif page == "Hot or Not":
     from frontend.pages.hot_or_not import render
+    render()
+elif page == "About & Methodology":
+    from frontend.pages.about import render
     render()
