@@ -556,10 +556,12 @@ _OPP_QUALITY_SENS: Dict[str, float] = {
 _CONFORMITY_COEFF = 0.25
 
 # Quadratic damping on the team quality polynomial (paper A.3 x4² term).
-# Prevents unrealistically large effects for extreme transfers. Reduced from
-# 0.15 to 0.08 to allow bigger predictions for large ability gaps — paper shows
-# 30%+ changes for extreme moves (Healey Ligue 2→PL, de Jong Barça→Man Utd).
-_DAMPING_FACTOR = 0.08
+# Prevents unrealistically large effects for extreme transfers.
+# Now asymmetric: less damping for downgrades (large drops are realistic —
+# paper shows 30-50% changes for extreme moves like de Jong Barça→Man Utd).
+# More damping for upgrades (ceiling effect — player can't exceed their talent).
+_DAMPING_FACTOR_DOWN = 0.05   # moving to weaker team: allow bigger drops
+_DAMPING_FACTOR_UP = 0.10     # moving to stronger team: modest ceiling
 
 # League-quality attenuation: scales down style_diff for cross-league moves
 # where position-average differences reflect league quality, not tactics.
@@ -656,14 +658,19 @@ def paper_heuristic_predict(
         league_gap = (source_league_mean - target_league_mean) / 100.0
     team_gap = ra - league_gap  # absolute team quality change (positive = better team)
 
-    # Player quality modifier: elite players retain more individual output.
-    # Centered at 6.5 (average Sofascore rating), scaled multiplicatively so
-    # that higher-rated players have reduced (but never zero) team influence.
-    # e.g. rating=7.5 → quality_scale=0.85 (15% less team-dependent)
-    #      rating=6.0 → quality_scale=1.075 (slightly more team-dependent)
+    # Player quality modifier: elite players retain more individual output
+    # when moving UP (to stronger teams) but are not fully protected when
+    # moving DOWN (to much weaker teams where the system won't support them).
+    # Centered at 6.5 (average Sofascore rating), scaled multiplicatively.
+    # Asymmetric: upgrades reduce team influence (retain individual quality),
+    # downgrades only partially reduce it (even elites suffer in bad systems).
     quality_scale = 1.0
     if player_rating is not None and isinstance(player_rating, (int, float)):
         raw_mod = (player_rating - 6.5) * 0.15
+        if ra < -0.1:
+            # Moving to a weaker team: elite protection is halved
+            # (Mbappe at Ipswich WOULD suffer — weaker system, fewer chances)
+            raw_mod *= 0.5
         # Clamp so team influence is scaled between 0.7x and 1.3x
         quality_scale = max(0.7, min(1.3, 1.0 - raw_mod))
 
@@ -746,10 +753,11 @@ def paper_heuristic_predict(
 
         # Team quality: moving to a better/worse team.
         # Uses team_gap (positive = better team → more output for offensive).
-        # Damping factor 0.08 (reduced from 0.15) allows larger effects for
-        # big transfers — paper shows 30%+ changes for extreme moves
-        # (Healey Ligue 2→PL, de Jong Barça→Man Utd).
-        team_effect = sensitivity * team_gap * (1.0 - _DAMPING_FACTOR * abs(team_gap))
+        # Asymmetric damping: less damping for downgrades (large drops are
+        # realistic — Mbappe at Ipswich, de Jong at Man Utd) vs upgrades
+        # (player can't exceed their talent ceiling).
+        damp = _DAMPING_FACTOR_UP if team_gap > 0 else _DAMPING_FACTOR_DOWN
+        team_effect = sensitivity * team_gap * (1.0 - damp * abs(team_gap))
 
         # Opposition quality: moving to a weaker/stronger league.
         # Uses league_gap (positive = weaker league → more per-90 output).
