@@ -178,12 +178,20 @@ def discover_transfers(
             players = sofascore_client.get_league_player_stats(tid, sid, limit=300)
             _log.info("  Found %d players in %s %s", len(players), info.name, sname)
 
+            _first_player_logged = False
             for player in players:
                 pid = player.get("id")
                 if pid is None:
                     continue
 
                 minutes = player.get("minutes_played", 0)
+                if not _first_player_logged:
+                    _log.info(
+                        "First player in %s %s: id=%s name=%r minutes_played=%s",
+                        info.name, sname, pid,
+                        player.get("name", "?"), minutes,
+                    )
+                    _first_player_logged = True
                 if minutes < MIN_MINUTES_THRESHOLD:
                     skipped_minutes += 1
                     continue
