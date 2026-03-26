@@ -291,6 +291,8 @@ def render():
             target_pos_avg=target_pos_avg,
             change_relative_ability=change_ra,
             player_rating=player_rating,
+            source_league_mean=source_league_mean,
+            target_league_mean=target_league_mean,
         )
         # Paper Section 4: baseline = simulate at current club (ra=0, same team)
         predicted_current = paper_heuristic_predict(
@@ -299,6 +301,8 @@ def render():
             target_pos_avg=source_pos_avg,
             change_relative_ability=0.0,
             player_rating=player_rating,
+            source_league_mean=source_league_mean,
+            target_league_mean=source_league_mean,
         )
 
     # Paper-faithful baseline: compare predicted-at-target vs predicted-at-current

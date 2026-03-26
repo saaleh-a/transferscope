@@ -292,6 +292,8 @@ def render():
                     target_pos_avg=source_pos_avg,
                     change_relative_ability=delta_ra,
                     player_rating=lp.get("rating"),
+                    source_league_mean=lp_league,
+                    target_league_mean=source_league,
                 )
 
                 # Normalize position for consistent filtering

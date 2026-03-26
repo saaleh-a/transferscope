@@ -220,6 +220,8 @@ def render():
             target_pos_avg=target_pos_avg,
             change_relative_ability=change_ra,
             player_rating=player_stats.get("rating"),
+            source_league_mean=source_league,
+            target_league_mean=target_league,
         )
 
     pct_changes = compute_percentage_changes(current_per90_clean, predicted)
