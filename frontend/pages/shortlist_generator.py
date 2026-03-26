@@ -47,14 +47,14 @@ _LABELS: Dict[str, str] = {
 }
 
 _WEIGHTS_EXPLANATION = (
-    "Each weight controls how important a metric is when ranking candidates. "
+    "Each weight controls how important a metric is when finding similar players. "
     "A weight of **1.0** means the metric is fully considered; **0.0** ignores it. "
     "Candidates are scored by:\n\n"
-    "1. **Normalize** each metric across all candidates (z-score: how many "
-    "standard deviations above/below average)\n"
-    "2. **Multiply** each normalized score by its weight\n"
-    "3. **Sum** the weighted scores and divide by total weight\n\n"
-    "Higher final score = better overall match for your priorities. "
+    "1. **Standardize** each weighted metric across all candidates\n"
+    "2. **Cluster** players into style groups using k-means\n"
+    "3. **Rank** by weighted Euclidean distance to the player being replaced\n"
+    "4. **Bonus** for candidates in the same style cluster\n\n"
+    "Higher similarity % = closer match to the player's style profile. "
     "For example, set xG and xA to 1.0 and everything else to 0.0 to find "
     "the most prolific attackers."
 )
@@ -373,15 +373,21 @@ def render():
         st.warning("No candidates found. Try broadening your filters or searching more leagues.")
         return
 
-    # Score candidates
-    scored = score_candidates(candidates, weights, filters)
+    # Build reference per90 for the player being replaced (clean None → 0.0)
+    reference_per90 = {
+        m: (current_per90.get(m) if current_per90.get(m) is not None else 0.0)
+        for m in CORE_METRICS
+    }
+
+    # Score candidates using k-means clustering + weighted distance
+    scored = score_candidates(candidates, weights, filters, reference_per90=reference_per90)
 
     if not scored:
         st.warning("No candidates match your filters.")
         return
 
     # ── Display results ──────────────────────────────────────────────────
-    section_header(f"Top {min(len(scored), 20)} Candidates", "Ranked by weighted similarity")
+    section_header(f"Top {min(len(scored), 20)} Candidates", "Ranked by style similarity (k-means clustering)")
 
     rows = []
     for c in scored[:20]:
@@ -397,7 +403,8 @@ def render():
             "League": c.league or "",
             "Position": c.position,
             "Rating": f"{c.rating:.2f}" if c.rating is not None else "—",
-            "Score": f"{c.score:.3f}",
+            "Similarity": f"{c.score:.1%}",
+            "Cluster": f"{'✓ Same' if c.cluster >= 0 else '○ Diff'}" if c.cluster != -1 else "—",
             "Top Changes": top_str,
         })
 

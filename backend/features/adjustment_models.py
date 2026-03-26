@@ -510,19 +510,19 @@ _LEAGUE_STYLE_COEFF: Dict[str, float] = {
 # Negative: defensive metrics increase when facing weaker opposition
 #           (team has less defending to do).
 _OPP_QUALITY_SENS: Dict[str, float] = {
-    "expected_goals": 0.55,           # Weaker defenders/GK → more xG per 90
-    "expected_assists": 0.35,         # Less pressing → more creative freedom
-    "shots": 0.40,                    # More space → more shooting opportunities
+    "expected_goals": 0.85,           # Weaker defenders/GK → significantly more xG per 90
+    "expected_assists": 0.55,         # Less pressing → more creative freedom
+    "shots": 0.65,                    # More space → more shooting opportunities
     "successful_dribbles": 0.08,      # "Irreducible" — barely affected by opposition
-    "successful_crosses": 0.25,       # Somewhat more space on the flanks
-    "touches_in_opposition_box": 0.45,  # More dominant possession in box
-    "successful_passes": 0.15,        # Slightly easier passing against weaker press
-    "pass_completion_pct": 0.08,      # Marginal improvement
+    "successful_crosses": 0.40,       # More space on the flanks
+    "touches_in_opposition_box": 0.70,  # More dominant possession in box
+    "successful_passes": 0.20,        # Slightly easier passing against weaker press
+    "pass_completion_pct": 0.10,      # Marginal improvement
     "accurate_long_balls": 0.05,      # Barely affected
-    "chances_created": 0.38,          # More creative opportunities vs weaker defence
-    "clearances": -0.25,              # Less defending when opposition is weaker
-    "interceptions": -0.20,           # Less defending needed
-    "possession_won_final_3rd": 0.15,  # Easier to win ball vs weaker opposition
+    "chances_created": 0.60,          # More creative opportunities vs weaker defence
+    "clearances": -0.35,              # Less defending when opposition is weaker
+    "interceptions": -0.30,           # Less defending needed
+    "possession_won_final_3rd": 0.20,  # Easier to win ball vs weaker opposition
 }
 
 
@@ -587,15 +587,29 @@ def paper_heuristic_predict(
     # (both source and target are the same → no style data available).
     _has_style_data = _check_has_style_data(player_per90, source_pos_avg, target_pos_avg)
 
-    # Opposition quality: absolute league quality gap (paper Section 4.3).
-    # The paper's TF model receives league_ability_current and
-    # league_ability_target as separate features, learning that weaker
-    # opposition boosts offensive per-90.  Our heuristic must model this
-    # explicitly since change_relative_ability collapses it away.
-    #   Positive league_gap = moving to weaker league → opposition boost.
+    # ── Decompose the transfer into two orthogonal forces ────────────────
+    # The paper's TF model receives team_ability and league_ability as
+    # separate features, learning two distinct effects:
+    #
+    #   1. TEAM QUALITY: moving to a better/worse team changes how the
+    #      player's position is used (better teams create more chances).
+    #      Recovered as: team_gap = ra - league_gap
+    #
+    #   2. OPPOSITION QUALITY: moving to a weaker/stronger league means
+    #      facing weaker/stronger opponents, boosting/reducing per-90.
+    #      league_gap = (source_league_mean - target_league_mean) / 100
+    #
+    # Paper Section 4.3.1 evidence:
+    #   Liverpool:  team_gap=+0.30, league_gap=-0.20 → xG INCREASES
+    #               (big team quality boost outweighs harder league)
+    #   Gwangju:    team_gap=-0.40, league_gap=+0.30 → xG INCREASES
+    #               (much weaker opposition outweighs worse team)
+    #   Barcelona:  team_gap=+0.27, league_gap=-0.15 → xG roughly same
+    #               (team boost and harder league roughly cancel)
     league_gap = 0.0
     if source_league_mean is not None and target_league_mean is not None:
         league_gap = (source_league_mean - target_league_mean) / 100.0
+    team_gap = ra - league_gap  # absolute team quality change (positive = better team)
 
     # Player quality modifier: elite players retain more individual output.
     # Centered at 6.5 (average Sofascore rating), scaled multiplicatively so
@@ -647,50 +661,47 @@ def paper_heuristic_predict(
             estimated_style_diff = src_avg * league_coeff * ra
             style_diff = estimated_style_diff
 
-        # Paper A.3 β3·x3: style adaptation (how much the player adapts
-        # to the difference in tactical use of this position).
-        style_shift = effective_team_inf * style_diff
+        # League-quality adjustment: when teams are in different leagues,
+        # much of the position-average difference is due to league quality
+        # (e.g., Gwangju wingers have lower xG because of weaker league,
+        # not because of tactical style).  The paper's trained model handles
+        # this via the separate league_ability features.  We approximate by
+        # attenuating style_diff proportionally to the league gap.
+        # Same-league: full style_diff (league_attn=1.0).
+        # Large cross-league gap: mostly due to league quality, not style.
+        league_attn = max(0.15, 1.0 - abs(league_gap) * 2.0)
+
+        # Paper A.3 β3·x3: style adaptation
+        style_shift = effective_team_inf * style_diff * league_attn
 
         # Paper A.3 β2·x2: conformity to new team's position average.
-        # This is a SMALL pull — the paper's trained β2 is much smaller
-        # than β1 (player retention).  We scale it to ~20-30% of team_inf
-        # to prevent the target team avg from dominating the prediction.
-        # This matches Section 4.3.1: Doku remains elite at Gwangju
-        # rather than being dragged down to Gwangju winger levels.
-        conformity_pull = 0.25 * effective_team_inf * (tgt_avg - player_val)
+        # Small pull — attenuated for cross-league moves.
+        conformity_pull = 0.15 * effective_team_inf * (tgt_avg - player_val) * league_attn
 
         # Base: player retains their level + small style/conformity adjustments
         base = player_val + style_shift + conformity_pull
 
-        # ── Paper A.3 x4: relative ability polynomial ────────────────────
-        # β4·ra + β5·ra² + β6·ra³
-        # This captures within-league positioning: moving to a relatively
-        # stronger team (within the same league) boosts offensive output.
+        # ── Team quality factor (paper A.3 x4 = change_relative_ability) ──
+        # The paper uses a polynomial in change_relative_ability. We decompose
+        # into team quality change and opposition quality change, then combine
+        # ADDITIVELY to prevent compounding (the paper's linear regression
+        # also adds these effects, not multiplies them).
         sensitivity = _ABILITY_SENSITIVITY.get(m, 0.2)
-        ability_factor = (
-            1.0
-            + sensitivity * ra                    # linear
-            - 0.15 * sensitivity * (ra ** 2)      # dampens extremes
-            + 0.02 * sensitivity * (ra ** 3)      # asymmetric tails
-        )
-
-        # ── Opposition quality (absolute league quality gap) ─────────────
-        # The paper's TF model receives league_ability_current and
-        # league_ability_target as SEPARATE features, so it learns that
-        # moving to a weaker league = facing weaker opposition = higher
-        # individual per-90 output.  change_relative_ability collapses
-        # this away (it only captures within-league team positioning).
-        #
-        # Paper evidence (Section 4.3.1):
-        #   Doku xG INCREASES at Gwangju (league_gap=+30)
-        #   Doku xG INCREASES at Liverpool (team quality boost outweighs
-        #     league difficulty via the ability_factor above)
-        #   Take-ons barely change (irreducible individual metric)
-        #   Mbappé: 8-15% decrease in harder league (Section 5)
         opp_sens = _OPP_QUALITY_SENS.get(m, 0.0)
-        opp_factor = 1.0 + opp_sens * league_gap
 
-        pred = base * ability_factor * opp_factor
+        # Team quality: moving to a better/worse team.
+        # Uses team_gap (positive = better team → more output for offensive).
+        team_effect = sensitivity * team_gap * (1.0 - 0.15 * abs(team_gap))
+
+        # Opposition quality: moving to a weaker/stronger league.
+        # Uses league_gap (positive = weaker league → more per-90 output).
+        opp_effect = opp_sens * league_gap
+
+        # Combined adjustment: additive (faithful to paper's linear model
+        # structure in Appendix A.3 where all terms are summed).
+        combined_factor = 1.0 + team_effect + opp_effect
+
+        pred = base * combined_factor
         predicted[m] = max(pred, 0.0)  # per-90 can't be negative
 
     return predicted
