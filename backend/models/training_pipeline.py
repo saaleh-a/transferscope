@@ -154,7 +154,13 @@ def discover_transfers(
         # Get seasons
         seasons = sofascore_client.get_season_list(tid)
         if not seasons:
-            _log.warning("No seasons found for %s", info.name)
+            _log.warning(
+                "No seasons found for %s (tid=%d). "
+                "This usually means the Sofascore API is unreachable "
+                "(blocked by Cloudflare, rate-limited, or no internet). "
+                "Check your network connection and try again with a higher --api-delay.",
+                info.name, tid,
+            )
             continue
 
         # Take the last seasons_back seasons (newest first from API)
@@ -1601,7 +1607,12 @@ def main() -> None:
 
     if len(records) < 10:
         print(f"\n⚠️ Only {len(records)} transfers found. Need more data for training.")
-        print("Consider expanding league coverage or seasons_back.")
+        print("Possible causes:")
+        print("  • Sofascore API is unreachable (Cloudflare block, rate-limited, or no internet)")
+        print("  • Try increasing --api-delay (e.g. --api-delay 5.0)")
+        print("  • Try expanding league coverage (e.g. --leagues ENG1,ESP1,GER1,ITA1,FRA1)")
+        print("  • Try more seasons (e.g. --seasons-back 5)")
+        print("  • Check if Sofascore works in your browser at https://www.sofascore.com")
         return
 
     # Step 3: Build full dataset

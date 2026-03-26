@@ -218,6 +218,7 @@ def render():
 
     # Prediction — only use TF model if trained weights exist
     predicted = {}
+    predicted_current = {}
     try:
         model = TransferPortalModel()
         model.load()
@@ -232,22 +233,50 @@ def render():
                 team_pos_target=target_pos_avg,
             )
             predicted = model.predict(fd)
+            # Paper Section 4: dual simulation — predict at current club too
+            fd_current = build_feature_dict(
+                player_per90=current_per90_clean,
+                team_ability_current=source_norm,
+                team_ability_target=source_norm,
+                league_ability_current=source_league,
+                league_ability_target=source_league,
+                team_pos_current=source_pos_avg,
+                team_pos_target=source_pos_avg,
+            )
+            predicted_current = model.predict(fd_current)
     except Exception:
         predicted = {}
+        predicted_current = {}
 
     # Paper-aligned heuristic: per-metric predictions using team style + ability
     if not predicted:
+        player_rating = player_stats.get("rating")
         predicted = paper_heuristic_predict(
             player_per90=current_per90_clean,
             source_pos_avg=source_pos_avg,
             target_pos_avg=target_pos_avg,
             change_relative_ability=change_ra,
-            player_rating=player_stats.get("rating"),
+            player_rating=player_rating,
             source_league_mean=source_league,
             target_league_mean=target_league,
         )
+        # Paper Section 4: dual simulation — baseline = model prediction at
+        # current club (ra=0, same team).  Comparing model-vs-model is more
+        # robust than raw-stats-vs-model (paper: "we generate performance
+        # predictions for players at their current club too").
+        predicted_current = paper_heuristic_predict(
+            player_per90=current_per90_clean,
+            source_pos_avg=source_pos_avg,
+            target_pos_avg=source_pos_avg,
+            change_relative_ability=0.0,
+            player_rating=player_rating,
+            source_league_mean=source_league,
+            target_league_mean=source_league,
+        )
 
-    pct_changes = compute_percentage_changes(current_per90_clean, predicted)
+    # Paper-faithful baseline: compare predicted-at-target vs predicted-at-current
+    baseline = predicted_current if predicted_current else current_per90_clean
+    pct_changes = compute_percentage_changes(baseline, predicted)
 
     # ── Verdict ──────────────────────────────────────────────────────────
     # Check if we actually have real player data

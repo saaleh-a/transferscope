@@ -312,6 +312,36 @@ class TestFuzzyEdgeCases(unittest.TestCase):
         result = _fuzzy_find_team("PSV Eindhoven", _CLUBELO_TEAMS)
         self.assertEqual(result, "PSV")
 
+    def test_orlando_city_does_not_match_man_city(self):
+        """Regression: Orlando City SC must NOT match Man City (0.667 ratio)."""
+        result = _fuzzy_find_team("Orlando City SC", _CLUBELO_TEAMS)
+        # Orlando City isn't in _CLUBELO_TEAMS, so should be None — NOT Man City
+        self.assertNotEqual(result, "Man City")
+
+    def test_inter_miami_does_not_match_inter_milan(self):
+        """Regression: Inter Miami CF must NOT match Inter (Milan)."""
+        result = _fuzzy_find_team("Inter Miami CF", _CLUBELO_TEAMS)
+        self.assertNotEqual(result, "Inter")
+
+    def test_new_york_city_fc_does_not_match_man_city(self):
+        """Regression: New York City FC must NOT match Man City."""
+        result = _fuzzy_find_team("New York City FC", _CLUBELO_TEAMS)
+        self.assertNotEqual(result, "Man City")
+
+    def test_orlando_city_matches_when_in_dict(self):
+        """Orlando City SC matches Orlando City when it's in the teams dict."""
+        teams_with_orlando = dict(_CLUBELO_TEAMS)
+        teams_with_orlando["Orlando City"] = _make_ranking("Orlando City", "USA1")
+        result = _fuzzy_find_team("Orlando City SC", teams_with_orlando)
+        self.assertEqual(result, "Orlando City")
+
+    def test_inter_miami_matches_when_in_dict(self):
+        """Inter Miami CF matches Inter Miami when it's in the teams dict."""
+        teams_with_miami = dict(_CLUBELO_TEAMS)
+        teams_with_miami["Inter Miami"] = _make_ranking("Inter Miami", "USA1")
+        result = _fuzzy_find_team("Inter Miami CF", teams_with_miami)
+        self.assertEqual(result, "Inter Miami")
+
 
 class TestDirectMapping(unittest.TestCase):
     """Test the _CLUBELO_TO_SOFASCORE direct mapping and canonicalization."""
