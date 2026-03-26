@@ -592,7 +592,7 @@ def paper_heuristic_predict(
         #
         # Conversely, a player at or above the team average gets the full
         # shift (capped at 1.0 to avoid over-amplifying star players).
-        if src_avg > 0 and abs(src_avg) > 0.01:
+        if abs(src_avg) > 0.01:
             system_reliance = min(1.0, max(0.3, player_val / src_avg))
         else:
             system_reliance = 1.0
