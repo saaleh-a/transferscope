@@ -30,7 +30,7 @@ _ONE_DAY = 86400
 # ── ClubElo → Sofascore direct name mapping ──────────────────────────────────
 # ClubElo uses abbreviated team names (e.g. "PSG", "ManCity") while Sofascore
 # uses full display names (e.g. "Paris Saint-Germain", "Manchester City").
-# This mapping canonicalises ClubElo names at data-load time so that the
+# This mapping canonicalizes ClubElo names at data-load time so that the
 # ``teams`` dict keys match the names that come from the Sofascore dropdowns.
 # Fuzzy matching is kept as a safety net for any unmapped teams.
 _CLUBELO_TO_SOFASCORE: Dict[str, str] = {
@@ -228,7 +228,7 @@ def compute_daily_rankings(
                 elo_val = float(ce_df.loc[raw_name, "elo"])
                 ce_league = ce_df.loc[raw_name, "league"]
                 # Map ClubElo league to our code.  When soccerdata is used
-                # it only translates 5 major leagues — the rest become NaN.
+                # it only maps 5 major leagues — the rest become NaN.
                 # Fall back to our own mapping from country+level columns.
                 league_code = _clubelo_to_code(ce_league)
                 if league_code is None and "country" in ce_df.columns:
@@ -237,7 +237,7 @@ def compute_daily_rankings(
                         ce_df.loc[raw_name, "level"] if "level" in ce_df.columns else 1,
                     )
                 if league_code:
-                    # Canonicalise ClubElo abbreviated name → Sofascore
+                    # Canonicalize ClubElo abbreviated name → Sofascore
                     # full name so that dropdown selections match directly.
                     canonical = _CLUBELO_TO_SOFASCORE.get(str(raw_name), str(raw_name))
                     all_teams[canonical] = (elo_val, league_code)
