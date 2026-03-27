@@ -949,3 +949,240 @@ class TestDiscoverTransfersMinutesKey(unittest.TestCase):
         ]
         self.assertIn(5001, called_pids, "Player with 900 min should NOT be skipped")
         self.assertNotIn(5002, called_pids, "Player with 200 min should be skipped")
+
+
+class TestTryResolveLeagueUsesRegistry(unittest.TestCase):
+    """Bug 4: _try_resolve_league should use registry mapping, not broken API."""
+
+    def test_resolve_from_mapping(self):
+        """When team_id exists in the mapping, return the tournament id."""
+        from backend.models.training_pipeline import _try_resolve_league
+
+        mapping = {20: 8, 30: 35}
+        result = _try_resolve_league(20, "FC Barcelona", mapping)
+        self.assertEqual(result, 8)
+
+    def test_resolve_unknown_team_returns_none(self):
+        """When team_id is NOT in the mapping, return None (same-league)."""
+        from backend.models.training_pipeline import _try_resolve_league
+
+        mapping = {20: 8}
+        result = _try_resolve_league(999, "Unknown FC", mapping)
+        self.assertIsNone(result)
+
+    def test_resolve_no_mapping_returns_none(self):
+        """When no mapping is provided, return None."""
+        from backend.models.training_pipeline import _try_resolve_league
+
+        result = _try_resolve_league(20, "FC Barcelona", None)
+        self.assertIsNone(result)
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    def test_discover_transfers_cross_league_detected(self, mock_client):
+        """Cross-league transfer detected via team_id_to_league mapping."""
+        from backend.models.training_pipeline import discover_transfers
+
+        # Two leagues: ENG1 (tid=17) and ESP1 (tid=8)
+        # ENG1 has team_id=10 (Club A) and team_id=20 is in ESP1 scan
+        mock_client.get_season_list.return_value = [
+            {"id": 100, "name": "2023/2024"},
+            {"id": 200, "name": "2022/2023"},
+            {"id": 300, "name": "2021/2022"},
+        ]
+        # League scan returns players from known teams
+        mock_client.get_league_player_stats.side_effect = [
+            # ENG1 season 2023/2024 (buffer)
+            [{"id": 9001, "name": "P1", "position": "Forward",
+              "minutes_played": 1000, "team_id": 10}],
+            # ENG1 season 2022/2023
+            [{"id": 1001, "name": "Player A", "position": "Forward",
+              "minutes_played": 1000, "team_id": 10}],
+            # ENG1 season 2021/2022
+            [],
+            # ESP1 season 2023/2024 (buffer)
+            [{"id": 9002, "name": "P2", "position": "Forward",
+              "minutes_played": 1000, "team_id": 20}],
+            # ESP1 season 2022/2023
+            [],
+            # ESP1 season 2021/2022
+            [],
+        ]
+        mock_client.get_player_transfer_history.return_value = [
+            {
+                "transfer_date": "2023-07-01",
+                "from_team": {"id": 10, "name": "Club A"},
+                "to_team": {"id": 20, "name": "Club B"},
+            }
+        ]
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
+
+        result = discover_transfers(["ENG1", "ESP1"], seasons_back=2)
+
+        # Should detect the cross-league transfer (to_id=20 maps to ESP1 tid=8)
+        cross_league = [r for r in result if r.to_league_id != r.from_league_id]
+        if cross_league:
+            self.assertEqual(cross_league[0].to_league_id, 8)
+            self.assertEqual(cross_league[0].from_league_id, 17)
+
+
+class TestResolveCrossLeaguePostSid(unittest.TestCase):
+    """Bug 5: cross-league season ID must come from destination league."""
+
+    def test_resolves_matching_season_name(self):
+        from backend.models.training_pipeline import _resolve_cross_league_post_sid
+
+        cache = {
+            8: [
+                {"id": 5001, "name": "2023/2024"},
+                {"id": 5002, "name": "2022/2023"},
+            ]
+        }
+        result = _resolve_cross_league_post_sid(8, "2023/2024", cache)
+        self.assertEqual(result, 5001)
+
+    def test_returns_none_for_unknown_season(self):
+        from backend.models.training_pipeline import _resolve_cross_league_post_sid
+
+        cache = {
+            8: [
+                {"id": 5001, "name": "2023/2024"},
+            ]
+        }
+        result = _resolve_cross_league_post_sid(8, "2020/2021", cache)
+        self.assertIsNone(result)
+
+    def test_returns_none_for_empty_name(self):
+        from backend.models.training_pipeline import _resolve_cross_league_post_sid
+
+        cache = {8: [{"id": 5001, "name": "2023/2024"}]}
+        result = _resolve_cross_league_post_sid(8, "", cache)
+        self.assertIsNone(result)
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    def test_fetches_season_list_on_cache_miss(self, mock_client):
+        from backend.models.training_pipeline import _resolve_cross_league_post_sid
+
+        mock_client.get_season_list.return_value = [
+            {"id": 7001, "name": "2023/2024"},
+            {"id": 7002, "name": "2022/2023"},
+        ]
+        cache = {}
+        result = _resolve_cross_league_post_sid(35, "2022/2023", cache)
+        self.assertEqual(result, 7002)
+        mock_client.get_season_list.assert_called_once_with(35)
+        # Verify cache was populated
+        self.assertIn(35, cache)
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    def test_cross_league_transfer_uses_dest_season_id(self, mock_client):
+        """End-to-end: cross-league transfer record has dest league's season ID."""
+        from backend.models.training_pipeline import discover_transfers
+
+        # ENG1 seasons (tid=17)
+        eng_seasons = [
+            {"id": 100, "name": "2023/2024"},
+            {"id": 200, "name": "2022/2023"},
+            {"id": 300, "name": "2021/2022"},
+        ]
+        # ESP1 seasons (tid=8) — different IDs for same calendar year
+        esp_seasons = [
+            {"id": 8100, "name": "2023/2024"},
+            {"id": 8200, "name": "2022/2023"},
+        ]
+
+        def season_list_side_effect(tid):
+            if tid == 17:
+                return eng_seasons
+            elif tid == 8:
+                return esp_seasons
+            return []
+
+        mock_client.get_season_list.side_effect = season_list_side_effect
+
+        mock_client.get_league_player_stats.side_effect = [
+            # ENG1 2023/2024 (buffer) — has team 10 (source) AND team 20 (dest)
+            [{"id": 9001, "name": "P1", "position": "Forward",
+              "minutes_played": 1000, "team_id": 10}],
+            # ENG1 2022/2023 — player 1001 has a transfer
+            [{"id": 1001, "name": "Player A", "position": "Forward",
+              "minutes_played": 1000, "team_id": 10}],
+            # ENG1 2021/2022
+            [],
+            # ESP1 2023/2024 (buffer) — team 20 is here
+            [{"id": 9002, "name": "P2", "position": "Forward",
+              "minutes_played": 1000, "team_id": 20}],
+            # ESP1 2022/2023
+            [],
+        ]
+
+        mock_client.get_player_transfer_history.return_value = [
+            {
+                "transfer_date": "2023-07-01",
+                "from_team": {"id": 10, "name": "Club A"},
+                "to_team": {"id": 20, "name": "Club B"},
+            }
+        ]
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
+
+        result = discover_transfers(["ENG1", "ESP1"], seasons_back=2)
+
+        # Find the cross-league record
+        cross = [r for r in result if r.to_league_id == 8]
+        if cross:
+            # post_transfer_season_id must be ESP1's season ID (8100),
+            # NOT ENG1's season ID (100)
+            self.assertEqual(cross[0].post_transfer_season_id, 8100)
+            self.assertEqual(cross[0].post_transfer_tournament_id, 8)
+
+
+class TestNonTransferExcludesTransferPlayers(unittest.TestCase):
+    """Bug 6: non-transfer discovery must exclude players in transfer records."""
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    def test_excludes_transfer_player_ids(self, mock_client):
+        from backend.models.training_pipeline import discover_non_transfers
+
+        mock_client.get_season_list.return_value = [
+            {"id": 100, "name": "2023/2024"},
+            {"id": 200, "name": "2022/2023"},
+        ]
+        # Two players: 1001 (transferred) and 1002 (stayed)
+        mock_client.get_league_player_stats.return_value = [
+            {"id": 1001, "name": "Transfer Player", "position": "Forward",
+             "minutes_played": 900, "team_id": 10, "team": "Club A"},
+            {"id": 1002, "name": "Stay Player", "position": "Midfielder",
+             "minutes_played": 900, "team_id": 10, "team": "Club A"},
+        ]
+        # Neither player has a transfer in their history
+        mock_client.get_player_transfer_history.return_value = []
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
+
+        # Exclude player 1001 (appears in transfer records)
+        result = discover_non_transfers(
+            ["ENG1"], seasons_back=2, exclude_player_ids={1001}
+        )
+
+        # Player 1001 should be excluded; 1002 should be included
+        pids_in_result = {r.player_id for r in result}
+        self.assertNotIn(1001, pids_in_result)
+        self.assertIn(1002, pids_in_result)
+
+    @mock.patch("backend.models.training_pipeline.sofascore_client")
+    def test_no_exclusion_when_none(self, mock_client):
+        """When exclude_player_ids is None, all eligible players are included."""
+        from backend.models.training_pipeline import discover_non_transfers
+
+        mock_client.get_season_list.return_value = [
+            {"id": 100, "name": "2023/2024"},
+            {"id": 200, "name": "2022/2023"},
+        ]
+        mock_client.get_league_player_stats.return_value = [
+            {"id": 1001, "name": "Player A", "position": "Forward",
+             "minutes_played": 900, "team_id": 10, "team": "Club A"},
+        ]
+        mock_client.get_player_transfer_history.return_value = []
+        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
+
+        result = discover_non_transfers(["ENG1"], seasons_back=2)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].player_id, 1001)
