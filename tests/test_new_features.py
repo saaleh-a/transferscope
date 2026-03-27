@@ -312,6 +312,29 @@ class TestLeaguePlayerStats(unittest.TestCase):
         players = sofascore_client.get_league_player_stats(9999)
         self.assertEqual(players, [])
 
+    @patch.object(sofascore_client, "_get")
+    def test_get_league_player_stats_empty_not_cached(self, mock_get):
+        """Empty results must NOT be cached — transient failures should not
+        poison the cache for 24 hours."""
+        # First call: standings returns None → 0 players
+        mock_get.return_value = None
+        players = sofascore_client.get_league_player_stats(17, season_id=61627, limit=5)
+        self.assertEqual(players, [])
+
+        # Second call: API now works — should NOT return stale cached []
+        def side_effect(path):
+            if "/standings/total" in path:
+                return MOCK_STANDINGS_RESPONSE
+            if "/team/42/players" in path:
+                return MOCK_TEAM_ROSTER_ARSENAL
+            if "/player/961995/" in path and "/statistics/overall" in path:
+                return MOCK_PLAYER_STATS_SAKA
+            return None
+
+        mock_get.side_effect = side_effect
+        players = sofascore_client.get_league_player_stats(17, season_id=61627, limit=5)
+        self.assertGreater(len(players), 0, "Should fetch fresh data, not return cached empty list")
+
 
 class TestSeasonList(unittest.TestCase):
     def setUp(self):
