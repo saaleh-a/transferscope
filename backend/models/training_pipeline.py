@@ -815,8 +815,9 @@ def discover_non_transfers(
                 if post_stats.get("minutes_played", 0) < MIN_MINUTES_THRESHOLD:
                     continue
 
+                # get_league_player_stats returns "team"/"team_id"; fallbacks for safety
                 club_id = player.get("team_id") or player.get("teamId") or 0
-                club_name = player.get("team") or player.get("team_name") or player.get("teamName") or ""
+                club_name = player.get("team") or player.get("team_name") or ""
 
                 records.append(NonTransferRecord(
                     player_id=pid,
@@ -1196,7 +1197,7 @@ def split_dataset(
     def _date_range(meta: List[Dict]) -> str:
         if not meta:
             return "N/A"
-        dates = [m.get("transfer_date", "") for m in meta if m.get("transfer_date")]
+        dates = [m["transfer_date"] for m in meta if m.get("transfer_date")]
         if not dates:
             return "N/A"
         return f"{min(dates)} to {max(dates)}"
