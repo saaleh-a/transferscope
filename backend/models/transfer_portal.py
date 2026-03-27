@@ -387,8 +387,7 @@ class TransferPortalModel:
                 if preds.ndim == 1:
                     preds = preds.reshape(-1, 1)
                 preds = target_scaler.inverse_transform(preds)
-
-            if preds.ndim == 1:
+            elif preds.ndim == 1:
                 preds = preds.reshape(-1, 1)
             for i in range(n):
                 for j, target in enumerate(targets):

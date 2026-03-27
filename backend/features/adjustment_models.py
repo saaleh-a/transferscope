@@ -243,7 +243,7 @@ class PlayerAdjustmentModel:
                     # and fall back to identity (predict player_previous_per90).
                     _log.info(
                         "Position %s metric %s: only %d samples (< %d), "
-                        "skipping regression (will use team model fallback)",
+                        "skipping regression (will use identity fallback)",
                         pos, metric, len(metrics[metric][0]),
                         _PLAYER_MIN_SAMPLES,
                     )
