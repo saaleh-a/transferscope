@@ -122,6 +122,50 @@ MOCK_LEAGUE_STATS_RESPONSE = {
     ],
 }
 
+# Mock standings response for the rewritten get_league_player_stats
+MOCK_STANDINGS_RESPONSE = {
+    "standings": [
+        {
+            "rows": [
+                {"team": {"id": 42, "name": "Arsenal"}},
+                {"team": {"id": 44, "name": "Liverpool"}},
+            ]
+        }
+    ]
+}
+
+# Mock team roster responses
+MOCK_TEAM_ROSTER_ARSENAL = {
+    "players": [
+        {"player": {"id": 961995, "name": "Bukayo Saka", "position": "F"}},
+    ]
+}
+
+MOCK_TEAM_ROSTER_LIVERPOOL = {
+    "players": [
+        {"player": {"id": 111111, "name": "Mohamed Salah", "position": "F"}},
+    ]
+}
+
+# Mock individual player stats responses
+MOCK_PLAYER_STATS_SAKA = {
+    "statistics": {
+        "minutesPlayed": 1800,
+        "expectedGoals": 9.0,
+        "accuratePasses": 500,
+        "accuratePassesPercentage": 85.0,
+    }
+}
+
+MOCK_PLAYER_STATS_SALAH = {
+    "statistics": {
+        "minutesPlayed": 2100,
+        "expectedGoals": 12.3,
+        "accuratePasses": 600,
+        "accuratePassesPercentage": 82.0,
+    }
+}
+
 MOCK_PLAYER_PROFILE = {
     "player": {
         "id": 961995,
@@ -235,9 +279,16 @@ class TestLeaguePlayerStats(unittest.TestCase):
         def side_effect(path):
             if "/seasons" in path:
                 return MOCK_SEASONS_RESPONSE
-            # The code tries top-players endpoint first, then statistics fallback
-            if "/top-players/" in path or "/statistics" in path:
-                return MOCK_LEAGUE_STATS_RESPONSE
+            if "/standings/total" in path:
+                return MOCK_STANDINGS_RESPONSE
+            if "/team/42/players" in path:
+                return MOCK_TEAM_ROSTER_ARSENAL
+            if "/team/44/players" in path:
+                return MOCK_TEAM_ROSTER_LIVERPOOL
+            if "/player/961995/" in path and "/statistics/overall" in path:
+                return MOCK_PLAYER_STATS_SAKA
+            if "/player/111111/" in path and "/statistics/overall" in path:
+                return MOCK_PLAYER_STATS_SALAH
             return None
 
         mock_get.side_effect = side_effect
