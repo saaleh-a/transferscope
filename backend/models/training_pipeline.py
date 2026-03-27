@@ -1027,6 +1027,8 @@ def build_non_transfer_sample(
         if pre_stats:
             pre_per90 = pre_stats.get("per90") or {}
             pre_minutes = pre_stats.get("minutes_played", 0)
+            if pre_minutes < MIN_MINUTES_THRESHOLD:
+                pre_per90 = None
         else:
             pre_per90 = None
 
