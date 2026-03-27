@@ -59,6 +59,7 @@ def render():
             except Exception as e:
                 st.error(f"Sofascore search failed: {e}")
                 return
+        st.write(f"DEBUG: search returned {len(search_results) if search_results else 0} results: {search_results}")
         if not search_results:
             st.warning(f"No players found for '{player_query}'.")
             return
