@@ -15,7 +15,7 @@ import pickle
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.preprocessing import StandardScaler
 
 from backend.data.sofascore_client import CORE_METRICS
@@ -161,10 +161,15 @@ def scale_team_position_features(
 # ── Player adjustment models ────────────────────────────────────────────────
 
 _PLAYER_MIN_SAMPLES = 30  # Minimum samples per position/metric for fitting
+_PLAYER_TARGET_STD_THRESHOLD = 0.01  # Skip fitting if target std is below this
 
 
 class PlayerAdjustmentModel:
-    """13 sklearn LinearRegression models per position.
+    """13 sklearn Ridge models per position.
+
+    Uses Ridge regression (alpha=1.0) instead of OLS to handle
+    multicollinearity from the polynomial change_relative_ability
+    features (cra, cra², cra³).
 
     target = intercept
            + b1 * player_previous_per90
@@ -177,7 +182,7 @@ class PlayerAdjustmentModel:
     """
 
     def __init__(self):
-        self.models: Dict[str, Dict[str, LinearRegression]] = {}
+        self.models: Dict[str, Dict[str, Ridge]] = {}
         self._scalers: Dict[str, Dict[str, StandardScaler]] = {}
         self.fitted = False
 
@@ -228,7 +233,7 @@ class PlayerAdjustmentModel:
             self.models[pos] = {}
             self._scalers[pos] = {}
             for metric in CORE_METRICS:
-                model = LinearRegression()
+                model = Ridge(alpha=1.0)
                 scaler = StandardScaler()
                 if (
                     metric in metrics
@@ -236,8 +241,25 @@ class PlayerAdjustmentModel:
                 ):
                     xs, ys = metrics[metric]
                     X_arr = np.array(xs)
-                    X_scaled = scaler.fit_transform(X_arr)
-                    model.fit(X_scaled, np.array(ys))
+                    y_arr = np.array(ys)
+                    _log.info(
+                        "Position %s metric %s: %d samples",
+                        pos, metric, len(xs),
+                    )
+                    # Near-zero variance in target → constant prediction fallback
+                    if np.std(y_arr) < _PLAYER_TARGET_STD_THRESHOLD:
+                        _log.info(
+                            "Position %s metric %s: target std=%.6f < %.4f, "
+                            "skipping regression (constant prediction fallback)",
+                            pos, metric, np.std(y_arr),
+                            _PLAYER_TARGET_STD_THRESHOLD,
+                        )
+                        model.coef_ = np.zeros(6)
+                        model.intercept_ = float(np.mean(y_arr))
+                        scaler = None  # type: ignore[assignment]
+                    else:
+                        X_scaled = scaler.fit_transform(X_arr)
+                        model.fit(X_scaled, y_arr)
                 elif metric in metrics and len(metrics[metric][0]) >= 2:
                     # Too few samples for reliable regression; log a warning
                     # and fall back to identity (predict player_previous_per90).
