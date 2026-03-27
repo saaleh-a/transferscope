@@ -46,16 +46,29 @@ def render():
         st.info("Enter a player name and target club to generate a transfer impact prediction.")
         return
 
-    # ── Player search ────────────────────────────────────────────────────
-    with st.spinner("Searching for player..."):
-        try:
-            search_results = sofascore_client.search_player(player_query)
-        except Exception as e:
-            st.error(f"Sofascore search failed: {e}")
-            return
+    # Gate all search/prediction behind an explicit button click so that
+    # Streamlit doesn't fire mid-keystroke with a partial query.
+    analyse_clicked = st.button("Analyse Transfer", type="primary")
 
+    # Persist last successful results across reruns so they survive
+    # Streamlit's re-execution cycle after the button click.
+    if analyse_clicked:
+        with st.spinner("Searching for player..."):
+            try:
+                search_results = sofascore_client.search_player(player_query)
+            except Exception as e:
+                st.error(f"Sofascore search failed: {e}")
+                return
+        if not search_results:
+            st.warning(f"No players found for '{player_query}'.")
+            return
+        st.session_state["ti_search_results"] = search_results
+        st.session_state["ti_player_query"] = player_query
+        st.session_state["ti_target_club_query"] = target_club_query
+
+    # Use cached results on subsequent reruns (e.g. widget interaction)
+    search_results = st.session_state.get("ti_search_results")
     if not search_results:
-        st.warning(f"No players found for '{player_query}'.")
         return
 
     def _player_label(p: dict) -> str:
