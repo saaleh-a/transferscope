@@ -1821,7 +1821,7 @@ def run_pipeline(
     # Step 3: Build full dataset
     _report("Building dataset", "Discovering non-transfer samples…")
     transfer_player_ids = {r.player_id for r in records}
-    # Target at least 20% of transfer samples as non-transfer controls
+    # Target approximately 20% of transfer samples as non-transfer controls
     nt_target = max(1, len(records) // 5)
     non_transfer_records = discover_non_transfers(
         league_codes, seasons_back,
