@@ -134,6 +134,7 @@ _SOFASCORE_KEY_MAP: dict[str, str] = {
     # Duels won % (percentage — kept as-is)
     "duelsWonPercentage": "duels_won_pct",
     "duelsWon%": "duels_won_pct",
+    "totalDuelsWonPercentage": "duels_won_pct",
     # Aerial duels won % (percentage — kept as-is)
     "aerialDuelsWonPercentage": "aerial_duels_won_pct",
     "aerialDuelsWon%": "aerial_duels_won_pct",
@@ -143,6 +144,7 @@ _SOFASCORE_KEY_MAP: dict[str, str] = {
     # Fouls won (drawn)
     "foulsDrawn": "fouls_won",
     "foulsWon": "fouls_won",
+    "wasFouled": "fouls_won",
     # Touches
     "touches": "touches",
     # Goals conceded while on pitch
@@ -305,8 +307,9 @@ def get_league_player_stats(
 ) -> List[Dict[str, Any]]:
     """Fetch aggregated player stats for an entire league/tournament season.
 
-    Uses Sofascore's top-players endpoint to retrieve season stats for
-    all players in the tournament.  Results are cached for 1 day.
+    Uses standings, team rosters, and individual player statistics endpoints
+    to collect season stats for all players in the tournament.
+    Results are cached for 1 day.
 
     Parameters
     ----------
@@ -320,7 +323,7 @@ def get_league_player_stats(
     Returns
     -------
     list[dict] — each dict has ``id``, ``name``, ``team``, ``team_id``,
-    ``position``, ``minutes_played``, ``per90``.
+    ``position``, ``age``, ``minutes_played``, ``per90``, ``rating``.
     """
     if season_id is None:
         season_id = _get_current_season_id(tournament_id)
@@ -334,108 +337,133 @@ def get_league_player_stats(
     if cached is not None:
         return cached
 
-    # Sofascore provides a "top players" endpoint per tournament+season
-    # We query multiple stat types to get the broadest player coverage
+    # Step 1 — Get all teams from league standings
+    standings_raw = _get(
+        f"/unique-tournament/{tournament_id}/season/{season_id}/standings/total"
+    )
+    if not isinstance(standings_raw, dict):
+        _log.warning(
+            "get_league_player_stats: standings endpoint returned %s for tid=%d sid=%d",
+            type(standings_raw).__name__, tournament_id, season_id,
+        )
+        result: List[Dict[str, Any]] = []
+        cache.set(key, result)
+        return result
+
+    standings = standings_raw.get("standings") or []
+    teams: List[Dict[str, Any]] = []
+    for group in standings:
+        if not isinstance(group, dict):
+            continue
+        for row in group.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            team_data = row.get("team") or {}
+            team_id = team_data.get("id")
+            team_name = team_data.get("name", "")
+            if team_id is not None:
+                teams.append({"id": team_id, "name": team_name})
+
+    if not teams:
+        _log.debug(
+            "get_league_player_stats: no teams found in standings for tid=%d sid=%d",
+            tournament_id, season_id,
+        )
+        result = []
+        cache.set(key, result)
+        return result
+
+    # Step 2 & 3 — For each team, get roster and then individual stats
     players_map: Dict[int, Dict[str, Any]] = {}
 
-    # Fetch multiple stat types to get broad coverage
-    for stat_type in ("rating", "expectedGoals", "accuratePasses"):
-        endpoint = f"top-players/{stat_type}"
-        page = 1
-        while page <= (limit // 100 + 1):
-            raw = _get(
-                f"/unique-tournament/{tournament_id}/season/{season_id}"
-                f"/top-players/{stat_type}"
-                f"?accumulation=total&order=desc&group=overall&page={page}"
-            )
-            if not isinstance(raw, dict):
-                if page == 1:
-                    _log.debug(
-                        "Endpoint %s not available, skipping pagination.",
-                        endpoint,
-                    )
-                    break
-                # Fall back to alternate endpoint format
-                raw = _get(
-                    f"/unique-tournament/{tournament_id}/season/{season_id}"
-                    f"/statistics?limit=100&order=-{stat_type}"
-                    f"&accumulation=total&group=summary&page={page}"
-                )
-                if not isinstance(raw, dict):
-                    break
-            # Response may use "results" or "players" depending on endpoint
-            results = raw.get("results") or raw.get("players") or []
-            if not results:
-                break
-            for item in results:
-                if not isinstance(item, dict):
-                    continue
-                player_data = item.get("player") or {}
-                pid = player_data.get("id")
-                if pid is None or pid in players_map:
-                    continue
-                team_data = item.get("team") or player_data.get("team") or {}
-                # Stats may be nested under "statistics" or flat on the item
-                stats_dict = item.get("statistics") or {}
-                if not isinstance(stats_dict, dict):
-                    stats_dict = {}
-                # Minutes: try statistics sub-dict first, then top-level
-                mins_raw = stats_dict.get("minutesPlayed")
-                if mins_raw is None:
-                    mins_raw = item.get("minutesPlayed")
-                minutes = int(mins_raw) if mins_raw is not None else 0
-                # Merge item-level stat keys into stats_dict for _parse_stats
-                merged_stats = dict(stats_dict)
-                for k, v in item.items():
-                    if k not in ("player", "team", "statistics") and k not in merged_stats:
-                        merged_stats[k] = v
-                per90 = _parse_stats(merged_stats, minutes)
-
-                # Extract player age from dateOfBirthTimestamp if available
-                dob_ts = player_data.get("dateOfBirthTimestamp")
-                player_age = None
-                if dob_ts is not None:
-                    try:
-                        # Use current time as reference; cached entries will
-                        # refresh daily so drift is at most ~1 day.
-                        age_seconds = time.time() - int(dob_ts)
-                        if age_seconds > 0:
-                            player_age = int(age_seconds / (365.25 * 86400))
-                    except (ValueError, TypeError):
-                        pass
-
-                # Extract average match rating (Sofascore 0-10 scale)
-                avg_rating = (
-                    merged_stats.get("rating")
-                    or stats_dict.get("rating")
-                    or item.get("rating")
-                )
-                if avg_rating is not None:
-                    try:
-                        avg_rating = float(avg_rating)
-                    except (ValueError, TypeError):
-                        avg_rating = None
-
-                players_map[pid] = {
-                    "id": pid,
-                    "name": player_data.get("name") or player_data.get("shortName", ""),
-                    "team": team_data.get("name", ""),
-                    "team_id": team_data.get("id"),
-                    "position": _map_position(
-                        player_data.get("position") or ""
-                    ),
-                    "age": player_age,
-                    "minutes_played": minutes,
-                    "per90": per90,
-                    "rating": avg_rating,
-                }
-                if len(players_map) >= limit:
-                    break
-            if len(players_map) >= limit:
-                break
-            page += 1
+    for team_info in teams:
         if len(players_map) >= limit:
             break
+
+        team_id = team_info["id"]
+        team_name = team_info["name"]
+
+        # Step 2 — Get team roster
+        roster_raw = _get(f"/team/{team_id}/players")
+        if not isinstance(roster_raw, dict):
+            continue
+
+        roster_players: List[Dict[str, Any]] = []
+        for group in roster_raw.get("players") or []:
+            if not isinstance(group, dict):
+                continue
+            # Sofascore wraps each player in a group with a 'player' key
+            player_entry = group.get("player")
+            if isinstance(player_entry, dict):
+                roster_players.append(player_entry)
+            else:
+                # Alternate roster format: players nested under 'members' key
+                for member in group.get("players") or group.get("members") or []:
+                    if isinstance(member, dict):
+                        p = member.get("player") or member
+                        if isinstance(p, dict):
+                            roster_players.append(p)
+
+        # Step 3 — Fetch individual stats for each player
+        for player_data in roster_players:
+            if len(players_map) >= limit:
+                break
+
+            pid = player_data.get("id")
+            if pid is None or pid in players_map:
+                continue
+
+            stats_raw = _get(
+                f"/player/{pid}/unique-tournament/{tournament_id}"
+                f"/season/{season_id}/statistics/overall"
+            )
+            if not isinstance(stats_raw, dict):
+                continue
+
+            stats = stats_raw.get("statistics") or {}
+            if not isinstance(stats, dict):
+                continue
+
+            minutes = int(stats.get("minutesPlayed") or 0)
+            if minutes == 0:
+                continue
+
+            # Step 4 — Parse stats via existing _parse_stats
+            per90 = _parse_stats(stats, minutes)
+
+            # Age from dateOfBirthTimestamp
+            dob_ts = player_data.get("dateOfBirthTimestamp")
+            player_age = None
+            if dob_ts is not None:
+                try:
+                    age_seconds = time.time() - int(dob_ts)
+                    if age_seconds > 0:
+                        player_age = int(age_seconds / (365.25 * 86400))
+                except (ValueError, TypeError):
+                    pass
+
+            # Rating (Sofascore 0-10 scale)
+            avg_rating = stats.get("rating")
+            if avg_rating is not None:
+                try:
+                    avg_rating = float(avg_rating)
+                except (ValueError, TypeError):
+                    avg_rating = None
+
+            # Step 5 — Same return dict format
+            players_map[pid] = {
+                "id": pid,
+                "name": player_data.get("name") or player_data.get("shortName", ""),
+                "team": team_name,
+                "team_id": team_id,
+                "position": _map_position(
+                    player_data.get("position") or ""
+                ),
+                "age": player_age,
+                "minutes_played": minutes,
+                "per90": per90,
+                "rating": avg_rating,
+            }
 
     result = list(players_map.values())
     cache.set(key, result)
