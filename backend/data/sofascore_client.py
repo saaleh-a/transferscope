@@ -175,6 +175,7 @@ _REQUEST_TIMEOUT = 10  # seconds
 _MAX_RETRIES = 3  # total attempts for retryable errors
 _RETRY_BASE_DELAY = 1.0  # seconds — doubles each attempt (1, 2, 4)
 _RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
+_LEAGUE_STATS_INTER_REQUEST_DELAY = 0.5  # seconds between bulk API calls
 
 
 def _get(path: str) -> Optional[dict]:
@@ -343,12 +344,10 @@ def get_league_player_stats(
     )
     if not isinstance(standings_raw, dict):
         _log.warning(
-            "get_league_player_stats: standings endpoint returned %s for tid=%d sid=%d",
+            "get_league_player_stats: standings endpoint returned %s for tid=%d sid=%d — not caching",
             type(standings_raw).__name__, tournament_id, season_id,
         )
-        result: List[Dict[str, Any]] = []
-        cache.set(key, result)
-        return result
+        return []
 
     standings = standings_raw.get("standings") or []
     teams: List[Dict[str, Any]] = []
@@ -366,12 +365,10 @@ def get_league_player_stats(
 
     if not teams:
         _log.debug(
-            "get_league_player_stats: no teams found in standings for tid=%d sid=%d",
+            "get_league_player_stats: no teams found in standings for tid=%d sid=%d — not caching",
             tournament_id, season_id,
         )
-        result = []
-        cache.set(key, result)
-        return result
+        return []
 
     # Step 2 & 3 — For each team, get roster and then individual stats
     players_map: Dict[int, Dict[str, Any]] = {}
@@ -383,7 +380,8 @@ def get_league_player_stats(
         team_id = team_info["id"]
         team_name = team_info["name"]
 
-        # Step 2 — Get team roster
+        # Step 2 — Get team roster (delay between teams to avoid rate-limiting)
+        time.sleep(_LEAGUE_STATS_INTER_REQUEST_DELAY)
         roster_raw = _get(f"/team/{team_id}/players")
         if not isinstance(roster_raw, dict):
             continue
@@ -413,6 +411,7 @@ def get_league_player_stats(
             if pid is None or pid in players_map:
                 continue
 
+            time.sleep(_LEAGUE_STATS_INTER_REQUEST_DELAY)
             stats_raw = _get(
                 f"/player/{pid}/unique-tournament/{tournament_id}"
                 f"/season/{season_id}/statistics/overall"
@@ -466,6 +465,13 @@ def get_league_player_stats(
             }
 
     result = list(players_map.values())
+    if not result:
+        _log.warning(
+            "get_league_player_stats: 0 players collected for tid=%d sid=%d "
+            "(%d teams found) — not caching",
+            tournament_id, season_id, len(teams),
+        )
+        return result
     cache.set(key, result)
     return result
 
