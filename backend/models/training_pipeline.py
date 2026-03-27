@@ -1480,6 +1480,10 @@ def train_adjustment_models(
                     ])
                     y_pm = np.array([r["actual"] for r in pm_rows])
                     try:
+                        # Apply scaler if one was fitted (match how model was trained)
+                        scaler = player_model._scalers.get(pos, {}).get(m)
+                        if scaler is not None:
+                            X_pm = scaler.transform(X_pm)
                         r2 = models[m].score(X_pm, y_pm)
                         r2_values.append(r2)
                     except Exception:
