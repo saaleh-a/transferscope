@@ -373,7 +373,7 @@ def get_league_player_stats(
     # Step 2 & 3 — For each team, get roster and then individual stats
     players_map: Dict[int, Dict[str, Any]] = {}
 
-    for team_info in teams:
+    for idx, team_info in enumerate(teams):
         if len(players_map) >= limit:
             break
 
@@ -381,7 +381,8 @@ def get_league_player_stats(
         team_name = team_info["name"]
 
         # Step 2 — Get team roster (delay between teams to avoid rate-limiting)
-        time.sleep(_LEAGUE_STATS_INTER_REQUEST_DELAY)
+        if idx > 0:
+            time.sleep(_LEAGUE_STATS_INTER_REQUEST_DELAY)
         roster_raw = _get(f"/team/{team_id}/players")
         if not isinstance(roster_raw, dict):
             continue
