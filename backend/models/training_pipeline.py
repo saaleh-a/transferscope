@@ -805,14 +805,19 @@ def _compute_league_means(
         return {}
 
 
+_NT_MIN_MINUTES = 450  # Minimum minutes for non-transfer candidates (5 full matches)
+
+
 def discover_non_transfers(
     league_codes: Optional[List[str]] = None,
     seasons_back: int = 5,
     exclude_player_ids: Optional[set] = None,
+    min_minutes: int = _NT_MIN_MINUTES,
+    target_count: Optional[int] = None,
 ) -> List[NonTransferRecord]:
     """Discover players who stayed at the same club across consecutive seasons.
 
-    For each league & consecutive season pair, finds players with >= 450 minutes
+    For each league & consecutive season pair, finds players with >= min_minutes
     in both seasons and no intervening transfer to a different club.
 
     Parameters
@@ -820,6 +825,11 @@ def discover_non_transfers(
     exclude_player_ids : set[int], optional
         Player IDs to skip (e.g. players already in transfer records) to
         prevent data leakage between transfer and non-transfer samples.
+    min_minutes : int
+        Minimum minutes played in each season. Default 450 (5 full matches).
+    target_count : int, optional
+        Target number of non-transfer samples. If the initial pass yields
+        fewer candidates, a second pass with ``min_minutes // 2`` is attempted.
     """
     if league_codes is None:
         league_codes = DEFAULT_LEAGUE_CODES
@@ -829,6 +839,12 @@ def discover_non_transfers(
 
     records: List[NonTransferRecord] = []
     seen: set = set()
+
+    _raw_candidates = 0
+    _skipped_excluded = 0
+    _skipped_minutes = 0
+    _skipped_moved = 0
+    _skipped_post_minutes = 0
 
     for league_code in league_codes:
         info = LEAGUES.get(league_code)
@@ -849,14 +865,23 @@ def discover_non_transfers(
             post_sid = post_season["id"]
 
             players = sofascore_client.get_league_player_stats(tid, pre_sid, limit=300)
+            _log.info(
+                "Non-transfer scan: %s season %s → %d players before filtering",
+                league_code, pre_season.get("name", "?"), len(players),
+            )
 
             for player in players:
                 pid = player.get("id")
                 if pid is None:
                     continue
+
+                _raw_candidates += 1
+
                 if pid in exclude_player_ids:
+                    _skipped_excluded += 1
                     continue
-                if player.get("minutes_played", 0) < MIN_MINUTES_THRESHOLD:
+                if player.get("minutes_played", 0) < min_minutes:
+                    _skipped_minutes += 1
                     continue
 
                 dedup_key = (pid, pre_sid, post_sid)
@@ -864,9 +889,6 @@ def discover_non_transfers(
                     continue
 
                 # Check transfer history — did the player move between these seasons?
-                # Use season names to approximate the window (e.g., "2023/2024").
-                # A transfer whose date falls between the pre and post season names
-                # (or lacks a date) with different from/to teams means the player moved.
                 transfers = sofascore_client.get_player_transfer_history(pid)
                 moved = False
                 pre_season_name = pre_season.get("name", "")
@@ -880,10 +902,7 @@ def discover_non_transfers(
                         # Check if transfer date overlaps with the season window
                         t_date = t.get("transfer_date") or ""
                         if t_date:
-                            # Extract year from ISO date (e.g., "2024-07-01" → "2024")
                             t_year = t_date[:4]
-                            # Season names like "23/24" or "2023/2024"
-                            # Transfer is relevant if its year appears in either season name
                             pre_years = pre_season_name.replace("/", " ").split()
                             post_years = post_season_name.replace("/", " ").split()
                             relevant_years = set()
@@ -901,13 +920,15 @@ def discover_non_transfers(
                             break
 
                 if moved:
+                    _skipped_moved += 1
                     continue
 
                 # Verify minutes in post season
                 post_stats = sofascore_client.get_player_stats_for_season(
                     pid, tid, post_sid
                 )
-                if post_stats.get("minutes_played", 0) < MIN_MINUTES_THRESHOLD:
+                if post_stats.get("minutes_played", 0) < min_minutes:
+                    _skipped_post_minutes += 1
                     continue
 
                 # get_league_player_stats returns "team"/"team_id"; fallbacks for safety
@@ -927,6 +948,31 @@ def discover_non_transfers(
                     post_tournament_id=tid,
                 ))
                 seen.add(dedup_key)
+
+    _log.info(
+        "Non-transfer discovery: %d raw candidates, %d excluded (transfer players), "
+        "%d skipped (low minutes), %d skipped (moved), %d skipped (post-season minutes), "
+        "%d accepted",
+        _raw_candidates, _skipped_excluded, _skipped_minutes,
+        _skipped_moved, _skipped_post_minutes, len(records),
+    )
+
+    # If we haven't hit the target, retry with relaxed minutes threshold
+    if target_count is not None and len(records) < target_count and min_minutes > 250:
+        relaxed_min = max(250, min_minutes // 2)
+        _log.info(
+            "Non-transfer count %d < target %d; retrying with min_minutes=%d",
+            len(records), target_count, relaxed_min,
+        )
+        extra = discover_non_transfers(
+            league_codes=league_codes,
+            seasons_back=seasons_back,
+            exclude_player_ids=exclude_player_ids | {r.player_id for r in records},
+            min_minutes=relaxed_min,
+            target_count=None,  # no recursive retry
+        )
+        records.extend(extra)
+        _log.info("After relaxed retry: %d total non-transfer samples", len(records))
 
     _log.info("Discovered %d non-transfer samples", len(records))
     return records
@@ -1489,11 +1535,21 @@ def train_neural_network(
     print(f"  Training samples: {X_train_scaled.shape[0]}")
     print(f"  Validation samples: {X_val_scaled.shape[0]}")
 
+    # Per-group target scalers to normalise y across different scales
+    # (e.g. successful_passes 30-80 vs expected_goals 0-1)
+    target_scalers: Dict[str, StandardScaler] = {}
+
     for group_name, targets in MODEL_GROUPS.items():
         # Get target columns
         target_indices = [metric_to_idx[t] for t in targets]
-        y_group_train = y_train[:, target_indices]
-        y_group_val = y_val[:, target_indices]
+        y_group_train_raw = y_train[:, target_indices]
+        y_group_val_raw = y_val[:, target_indices]
+
+        # Scale targets so all groups train on comparable loss scales
+        y_scaler = StandardScaler()
+        y_group_train = y_scaler.fit_transform(y_group_train_raw)
+        y_group_val = y_scaler.transform(y_group_val_raw)
+        target_scalers[group_name] = y_scaler
 
         # Extract per-group feature subset from the full scaled array
         all_keys = _feature_keys()
@@ -1531,7 +1587,7 @@ def train_neural_network(
             verbose=0,
         )
 
-        # Report
+        # Report (losses are in scaled space — also report original-scale MSE)
         epochs_trained = len(history.history.get("loss", []))
         if epochs_trained == 0:
             _log.warning("Group %s: 0 epochs trained — check data", group_name)
@@ -1543,14 +1599,19 @@ def train_neural_network(
         best_val_loss = min(history.history["val_loss"])
 
         print(f"    Epochs: {epochs_trained}")
-        print(f"    Train loss: {final_train_loss:.6f}")
-        print(f"    Val loss:   {final_val_loss:.6f}")
-        print(f"    Best val loss: {best_val_loss:.6f}")
+        print(f"    Train loss (scaled): {final_train_loss:.6f}")
+        print(f"    Val loss (scaled):   {final_val_loss:.6f}")
+        print(f"    Best val loss (scaled): {best_val_loss:.6f}")
 
         if final_val_loss > final_train_loss * 1.5:
             print(f"    ⚠️ Potential overfitting detected!")
 
     model.fitted = True
+
+    # Save target scalers alongside model weights
+    target_scaler_path = os.path.join(_MODELS_DIR, "target_scalers.pkl")
+    joblib.dump(target_scalers, target_scaler_path)
+    print(f"\nTarget scalers saved to: {target_scaler_path}")
 
     # Save model
     save_dir = model.save()
@@ -1558,7 +1619,7 @@ def train_neural_network(
 
     # Compare trained model vs heuristic baseline on validation set
     print(f"\nModel vs Heuristic Baseline (Validation Set):")
-    _compare_model_vs_heuristic(model, scaler, X_val, y_val)
+    _compare_model_vs_heuristic(model, scaler, X_val, y_val, target_scalers)
 
     return model
 
@@ -1568,6 +1629,7 @@ def _compare_model_vs_heuristic(
     scaler: Any,
     X_val: np.ndarray,
     y_val: np.ndarray,
+    target_scalers: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, float]]:
     """Compare trained model MSE vs heuristic MSE on validation data."""
     from backend.features.adjustment_models import paper_heuristic_predict
@@ -1578,6 +1640,11 @@ def _compare_model_vs_heuristic(
     heuristic_errors = {m: [] for m in CORE_METRICS}
 
     X_val_scaled = scaler.transform(X_val)
+
+    # Temporarily attach target scalers for comparison predictions
+    old_target_scalers = model._target_scalers
+    if target_scalers is not None:
+        model._target_scalers = target_scalers
 
     for i in range(len(X_val)):
         # Trained model prediction
@@ -1632,6 +1699,9 @@ def _compare_model_vs_heuristic(
 
             trained_errors[m].append((t_pred - actual) ** 2)
             heuristic_errors[m].append((h_pred - actual) ** 2)
+
+    # Restore original target scalers
+    model._target_scalers = old_target_scalers
 
     # Report
     report = {}
@@ -1751,10 +1821,14 @@ def run_pipeline(
     # Step 3: Build full dataset
     _report("Building dataset", "Discovering non-transfer samples…")
     transfer_player_ids = {r.player_id for r in records}
+    # Target at least 20% of transfer samples as non-transfer controls
+    nt_target = max(1, len(records) // 5)
     non_transfer_records = discover_non_transfers(
-        league_codes, seasons_back, exclude_player_ids=transfer_player_ids
+        league_codes, seasons_back,
+        exclude_player_ids=transfer_player_ids,
+        target_count=nt_target,
     )
-    _report("Non-transfers found", f"{len(non_transfer_records)} records")
+    _report("Non-transfers found", f"{len(non_transfer_records)} records (target: {nt_target})")
 
     X, y, metadata = build_full_dataset(records, non_transfer_records)
 
