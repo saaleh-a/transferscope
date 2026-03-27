@@ -142,6 +142,15 @@ def discover_transfers(
     skipped_no_post = 0
     skipped_same_club = 0
 
+    # Build team_id → tournament_id mapping from all league scans so that
+    # _try_resolve_league can detect cross-league transfers without calling
+    # the broken /team/{id}/unique-tournaments endpoint.
+    team_id_to_league: Dict[int, int] = {}
+
+    # Cache season lists per tournament_id to avoid repeated API calls
+    # when resolving cross-league season IDs.
+    _season_list_cache: Dict[int, List[Dict[str, Any]]] = {}
+
     for league_code in league_codes:
         info = LEAGUES.get(league_code)
         if info is None or info.sofascore_tournament_id is None:
@@ -163,6 +172,8 @@ def discover_transfers(
             )
             continue
 
+        _season_list_cache[tid] = seasons
+
         # Take the last seasons_back seasons (newest first from API).
         # +1 so idx==0 is always a buffer season whose only purpose is to
         # serve as the post-transfer season for idx==1 (the newest
@@ -181,6 +192,12 @@ def discover_transfers(
 
             players = sofascore_client.get_league_player_stats(tid, sid, limit=300)
             _log.info("  Found %d players in %s %s", len(players), info.name, sname)
+
+            # Populate team_id → tournament_id from this scan
+            for p in players:
+                t_id = p.get("team_id")
+                if t_id is not None:
+                    team_id_to_league[t_id] = tid
 
             _first_player_logged = False
             for player in players:
@@ -251,7 +268,9 @@ def discover_transfers(
                     to_league_id = tid  # Same league by default
 
                     # Try to detect cross-league transfers
-                    resolved_tid = _try_resolve_league(to_id, to_name)
+                    resolved_tid = _try_resolve_league(
+                        to_id, to_name, team_id_to_league
+                    )
                     if resolved_tid is not None and resolved_tid != tid:
                         to_league_id = resolved_tid
 
@@ -265,6 +284,25 @@ def discover_transfers(
                     if pre_minutes < MIN_MINUTES_THRESHOLD:
                         skipped_minutes += 1
                         continue
+
+                    # Resolve the correct post-transfer season ID.
+                    # For cross-league transfers the destination league
+                    # has different season IDs for the same calendar year.
+                    # Match by season name (e.g. "24/25") to find the
+                    # correct post_sid.
+                    post_sname = target_seasons[idx - 1].get("name", "")
+                    if to_league_id != from_league_id:
+                        resolved_post_sid = _resolve_cross_league_post_sid(
+                            to_league_id, post_sname, _season_list_cache
+                        )
+                        if resolved_post_sid is not None:
+                            post_sid = resolved_post_sid
+                        else:
+                            _log.debug(
+                                "Could not resolve post season for %s in tid=%d, "
+                                "falling back to source league post_sid=%d",
+                                post_sname, to_league_id, post_sid,
+                            )
 
                     # Verify the player has enough minutes at the target club
                     # in the post-transfer season — use to_league_id so
@@ -321,13 +359,49 @@ def discover_transfers(
     return records
 
 
-def _try_resolve_league(team_id: int, team_name: str) -> Optional[int]:
-    """Try to resolve a team's league tournament ID. Returns None on failure."""
-    try:
-        from backend.data.sofascore_client import _discover_tournament_for_team
-        return _discover_tournament_for_team(team_id)
-    except Exception:
+def _try_resolve_league(
+    team_id: int,
+    team_name: str,
+    team_id_to_league: Optional[Dict[int, int]] = None,
+) -> Optional[int]:
+    """Try to resolve a team's league tournament ID using the league registry.
+
+    Uses a pre-built mapping of ``team_id → tournament_id`` gathered from
+    league player-stats scans.  Falls back to ``None`` (same-league assumed)
+    when the team is not found.  Does **not** call the Sofascore
+    ``/team/{id}/unique-tournaments`` endpoint (which returns 404).
+    """
+    if team_id_to_league and team_id in team_id_to_league:
+        return team_id_to_league[team_id]
+    return None
+
+
+def _resolve_cross_league_post_sid(
+    to_league_id: int,
+    post_season_name: str,
+    season_list_cache: Dict[int, List[Dict[str, Any]]],
+) -> Optional[int]:
+    """Find the destination league's season ID that matches *post_season_name*.
+
+    When a player transfers from league A to league B, the post-transfer
+    season ID must come from league B's season list (they differ per
+    league).  Match by season name (e.g. ``"24/25"`` or ``"2024/2025"``).
+
+    Populates *season_list_cache* on first call per tournament to avoid
+    repeated API requests.
+    """
+    if not post_season_name:
         return None
+
+    if to_league_id not in season_list_cache:
+        season_list_cache[to_league_id] = sofascore_client.get_season_list(
+            to_league_id
+        )
+
+    for s in season_list_cache.get(to_league_id, []):
+        if s.get("name") == post_season_name:
+            return s["id"]
+    return None
 
 
 # ── Step 3: Feature and Label Extraction ─────────────────────────────────────
@@ -734,14 +808,24 @@ def _compute_league_means(
 def discover_non_transfers(
     league_codes: Optional[List[str]] = None,
     seasons_back: int = 5,
+    exclude_player_ids: Optional[set] = None,
 ) -> List[NonTransferRecord]:
     """Discover players who stayed at the same club across consecutive seasons.
 
     For each league & consecutive season pair, finds players with >= 450 minutes
     in both seasons and no intervening transfer to a different club.
+
+    Parameters
+    ----------
+    exclude_player_ids : set[int], optional
+        Player IDs to skip (e.g. players already in transfer records) to
+        prevent data leakage between transfer and non-transfer samples.
     """
     if league_codes is None:
         league_codes = DEFAULT_LEAGUE_CODES
+
+    if exclude_player_ids is None:
+        exclude_player_ids = set()
 
     records: List[NonTransferRecord] = []
     seen: set = set()
@@ -769,6 +853,8 @@ def discover_non_transfers(
             for player in players:
                 pid = player.get("id")
                 if pid is None:
+                    continue
+                if pid in exclude_player_ids:
                     continue
                 if player.get("minutes_played", 0) < MIN_MINUTES_THRESHOLD:
                     continue
@@ -1664,7 +1750,10 @@ def run_pipeline(
 
     # Step 3: Build full dataset
     _report("Building dataset", "Discovering non-transfer samples…")
-    non_transfer_records = discover_non_transfers(league_codes, seasons_back)
+    transfer_player_ids = {r.player_id for r in records}
+    non_transfer_records = discover_non_transfers(
+        league_codes, seasons_back, exclude_player_ids=transfer_player_ids
+    )
     _report("Non-transfers found", f"{len(non_transfer_records)} records")
 
     X, y, metadata = build_full_dataset(records, non_transfer_records)
