@@ -11,6 +11,7 @@ Outputs:
 
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -28,6 +29,8 @@ from backend.models.transfer_portal import (
 from backend.utils.league_registry import LEAGUES
 from frontend.components import metric_bar, power_ranking_chart, swarm_plot
 from frontend.theme import section_header, confidence_badge, player_info_card
+
+_log = logging.getLogger(__name__)
 
 
 def render():
@@ -59,7 +62,6 @@ def render():
             except Exception as e:
                 st.error(f"Sofascore search failed: {e}")
                 return
-        st.write(f"DEBUG: search returned {len(search_results) if search_results else 0} results: {search_results}")
         if not search_results:
             st.warning(f"No players found for '{player_query}'.")
             return
@@ -92,10 +94,9 @@ def render():
     with st.spinner("Searching for target club..."):
         try:
             club_results = sofascore_client.search_team(target_club_query)
-        except Exception:
+        except Exception as e:
+            st.warning(f"Club search failed: {e}")
             club_results = []
-
-    target_team_id: Optional[int] = None
     target_club_display = target_club_query
 
     if club_results:
@@ -237,8 +238,8 @@ def render():
                 source_pos_avg, source_pos_players = (
                     sofascore_client.get_team_position_averages(team_id, position)
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                st.warning(f"Could not fetch source team position data: {e}")
 
     if target_team_id:
         with st.spinner("Fetching target team position data..."):
@@ -246,8 +247,8 @@ def render():
                 target_pos_avg, target_pos_players = (
                     sofascore_client.get_team_position_averages(target_team_id, position)
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                st.warning(f"Could not fetch target team position data: {e}")
 
     # Fallback: use player's own stats if position averages are empty
     if not source_pos_avg:
@@ -286,7 +287,8 @@ def render():
                 team_pos_target=source_pos_avg,
             )
             predicted_current = model.predict(fd_current)
-    except Exception:
+    except Exception as e:
+        st.warning(f"TF model prediction failed, using heuristic fallback: {e}")
         predicted_target = {}
         predicted_current = {}
 
@@ -471,10 +473,10 @@ def render():
                         tp_stats = sofascore_client.get_player_stats(tp["id"])
                         if tp_stats.get("per90"):
                             teammate_per90s.append(tp_stats["per90"])
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+                    except Exception as e:
+                        _log.warning("Failed to fetch teammate stats: %s", e)
+        except Exception as e:
+            _log.warning("Failed to fetch team players: %s", e)
 
     # Populate league-level data from Sofascore tournament stats
     if tournament_id:
@@ -486,8 +488,8 @@ def render():
                 lp_per90 = lp.get("per90")
                 if lp_per90 and lp.get("id") != player_id:
                     league_per90s.append(lp_per90)
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Failed to fetch league player stats: %s", e)
 
     swarm_plot.show_swarm_grid(
         player_name=player_name,
