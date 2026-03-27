@@ -307,7 +307,7 @@ def get_league_player_stats(
 ) -> List[Dict[str, Any]]:
     """Fetch aggregated player stats for an entire league/tournament season.
 
-    Uses standings → team rosters → individual player statistics endpoints
+    Uses standings, team rosters, and individual player statistics endpoints
     to collect season stats for all players in the tournament.
     Results are cached for 1 day.
 
@@ -397,7 +397,7 @@ def get_league_player_stats(
             if isinstance(player_entry, dict):
                 roster_players.append(player_entry)
             else:
-                # Some formats nest under members
+                # Alternate roster format: players nested under 'members' key
                 for member in group.get("players") or group.get("members") or []:
                     if isinstance(member, dict):
                         p = member.get("player") or member
