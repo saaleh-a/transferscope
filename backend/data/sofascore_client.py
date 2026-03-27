@@ -224,7 +224,7 @@ def search_team(name: str) -> List[Dict[str, Any]]:
     """
     key = cache.make_key("sofascore_team_search", name.lower().strip())
     cached = cache.get(key, max_age=86400 * 7)
-    if cached is not None:
+    if cached:
         return cached
 
     raw = _get(f"/search/teams?q={_url_quote(name)}&page=0")
@@ -268,7 +268,7 @@ def get_player_transfer_history(player_id: int) -> List[Dict[str, Any]]:
     """
     key = cache.make_key("sofascore_transfers", str(player_id))
     cached = cache.get(key, max_age=86400 * 7)
-    if cached is not None:
+    if cached:
         return cached
 
     raw = _get(f"/player/{player_id}/transfer-history")
@@ -336,7 +336,7 @@ def get_league_player_stats(
         str(limit),
     )
     cached = cache.get(key, max_age=86400)
-    if cached is not None:
+    if cached:
         return cached
 
     # Step 1 — Get all teams from league standings
@@ -486,7 +486,7 @@ def get_season_list(tournament_id: int) -> List[Dict[str, Any]]:
     """
     key = cache.make_key("sofascore_season_list", str(tournament_id))
     cached = cache.get(key, max_age=86400)
-    if cached is not None:
+    if cached:
         return cached
 
     raw = _get(f"/unique-tournament/{tournament_id}/seasons")
@@ -540,7 +540,7 @@ def get_player_match_logs(
         str(player_id), str(tournament_id), str(season_id),
     )
     cached = cache.get(key, max_age=86400 * 7)
-    if cached is not None:
+    if cached:
         return cached
 
     matches: List[Dict[str, Any]] = []
@@ -619,7 +619,7 @@ def get_player_stats_for_season(
         str(season_id),
     )
     cached = cache.get(key, max_age=86400)
-    if cached is not None:
+    if cached:
         return cached
 
     # Get player profile for name/team
@@ -671,7 +671,7 @@ def search_player(name: str) -> List[Dict[str, Any]]:
     """
     key = cache.make_key("sofascore_search", name.lower().strip())
     cached = cache.get(key, max_age=86400 * 7)
-    if cached is not None:
+    if cached:
         return cached
 
     raw = _get(f"/search/players?q={_url_quote(name)}&page=0")
@@ -754,7 +754,7 @@ def get_player_stats(
     """
     key = cache.make_key("sofascore_player", str(player_id), season or "current")
     cached = cache.get(key, max_age=86400)
-    if cached is not None:
+    if cached:
         return cached
 
     # Step 1 — Get player profile to resolve team + tournament
@@ -885,7 +885,7 @@ def get_team_players_stats(
     """
     key = cache.make_key("sofascore_team", str(team_id), season or "current")
     cached = cache.get(key, max_age=86400)
-    if cached is not None:
+    if cached:
         return cached
 
     raw = _get(f"/team/{team_id}/players")
@@ -981,7 +981,7 @@ def get_team_position_averages(
         "team_pos_avg", str(team_id), normalize_position(target_position),
     )
     cached = cache.get(cache_key, max_age=86400)
-    if cached is not None:
+    if cached:
         return cached  # type: ignore[return-value]
 
     target_cat = normalize_position(target_position)
@@ -1078,7 +1078,7 @@ def _discover_tournament_for_team(team_id: int) -> Optional[int]:
     """
     key = cache.make_key("sofascore_team_tournament", str(team_id))
     cached = cache.get(key, max_age=86400 * 7)
-    if cached is not None:
+    if cached:
         return cached
 
     raw = _get(f"/team/{team_id}/unique-tournaments")
@@ -1302,7 +1302,7 @@ def _get_current_season_id(tournament_id: int) -> Optional[int]:
     """
     key = cache.make_key("sofascore_seasons", str(tournament_id))
     cached = cache.get(key, max_age=86400)  # refresh daily
-    if cached is not None:
+    if cached:
         return cached
 
     # Try the season_list cache first (populated by get_season_list)

@@ -1700,20 +1700,23 @@ def _compare_model_vs_heuristic(
     trained_errors = {m: [] for m in CORE_METRICS}
     heuristic_errors = {m: [] for m in CORE_METRICS}
 
-    X_val_scaled = scaler.transform(X_val)
-
-    # Temporarily attach target scalers for comparison predictions
+    # Attach scalers to the model so predict() handles scaling internally.
+    # This avoids manual pre-scaling which risks double-scaling if
+    # model._scaler is set elsewhere.
+    old_scaler = model._scaler
     old_target_scalers = model._target_scalers
+    model._scaler = scaler
     if target_scalers is not None:
         model._target_scalers = target_scalers
 
+    keys = _feature_keys_list()
+
     for i in range(len(X_val)):
-        # Trained model prediction
-        feature_vec = X_val_scaled[i]
+        # Trained model prediction — pass UNSCALED features;
+        # model.predict() handles scaling internally via model._scaler.
         feature_dict = {}
-        keys = _feature_keys_list()
         for j, key in enumerate(keys):
-            feature_dict[key] = float(feature_vec[j])
+            feature_dict[key] = float(X_val[i, j])
 
         trained_preds = model.predict(feature_dict)
 
@@ -1761,7 +1764,8 @@ def _compare_model_vs_heuristic(
             trained_errors[m].append((t_pred - actual) ** 2)
             heuristic_errors[m].append((h_pred - actual) ** 2)
 
-    # Restore original target scalers
+    # Restore original scalers
+    model._scaler = old_scaler
     model._target_scalers = old_target_scalers
 
     # Report

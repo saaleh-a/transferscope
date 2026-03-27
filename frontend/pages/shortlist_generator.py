@@ -301,8 +301,8 @@ def render():
             source_pos_avg, _ = sofascore_client.get_team_position_averages(
                 team_id, position
             )
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(f"Could not fetch team position data: {e}")
         if not source_pos_avg:
             source_pos_avg = {m: current_per90.get(m, 0) if current_per90.get(m) is not None else 0.0
                               for m in CORE_METRICS}
@@ -403,7 +403,8 @@ def render():
         # Also include current teammates for completeness
         try:
             team_players = sofascore_client.get_team_players_stats(team_id)
-        except Exception:
+        except Exception as e:
+            _log.warning("Failed to fetch team players: %s", e)
             team_players = []
 
         seen_ids = {c.player_id for c in candidates}
@@ -414,7 +415,8 @@ def render():
 
             try:
                 tp_stats = sofascore_client.get_player_stats(tp_id)
-            except Exception:
+            except Exception as e:
+                _log.warning("Failed to fetch teammate %s stats: %s", tp_id, e)
                 continue
 
             tp_per90 = tp_stats.get("per90", {})

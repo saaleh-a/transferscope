@@ -70,29 +70,25 @@ def run_backtest(
     metric_to_idx = {m: i for i, m in enumerate(CORE_METRICS)}
     keys = _feature_keys_list()
 
-    # Load trained model
+    # Load trained model — set scalers on the model so predict() handles
+    # both feature scaling and target inverse-transform internally.
+    # Previous approach pre-scaled features manually, which risked double-
+    # scaling if model._scaler was ever set elsewhere.
     model = TransferPortalModel()
     model_dir = os.path.join(_MODELS_DIR, "transfer_portal")
-    scaler = None
 
     if os.path.isdir(model_dir):
         model.load(model_dir)
         scaler_path = os.path.join(_MODELS_DIR, "feature_scaler.pkl")
         if os.path.exists(scaler_path):
-            scaler = joblib.load(scaler_path)
+            model._scaler = joblib.load(scaler_path)
         # Load target scalers so predict() inverse-transforms predictions
         # back to original per-90 space before comparison with y_test.
         target_scaler_path = os.path.join(_MODELS_DIR, "target_scalers.pkl")
         if os.path.exists(target_scaler_path):
             model._target_scalers = joblib.load(target_scaler_path)
 
-    has_trained = model.fitted and scaler is not None
-
-    # Pre-scale all test features at once for efficiency
-    if has_trained:
-        X_test_scaled = scaler.transform(X_test)
-    else:
-        X_test_scaled = X_test
+    has_trained = model.fitted and model._scaler is not None
 
     # Per-metric collectors
     trained_abs_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
@@ -110,9 +106,10 @@ def run_backtest(
         # Naive baseline: player's pre-transfer stats (from X_test, first 13 cols)
         naive_pred = {m: float(X_test[i, j]) for j, m in enumerate(CORE_METRICS)}
 
-        # Trained model prediction
+        # Trained model prediction — pass UNSCALED features; model.predict()
+        # handles scaling internally via model._scaler.
         if has_trained:
-            feature_dict = {key: float(X_test_scaled[0 + i, j]) for j, key in enumerate(keys)}
+            feature_dict = {key: float(X_test[i, j]) for j, key in enumerate(keys)}
             try:
                 trained_pred = model.predict(feature_dict)
             except Exception:

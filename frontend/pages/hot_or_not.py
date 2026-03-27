@@ -105,7 +105,8 @@ def render():
     # ── Target club autocomplete ─────────────────────────────────────────
     try:
         club_results = sofascore_client.search_team(target_club_query)
-    except Exception:
+    except Exception as e:
+        st.warning(f"Club search failed: {e}")
         club_results = []
 
     target_club = target_club_query
@@ -201,15 +202,15 @@ def render():
             source_pos_avg, _ = sofascore_client.get_team_position_averages(
                 team_id, position
             )
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(f"Could not fetch source team position data: {e}")
     if target_team_id:
         try:
             target_pos_avg, _ = sofascore_client.get_team_position_averages(
                 target_team_id, position
             )
-        except Exception:
-            pass
+        except Exception as e:
+            st.warning(f"Could not fetch target team position data: {e}")
 
     if not source_pos_avg:
         source_pos_avg = current_per90_clean.copy()
@@ -244,7 +245,8 @@ def render():
                 team_pos_target=source_pos_avg,
             )
             predicted_current = model.predict(fd_current)
-    except Exception:
+    except Exception as e:
+        st.warning(f"TF model prediction failed, using heuristic fallback: {e}")
         predicted = {}
         predicted_current = {}
 
@@ -342,8 +344,8 @@ def render():
                     "Type": t.get("type", "N/A"),
                 })
             st.dataframe(pd.DataFrame(th_rows), use_container_width=True, hide_index=True)
-    except Exception:
-        pass
+    except Exception as e:
+        st.warning(f"Could not load transfer history: {e}")
 
     # ── Top 3 changes ────────────────────────────────────────────────────
     section_header("Key Predicted Changes", "Top metric movements")
