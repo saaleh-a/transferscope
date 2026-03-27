@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
 
 from backend.data.sofascore_client import CORE_METRICS
 
@@ -159,6 +160,9 @@ def scale_team_position_features(
 
 # ── Player adjustment models ────────────────────────────────────────────────
 
+_PLAYER_MIN_SAMPLES = 30  # Minimum samples per position/metric for fitting
+
+
 class PlayerAdjustmentModel:
     """13 sklearn LinearRegression models per position.
 
@@ -174,6 +178,7 @@ class PlayerAdjustmentModel:
 
     def __init__(self):
         self.models: Dict[str, Dict[str, LinearRegression]] = {}
+        self._scalers: Dict[str, Dict[str, StandardScaler]] = {}
         self.fitted = False
 
     def fit(self, training_data: List[Dict[str, Any]]) -> None:
@@ -188,7 +193,7 @@ class PlayerAdjustmentModel:
                 - ``player_previous_per90``: float
                 - ``avg_position_feature_new_team``: float
                 - ``diff_avg_position_old_vs_new``: float
-                - ``change_relative_ability``: float
+                - ``change_relative_ability``: float (already normalised)
                 - ``actual``: float (observed per-90 at new club)
         """
         grouped: Dict[str, Dict[str, Tuple[List, List]]] = {}
@@ -201,7 +206,9 @@ class PlayerAdjustmentModel:
 
             grouped.setdefault(pos, {}).setdefault(metric, ([], []))
 
-            cra = row.get("change_relative_ability", 0) / 50.0
+            # change_relative_ability is already normalised by the caller
+            # (training_pipeline divides by 50); do NOT divide again.
+            cra = row.get("change_relative_ability", 0)
             features = [
                 row.get("player_previous_per90", 0),
                 row.get("avg_position_feature_new_team", 0),
@@ -219,15 +226,36 @@ class PlayerAdjustmentModel:
 
         for pos, metrics in grouped.items():
             self.models[pos] = {}
+            self._scalers[pos] = {}
             for metric in CORE_METRICS:
                 model = LinearRegression()
-                if metric in metrics and len(metrics[metric][0]) >= 2:
+                scaler = StandardScaler()
+                if (
+                    metric in metrics
+                    and len(metrics[metric][0]) >= _PLAYER_MIN_SAMPLES
+                ):
                     xs, ys = metrics[metric]
-                    model.fit(np.array(xs), np.array(ys))
+                    X_arr = np.array(xs)
+                    X_scaled = scaler.fit_transform(X_arr)
+                    model.fit(X_scaled, np.array(ys))
+                elif metric in metrics and len(metrics[metric][0]) >= 2:
+                    # Too few samples for reliable regression; log a warning
+                    # and fall back to identity (predict player_previous_per90).
+                    _log.info(
+                        "Position %s metric %s: only %d samples (< %d), "
+                        "skipping regression (will use identity fallback)",
+                        pos, metric, len(metrics[metric][0]),
+                        _PLAYER_MIN_SAMPLES,
+                    )
+                    model.coef_ = np.zeros(6)
+                    model.intercept_ = 0.0
+                    scaler = None  # type: ignore[assignment]
                 else:
                     model.coef_ = np.zeros(6)
                     model.intercept_ = 0.0
+                    scaler = None  # type: ignore[assignment]
                 self.models[pos][metric] = model
+                self._scalers[pos][metric] = scaler
 
         self.fitted = True
 
@@ -242,7 +270,7 @@ class PlayerAdjustmentModel:
     ) -> float:
         """Predict a player's per-90 at the target club for one metric."""
         cra = change_relative_ability / 50.0
-        features = np.array([[
+        raw_features = np.array([[
             player_previous_per90,
             avg_position_feature_new_team,
             diff_avg_position_old_vs_new,
@@ -252,10 +280,20 @@ class PlayerAdjustmentModel:
         ]])
 
         if position in self.models and metric in self.models[position]:
+            scaler = self._scalers.get(position, {}).get(metric)
+            if scaler is not None:
+                features = scaler.transform(raw_features)
+            else:
+                features = raw_features
             return float(self.models[position][metric].predict(features)[0])
 
         # Fallback: try generic position or return current per-90
         if "Unknown" in self.models and metric in self.models["Unknown"]:
+            scaler = self._scalers.get("Unknown", {}).get(metric)
+            if scaler is not None:
+                features = scaler.transform(raw_features)
+            else:
+                features = raw_features
             return float(self.models["Unknown"][metric].predict(features)[0])
 
         return player_previous_per90
@@ -284,14 +322,22 @@ class PlayerAdjustmentModel:
             os.makedirs(_MODELS_DIR, exist_ok=True)
             path = os.path.join(_MODELS_DIR, "player_adjustment.pkl")
         with open(path, "wb") as f:
-            pickle.dump(self.models, f)
+            pickle.dump({"models": self.models, "scalers": self._scalers}, f)
         return path
 
     def load(self, path: Optional[str] = None) -> None:
         if path is None:
             path = os.path.join(_MODELS_DIR, "player_adjustment.pkl")
         with open(path, "rb") as f:
-            self.models = pickle.load(f)
+            data = pickle.load(f)
+        # Support both old format (dict of models) and new format
+        if isinstance(data, dict) and "models" in data:
+            self.models = data["models"]
+            self._scalers = data.get("scalers", {})
+        else:
+            # Legacy format: data is the models dict directly
+            self.models = data
+            self._scalers = {}
         self.fitted = True
 
 

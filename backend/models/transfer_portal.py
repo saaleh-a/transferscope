@@ -157,6 +157,7 @@ class TransferPortalModel:
         self.models: Dict[str, tf.keras.Model] = {}
         self.fitted = False
         self._scaler: Any = None  # StandardScaler, loaded from data/models/ if trained
+        self._target_scalers: Dict[str, Any] = {}  # Per-group target scalers
 
     def build(self, input_dim: int) -> None:
         """Build all 4 group models with per-group feature dimensions."""
@@ -215,6 +216,8 @@ class TransferPortalModel:
         -------
         dict of training history per group.
         """
+        from sklearn.preprocessing import StandardScaler
+
         # Store full feature array for compatibility
         X_arr_full = np.array([self._prepare_features(fd) for fd in X], dtype=np.float32)
 
@@ -229,10 +232,16 @@ class TransferPortalModel:
                 [self._prepare_group_features(fd, group_name) for fd in X],
                 dtype=np.float32,
             )
-            y_group = np.column_stack([
+            y_group_raw = np.column_stack([
                 np.array(y.get(t, [0.0] * len(X)), dtype=np.float32)
                 for t in targets
             ])
+
+            # Scale targets per-group to equalise loss across groups
+            y_scaler = StandardScaler()
+            y_group = y_scaler.fit_transform(y_group_raw)
+            self._target_scalers[group_name] = y_scaler
+
             hist = self.models[group_name].fit(
                 X_group, y_group,
                 epochs=epochs,
@@ -297,6 +306,12 @@ class TransferPortalModel:
             group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
             X_group = full_X[:, group_indices]
             preds = self.models[group_name].predict(X_group, verbose=0)
+
+            # Inverse-transform predictions if target scalers are available
+            target_scaler = self._target_scalers.get(group_name)
+            if target_scaler is not None:
+                preds = target_scaler.inverse_transform(preds)
+
             preds = preds.flatten()
             for i, target in enumerate(targets):
                 if i < len(preds):
@@ -314,6 +329,10 @@ class TransferPortalModel:
         scaler_path = os.path.join(_MODELS_DIR, "feature_scaler.pkl")
         if os.path.exists(scaler_path):
             self._scaler = joblib.load(scaler_path)
+
+        target_scaler_path = os.path.join(_MODELS_DIR, "target_scalers.pkl")
+        if os.path.exists(target_scaler_path):
+            self._target_scalers = joblib.load(target_scaler_path)
 
     @staticmethod
     def _heuristic_fallback(feature_dict: Dict[str, float]) -> Dict[str, float]:
@@ -361,7 +380,14 @@ class TransferPortalModel:
                 dtype=np.float32,
             )
             preds = self.models[group_name].predict(X_group, verbose=0)
-            if preds.ndim == 1:
+
+            # Inverse-transform predictions if target scalers are available
+            target_scaler = self._target_scalers.get(group_name)
+            if target_scaler is not None:
+                if preds.ndim == 1:
+                    preds = preds.reshape(-1, 1)
+                preds = target_scaler.inverse_transform(preds)
+            elif preds.ndim == 1:
                 preds = preds.reshape(-1, 1)
             for i in range(n):
                 for j, target in enumerate(targets):
