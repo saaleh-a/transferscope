@@ -69,6 +69,7 @@ def render():
     # Use cached results on subsequent reruns (e.g. widget interaction)
     search_results = st.session_state.get("ti_search_results")
     if not search_results:
+        st.caption("Click **Analyse Transfer** to search.")
         return
 
     def _player_label(p: dict) -> str:
