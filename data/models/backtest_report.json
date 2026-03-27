@@ -1,0 +1,155 @@
+{
+  "n_samples": 589,
+  "per_metric": {
+    "expected_goals": {
+      "mae": 0.5633371839428665,
+      "mean_pct_error": 1252.9708614333397,
+      "within_10_pct": 0.18450184501845018,
+      "within_20_pct": 0.7380073800738007,
+      "direction_accuracy": 44.090056285178235,
+      "naive_mae": 0.05384363298298845,
+      "improvement_vs_naive": -946.2466084352986,
+      "trained_mse": 0.4585256152252697,
+      "naive_mse": 0.00690794263333855
+    },
+    "expected_assists": {
+      "mae": 0.5510204343313929,
+      "mean_pct_error": 4560.597291831362,
+      "within_10_pct": 1.215277777777778,
+      "within_20_pct": 3.4722222222222223,
+      "direction_accuracy": 42.08566108007449,
+      "naive_mae": 0.034039219296590706,
+      "improvement_vs_naive": -1518.7810581971305,
+      "trained_mse": 0.4925455861436397,
+      "naive_mse": 0.002254873292013828
+    },
+    "shots": {
+      "mae": 1.0895657531841199,
+      "mean_pct_error": 153.00550995647882,
+      "within_10_pct": 1.2915129151291513,
+      "within_20_pct": 2.5830258302583027,
+      "direction_accuracy": 55.88235294117647,
+      "naive_mae": 0.3211572136040556,
+      "improvement_vs_naive": -239.2624257001465,
+      "trained_mse": 1.3699521368434346,
+      "naive_mse": 0.19434931765490554
+    },
+    "successful_dribbles": {
+      "mae": 0.5669189023679353,
+      "mean_pct_error": 172.78452593569702,
+      "within_10_pct": 6.33147113594041,
+      "within_20_pct": 15.083798882681565,
+      "direction_accuracy": 57.47747747747748,
+      "naive_mae": 0.2772232594857141,
+      "improvement_vs_naive": -104.49903930126392,
+      "trained_mse": 0.4450263893582787,
+      "naive_mse": 0.15364907839601738
+    },
+    "successful_crosses": {
+      "mae": 0.6332205951005119,
+      "mean_pct_error": 317.2534357160231,
+      "within_10_pct": 3.8548752834467117,
+      "within_20_pct": 6.575963718820861,
+      "direction_accuracy": 46.597938144329895,
+      "naive_mae": 0.2150550082085594,
+      "improvement_vs_naive": -194.4458724190312,
+      "trained_mse": 0.5188998830292089,
+      "naive_mse": 0.12177858683469119
+    },
+    "touches_in_opposition_box": {
+      "mae": 3.152106549704672,
+      "mean_pct_error": 121.17693940229991,
+      "within_10_pct": 0.1697792869269949,
+      "within_20_pct": 0.1697792869269949,
+      "direction_accuracy": 54.93197278911565,
+      "naive_mae": 0.8654883833687456,
+      "improvement_vs_naive": -264.199752449098,
+      "trained_mse": 12.132957257765906,
+      "naive_mse": 1.4226388142127433
+    },
+    "successful_passes": {
+      "mae": 31.103940444418146,
+      "mean_pct_error": 102.34364657691906,
+      "within_10_pct": 0.0,
+      "within_20_pct": 0.0,
+      "direction_accuracy": 42.78438030560272,
+      "naive_mae": 5.176990007908923,
+      "improvement_vs_naive": -500.81128989819257,
+      "trained_mse": 1155.6380004864732,
+      "naive_mse": 52.23975940567674
+    },
+    "pass_completion_pct": {
+      "mae": 80.47751095446367,
+      "mean_pct_error": 100.2006815248237,
+      "within_10_pct": 0.0,
+      "within_20_pct": 0.0,
+      "direction_accuracy": 43.2937181663837,
+      "naive_mae": 3.4217218680778463,
+      "improvement_vs_naive": -2251.959453667458,
+      "trained_mse": 6530.906351266261,
+      "naive_mse": 22.003777205224768
+    },
+    "accurate_long_balls": {
+      "mae": 2.013341238750667,
+      "mean_pct_error": 186.8315737251367,
+      "within_10_pct": 0.0,
+      "within_20_pct": 0.0,
+      "direction_accuracy": 50.08488964346349,
+      "naive_mae": 0.5817694391214079,
+      "improvement_vs_naive": -246.07201811618506,
+      "trained_mse": 5.0016036396320045,
+      "naive_mse": 0.7765105787339068
+    },
+    "chances_created": {
+      "mae": 0.9265287217157553,
+      "mean_pct_error": 237.22103585139521,
+      "within_10_pct": 3.202846975088968,
+      "within_20_pct": 5.338078291814947,
+      "direction_accuracy": 44.3859649122807,
+      "naive_mae": 0.2986772513374408,
+      "improvement_vs_naive": -210.210676429782,
+      "trained_mse": 1.0186095169997367,
+      "naive_mse": 0.15368847420317897
+    },
+    "clearances": {
+      "mae": 2.037334267565497,
+      "mean_pct_error": 175.14417615136077,
+      "within_10_pct": 0.0,
+      "within_20_pct": 0.0,
+      "direction_accuracy": 41.83673469387755,
+      "naive_mae": 0.5155721571049787,
+      "improvement_vs_naive": -295.1598703478208,
+      "trained_mse": 4.908995635174192,
+      "naive_mse": 0.5432095391345388
+    },
+    "interceptions": {
+      "mae": 0.8062563787352022,
+      "mean_pct_error": 289.70320307527095,
+      "within_10_pct": 6.415094339622642,
+      "within_20_pct": 10.754716981132075,
+      "direction_accuracy": 55.75539568345324,
+      "naive_mae": 0.2586984729903461,
+      "improvement_vs_naive": -211.65873126946883,
+      "trained_mse": 0.8672224283703271,
+      "naive_mse": 0.12437964920776125
+    },
+    "possession_won_final_3rd": {
+      "mae": 0.9742020545005545,
+      "mean_pct_error": 235.22337929194424,
+      "within_10_pct": 3.4358047016274864,
+      "within_20_pct": 5.967450271247739,
+      "direction_accuracy": 49.644128113879006,
+      "naive_mae": 0.2989412568389408,
+      "improvement_vs_naive": -225.8841100763221,
+      "trained_mse": 1.1845797387865882,
+      "naive_mse": 0.17682986757078545
+    }
+  },
+  "overall": {
+    "mean_trained_mse": 593.4571745830818,
+    "mean_naive_mse": 5.993825640982724,
+    "overall_improvement_pct": -9801.141777053443,
+    "metrics_improved": 0,
+    "metrics_total": 13
+  }
+}
