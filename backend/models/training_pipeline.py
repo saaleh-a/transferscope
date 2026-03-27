@@ -109,6 +109,11 @@ class NonTransferRecord:
     pre_tournament_id: int
     post_tournament_id: int
     is_transfer: bool = False
+    # Cached league-scan per90 and minutes (fallback when match logs / season
+    # stats API calls return 404).  Populated by discover_non_transfers() from
+    # the get_league_player_stats() data that was already fetched.
+    cached_pre_per90: Optional[Dict[str, float]] = None
+    cached_pre_minutes: int = 0
 
 
 # ── Step 2: Transfer Discovery ───────────────────────────────────────────────
@@ -946,6 +951,8 @@ def discover_non_transfers(
                     post_season_id=post_sid,
                     pre_tournament_id=tid,
                     post_tournament_id=tid,
+                    cached_pre_per90=player.get("per90"),
+                    cached_pre_minutes=player.get("minutes_played", 0),
                 ))
                 seen.add(dedup_key)
 
@@ -961,7 +968,7 @@ def discover_non_transfers(
     if target_count is not None and len(records) < target_count and min_minutes > 250:
         relaxed_min = max(250, min_minutes // 2)
         _log.info(
-            "Non-transfer count %d < target %d; retrying with min_minutes=%d",
+            "Non-transfer retry ATTEMPTED: count %d < target %d; retrying with min_minutes=%d",
             len(records), target_count, relaxed_min,
         )
         extra = discover_non_transfers(
@@ -973,6 +980,12 @@ def discover_non_transfers(
         )
         records.extend(extra)
         _log.info("After relaxed retry: %d total non-transfer samples", len(records))
+    elif target_count is not None and len(records) < target_count:
+        _log.info(
+            "Non-transfer retry NOT attempted: count %d < target %d but "
+            "min_minutes=%d is already at or below 250",
+            len(records), target_count, min_minutes,
+        )
 
     _log.info("Discovered %d non-transfer samples", len(records))
     return records
@@ -1011,10 +1024,30 @@ def build_non_transfer_sample(
             record.pre_tournament_id,
             record.pre_season_id,
         )
-        if not pre_stats:
+        if pre_stats:
+            pre_per90 = pre_stats.get("per90") or {}
+            pre_minutes = pre_stats.get("minutes_played", 0)
+        else:
+            pre_per90 = None
+
+    # Fallback: use cached per90 from league-wide scan (already fetched during
+    # discover_non_transfers → get_league_player_stats) when both match logs
+    # and season stats API calls fail or return insufficient data.
+    if pre_per90 is None or not pre_per90:
+        if record.cached_pre_per90:
+            _log.info(
+                "Non-transfer player %d (%s): using cached league-scan per90 "
+                "(%d min) as fallback for pre-features",
+                record.player_id, record.player_name, record.cached_pre_minutes,
+            )
+            pre_per90 = record.cached_pre_per90
+            pre_minutes = record.cached_pre_minutes
+        else:
+            _log.debug(
+                "Non-transfer player %d (%s): no cached data available, skipping",
+                record.player_id, record.player_name,
+            )
             return None
-        pre_per90 = pre_stats.get("per90") or {}
-        pre_minutes = pre_stats.get("minutes_played", 0)
 
     if pre_minutes < MIN_MINUTES_THRESHOLD:
         return None
@@ -1103,11 +1136,26 @@ def build_non_transfer_sample(
             record.post_tournament_id,
             record.post_season_id,
         )
-        if not post_stats:
-            return None
-        post_per90 = post_stats.get("per90") or {}
-        post_minutes = post_stats.get("minutes_played", 0)
-        if post_minutes < MIN_MINUTES_THRESHOLD:
+        if post_stats:
+            post_per90 = post_stats.get("per90") or {}
+            post_minutes = post_stats.get("minutes_played", 0)
+            if post_minutes < MIN_MINUTES_THRESHOLD:
+                post_per90 = None
+        else:
+            post_per90 = None
+
+    # Fallback for post-season labels: use pre-season per90 (same club →
+    # performance should be similar across consecutive seasons).  This is
+    # an approximation, but better than dropping the candidate entirely.
+    if post_per90 is None or not post_per90:
+        if pre_per90:
+            _log.info(
+                "Non-transfer player %d (%s): using pre-season per90 as "
+                "fallback for post-season labels",
+                record.player_id, record.player_name,
+            )
+            post_per90 = pre_per90
+        else:
             return None
 
     labels = []
@@ -1208,6 +1256,13 @@ def build_full_dataset(
                 continue
 
             if nt_sample is None:
+                _log.info(
+                    "Non-transfer player %d (%s) dropped: insufficient data "
+                    "(cached_pre_minutes=%d, has_cached_per90=%s)",
+                    nt_record.player_id, nt_record.player_name,
+                    nt_record.cached_pre_minutes,
+                    bool(nt_record.cached_pre_per90),
+                )
                 drop_reasons["nt_insufficient_data"] = (
                     drop_reasons.get("nt_insufficient_data", 0) + 1
                 )
