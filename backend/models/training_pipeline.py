@@ -163,8 +163,12 @@ def discover_transfers(
             )
             continue
 
-        # Take the last seasons_back seasons (newest first from API)
-        target_seasons = seasons[:seasons_back]
+        # Take the last seasons_back seasons (newest first from API).
+        # +1 so idx==0 is always a buffer season whose only purpose is to
+        # serve as the post-transfer season for idx==1 (the newest
+        # *usable* season).  This avoids silently dropping transfers from
+        # the most recent season.
+        target_seasons = seasons[:seasons_back + 1]
 
         # Build season lookup: season_id -> season_name
         season_ids = [s["id"] for s in target_seasons]
@@ -240,23 +244,6 @@ def discover_transfers(
                     pre_sid = sid
                     post_sid = target_seasons[idx - 1]["id"]
 
-                    # Verify the player has enough minutes at the target club
-                    # in the post-transfer season by checking stats
-                    post_stats = sofascore_client.get_player_stats_for_season(
-                        pid, tid, post_sid
-                    )
-                    post_minutes = post_stats.get("minutes_played", 0)
-                    if post_minutes < MIN_MINUTES_THRESHOLD:
-                        skipped_no_post += 1
-                        continue
-
-                    # Check pre-transfer stats
-                    pre_stats_check = player  # Already have stats from league scan
-                    pre_minutes = pre_stats_check.get("minutes_played", 0)
-                    if pre_minutes < MIN_MINUTES_THRESHOLD:
-                        skipped_minutes += 1
-                        continue
-
                     # Determine league IDs for from/to
                     # The from_league is the current tournament
                     # The to_league might be different — check transfer
@@ -267,6 +254,28 @@ def discover_transfers(
                     resolved_tid = _try_resolve_league(to_id, to_name)
                     if resolved_tid is not None and resolved_tid != tid:
                         to_league_id = resolved_tid
+
+                    # Fetch pre-transfer stats directly — the league scan
+                    # only contains current roster so players who have
+                    # since left the club are missing.
+                    pre_stats = sofascore_client.get_player_stats_for_season(
+                        pid, from_league_id, pre_sid
+                    )
+                    pre_minutes = pre_stats.get("minutes_played", 0)
+                    if pre_minutes < MIN_MINUTES_THRESHOLD:
+                        skipped_minutes += 1
+                        continue
+
+                    # Verify the player has enough minutes at the target club
+                    # in the post-transfer season — use to_league_id so
+                    # cross-league transfers fetch from the correct league.
+                    post_stats = sofascore_client.get_player_stats_for_season(
+                        pid, to_league_id, post_sid
+                    )
+                    post_minutes = post_stats.get("minutes_played", 0)
+                    if post_minutes < MIN_MINUTES_THRESHOLD:
+                        skipped_no_post += 1
+                        continue
 
                     record = TransferRecord(
                         player_id=pid,
@@ -282,7 +291,7 @@ def discover_transfers(
                         pre_transfer_season_id=pre_sid,
                         post_transfer_season_id=post_sid,
                         pre_transfer_tournament_id=tid,
-                        post_transfer_tournament_id=tid,
+                        post_transfer_tournament_id=to_league_id,
                     )
                     records.append(record)
                     seen_transfers.add(dedup_key)
