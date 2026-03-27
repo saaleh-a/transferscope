@@ -332,7 +332,8 @@ def get_league_player_stats(
         return []
 
     key = cache.make_key(
-        "sofascore_league_stats", str(tournament_id), str(season_id)
+        "sofascore_league_stats", str(tournament_id), str(season_id),
+        str(limit),
     )
     cached = cache.get(key, max_age=86400)
     if cached is not None:
