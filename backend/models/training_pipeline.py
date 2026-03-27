@@ -452,7 +452,7 @@ def build_training_sample(
             record.pre_transfer_tournament_id,
             record.pre_transfer_season_id,
         )
-        if pre_stats is None:
+        if not pre_stats:
             return None
         pre_per90 = pre_stats.get("per90") or {}
         pre_minutes = pre_stats.get("minutes_played", 0)
@@ -597,7 +597,7 @@ def build_training_sample(
             record.post_transfer_tournament_id,
             record.post_transfer_season_id,
         )
-        if post_stats is None:
+        if not post_stats:
             return None
         post_per90 = post_stats.get("per90") or {}
         post_minutes = post_stats.get("minutes_played", 0)
@@ -768,14 +768,40 @@ def discover_non_transfers(
                 if dedup_key in seen:
                     continue
 
-                # Check transfer history — did the player stay?
+                # Check transfer history — did the player move between these seasons?
+                # Use season names to approximate the window (e.g., "2023/2024").
+                # A transfer whose date falls between the pre and post season names
+                # (or lacks a date) with different from/to teams means the player moved.
                 transfers = sofascore_client.get_player_transfer_history(pid)
                 moved = False
+                pre_season_name = pre_season.get("name", "")
+                post_season_name = post_season.get("name", "")
                 if transfers:
                     for t in transfers:
                         from_team = (t.get("from_team") or {}).get("id")
                         to_team = (t.get("to_team") or {}).get("id")
-                        if from_team and to_team and from_team != to_team:
+                        if not from_team or not to_team or from_team == to_team:
+                            continue
+                        # Check if transfer date overlaps with the season window
+                        t_date = t.get("transfer_date") or ""
+                        if t_date:
+                            # Extract year from ISO date (e.g., "2024-07-01" → "2024")
+                            t_year = t_date[:4]
+                            # Season names like "23/24" or "2023/2024"
+                            # Transfer is relevant if its year appears in either season name
+                            pre_years = pre_season_name.replace("/", " ").split()
+                            post_years = post_season_name.replace("/", " ").split()
+                            relevant_years = set()
+                            for y in pre_years + post_years:
+                                if len(y) == 2:
+                                    relevant_years.add("20" + y)
+                                elif len(y) == 4:
+                                    relevant_years.add(y)
+                            if t_year in relevant_years:
+                                moved = True
+                                break
+                        else:
+                            # No date on transfer — conservatively assume they moved
                             moved = True
                             break
 
@@ -786,11 +812,12 @@ def discover_non_transfers(
                 post_stats = sofascore_client.get_player_stats_for_season(
                     pid, tid, post_sid
                 )
-                if not post_stats or post_stats.get("minutes_played", 0) < MIN_MINUTES_THRESHOLD:
+                if post_stats.get("minutes_played", 0) < MIN_MINUTES_THRESHOLD:
                     continue
 
+                # get_league_player_stats returns "team"/"team_id"; fallbacks for safety
                 club_id = player.get("team_id") or player.get("teamId") or 0
-                club_name = player.get("team_name") or player.get("teamName") or ""
+                club_name = player.get("team") or player.get("team_name") or ""
 
                 records.append(NonTransferRecord(
                     player_id=pid,
@@ -843,7 +870,7 @@ def build_non_transfer_sample(
             record.pre_tournament_id,
             record.pre_season_id,
         )
-        if pre_stats is None:
+        if not pre_stats:
             return None
         pre_per90 = pre_stats.get("per90") or {}
         pre_minutes = pre_stats.get("minutes_played", 0)
@@ -935,7 +962,7 @@ def build_non_transfer_sample(
             record.post_tournament_id,
             record.post_season_id,
         )
-        if post_stats is None:
+        if not post_stats:
             return None
         post_per90 = post_stats.get("per90") or {}
         post_minutes = post_stats.get("minutes_played", 0)
@@ -1170,7 +1197,9 @@ def split_dataset(
     def _date_range(meta: List[Dict]) -> str:
         if not meta:
             return "N/A"
-        dates = [m.get("transfer_date", "") for m in meta]
+        dates = [m["transfer_date"] for m in meta if m.get("transfer_date")]
+        if not dates:
+            return "N/A"
         return f"{min(dates)} to {max(dates)}"
 
     print(f"\nTemporal Split Summary:")
@@ -1408,10 +1437,15 @@ def train_neural_network(
         )
 
         # Report
+        epochs_trained = len(history.history.get("loss", []))
+        if epochs_trained == 0:
+            _log.warning("Group %s: 0 epochs trained — check data", group_name)
+            print(f"    ⚠️ 0 epochs trained — skipping report")
+            continue
+
         final_train_loss = history.history["loss"][-1]
         final_val_loss = history.history["val_loss"][-1]
         best_val_loss = min(history.history["val_loss"])
-        epochs_trained = len(history.history["loss"])
 
         print(f"    Epochs: {epochs_trained}")
         print(f"    Train loss: {final_train_loss:.6f}")
@@ -1465,17 +1499,24 @@ def _compare_model_vs_heuristic(
         for j, key in enumerate(keys):
             raw_feature_dict[key] = float(X_val[i, j])
 
-        # Extract components for heuristic
+        # Extract components for heuristic using key-based lookup (not hardcoded indices)
+        key_to_idx = {k: j for j, k in enumerate(keys)}
         player_per90 = {}
         team_pos_current = {}
         team_pos_target = {}
-        for m_idx, m in enumerate(CORE_METRICS):
-            player_per90[m] = float(X_val[i, m_idx])
-            team_pos_current[m] = float(X_val[i, 17 + m_idx])
-            team_pos_target[m] = float(X_val[i, 30 + m_idx])
+        for m in CORE_METRICS:
+            player_per90[m] = float(X_val[i, key_to_idx[f"player_{m}"]])
+            team_pos_current[m] = float(X_val[i, key_to_idx[f"team_pos_current_{m}"]])
+            team_pos_target[m] = float(X_val[i, key_to_idx[f"team_pos_target_{m}"]])
 
-        ra_current = float(X_val[i, 13]) - float(X_val[i, 15])  # team - league
-        ra_target = float(X_val[i, 14]) - float(X_val[i, 16])
+        ra_current = (
+            float(X_val[i, key_to_idx["team_ability_current"]])
+            - float(X_val[i, key_to_idx["league_ability_current"]])
+        )
+        ra_target = (
+            float(X_val[i, key_to_idx["team_ability_target"]])
+            - float(X_val[i, key_to_idx["league_ability_target"]])
+        )
         change_ra = ra_target - ra_current
 
         try:
