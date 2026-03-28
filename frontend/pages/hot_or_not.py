@@ -46,6 +46,15 @@ _MIDFIELDER_METRICS: frozenset = frozenset({
     "chances_created",
 })
 
+# ── Verdict & signal thresholds ──────────────────────────────────────────────
+_VERDICT_THRESHOLD = 5.0            # ±% for HOT / NOT boundary
+_MIXED_SIGNAL_THRESHOLD = 10.0      # % change to count as "strong" in either direction
+_MIXED_SIGNAL_MIN_COUNT = 2         # min metrics on each side to trigger mixed-signals TEPID
+_STRONG_SIGNAL_THRESHOLD = 5.0      # |%| to count a metric as having clear signal
+_NEAR_ZERO_THRESHOLD = 2.0          # |%| below which a metric is "near zero"
+_HIGH_CONFIDENCE_RATIO = 0.50       # fraction of metrics with strong signal → high confidence
+_MODERATE_CONFIDENCE_RATIO = 0.25   # fraction of metrics with strong signal → moderate confidence
+
 
 def _verdict(
     avg_change: float,
@@ -69,15 +78,15 @@ def _verdict(
         return "UNKNOWN", "#888888", "question"
 
     # Mixed signals check: strong movement in both directions
-    strong_up = sum(1 for v in pct_changes.values() if v > 10)
-    strong_down = sum(1 for v in pct_changes.values() if v < -10)
-    mixed = strong_up >= 2 and strong_down >= 2
+    strong_up = sum(1 for v in pct_changes.values() if v > _MIXED_SIGNAL_THRESHOLD)
+    strong_down = sum(1 for v in pct_changes.values() if v < -_MIXED_SIGNAL_THRESHOLD)
+    mixed = strong_up >= _MIXED_SIGNAL_MIN_COUNT and strong_down >= _MIXED_SIGNAL_MIN_COUNT
 
     if mixed:
         return "TEPID", "#E3A507", "thinking_face"
-    if avg_change > 5:
+    if avg_change > _VERDICT_THRESHOLD:
         return "HOT", "#2DD4A8", "fire"
-    elif avg_change > -5:
+    elif avg_change > -_VERDICT_THRESHOLD:
         return "TEPID", "#E3A507", "thinking_face"
     else:
         return "NOT", "#F45B69", "x"
@@ -432,16 +441,16 @@ def render():
                 )
 
     # ── Signal strength confidence ───────────────────────────────────────
-    strong_signal = sum(1 for v in pct_changes.values() if abs(v) > 5)
-    near_zero = sum(1 for v in pct_changes.values() if abs(v) <= 2)
+    strong_signal = sum(1 for v in pct_changes.values() if abs(v) > _STRONG_SIGNAL_THRESHOLD)
+    near_zero = sum(1 for v in pct_changes.values() if abs(v) <= _NEAR_ZERO_THRESHOLD)
     total_metrics = len(pct_changes)
 
     if total_metrics > 0:
         signal_ratio = strong_signal / total_metrics
-        if signal_ratio >= 0.5:
+        if signal_ratio >= _HIGH_CONFIDENCE_RATIO:
             signal_label = "🟢 High confidence"
-            signal_desc = f"{strong_signal}/{total_metrics} metrics show strong signal (>5% change)"
-        elif signal_ratio >= 0.25:
+            signal_desc = f"{strong_signal}/{total_metrics} metrics show strong signal (>{_STRONG_SIGNAL_THRESHOLD:.0f}% change)"
+        elif signal_ratio >= _MODERATE_CONFIDENCE_RATIO:
             signal_label = "🟡 Moderate confidence"
             signal_desc = f"{strong_signal}/{total_metrics} metrics show strong signal, {near_zero} near zero"
         else:
