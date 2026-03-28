@@ -145,6 +145,16 @@ def render():
             st.error(f"Failed to fetch player stats: {e}")
             return
 
+    # ── Resolve tournament_id if search didn't provide it ────────────────
+    # get_player_stats() discovers and caches the tournament internally;
+    # retrieve it so that the league-context section can use it later.
+    if not tournament_id:
+        tournament_id = sofascore_client.get_cached_tournament_id(player_id)
+    if not tournament_id and player_stats.get("team_id"):
+        tournament_id = sofascore_client.discover_tournament_for_team(
+            player_stats["team_id"]
+        )
+
     player_name = player_stats.get("name", "Unknown")
     current_team = player_stats.get("team", "Unknown")
     position = player_stats.get("position", "Unknown")
@@ -523,8 +533,9 @@ def render():
     if source_pos_players:
         # Already fetched during position average computation
         for tp_stats in source_pos_players:
-            if tp_stats.get("per90"):
-                teammate_per90s.append(tp_stats["per90"])
+            p90 = tp_stats.get("per90")
+            if p90 and any(v is not None for v in p90.values()):
+                teammate_per90s.append(p90)
     elif team_id:
         try:
             team_players = sofascore_client.get_team_players_stats(team_id)
@@ -532,8 +543,9 @@ def render():
                 if tp.get("id") and tp["id"] != player_id:
                     try:
                         tp_stats = sofascore_client.get_player_stats(tp["id"])
-                        if tp_stats.get("per90"):
-                            teammate_per90s.append(tp_stats["per90"])
+                        p90 = tp_stats.get("per90")
+                        if p90 and any(v is not None for v in p90.values()):
+                            teammate_per90s.append(p90)
                     except Exception as e:
                         _log.warning("Failed to fetch teammate stats: %s", e)
         except Exception as e:
@@ -552,7 +564,9 @@ def render():
             )
             for lp in league_players:
                 lp_per90 = lp.get("per90")
-                if lp_per90 and lp.get("id") != player_id:
+                if lp_per90 and lp.get("id") != player_id and any(
+                    v is not None for v in lp_per90.values()
+                ):
                     league_per90s.append(lp_per90)
         except Exception as e:
             _log.warning("Failed to fetch league player stats: %s", e)
