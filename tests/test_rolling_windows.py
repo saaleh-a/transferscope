@@ -195,11 +195,11 @@ class TestPlayerRollingAverage(unittest.TestCase):
         self.assertIsNone(result["clearances"])
 
     def test_two_matches_weighted_average(self):
-        """Two matches — per-90 is weighted by minutes.
+        """Two matches — per-90 is minute-weighted average.
 
-        Match 1: 90 min, xG = 1.0 → total = 90 * 1.0 = 90
-        Match 2: 45 min, xG = 2.0 → total = 45 * 2.0 = 90
-        Overall: 180 / 135 = 1.333...
+        Match 1: 90 min, xG per-90 = 1.0 → weighted contribution = 90 * 1.0 = 90
+        Match 2: 45 min, xG per-90 = 2.0 → weighted contribution = 45 * 2.0 = 90
+        Average: sum(weighted) / sum(minutes) = 180 / 135 ≈ 1.333
         """
         logs = [
             {"minutes": 90, "expected_goals": 1.0},
@@ -211,15 +211,11 @@ class TestPlayerRollingAverage(unittest.TestCase):
 
     def test_window_limits_matches_used(self):
         """Only matches within window (1000 min) should be included."""
-        # 12 matches of 90 mins = 1080 total. Window = 1000.
-        # Should stop after the 11th match (990 + 90 = 1080 is over window).
-        # Actually: accumulates until >= 1000, so 12th log at 1080 breaks.
-        # The 12th log is not included because accumulation reaches >= 1000 first.
+        # 12 matches of 90 mins each. Window check fires BEFORE processing.
+        # After 11: 990 min accumulated (< 1000) → continue, include 12th.
+        # After 12: 1080 min accumulated (>= 1000) → break before 13th.
+        # So all 12 entries are included (all produce the same value anyway).
         logs = [{"minutes": 90, "expected_goals": 1.0} for _ in range(12)]
-        # The last log should be EXCLUDED due to windowing:
-        # After 11 matches: 990 minutes, not yet >= 1000, so match 12 is included
-        # After 12 matches: 1080, now >= 1000 so loop breaks before match 13
-        # With 12 entries, all 12 are included (990 < 1000 after 11, continue)
         result = player_rolling_average(logs, window_minutes=1000)
         self.assertAlmostEqual(result["expected_goals"], 1.0)
 
@@ -272,10 +268,9 @@ class TestPlayerRollingAverage(unittest.TestCase):
             {"minutes": 100, "expected_goals": 3.0},
             {"minutes": 100, "expected_goals": 5.0},
         ]
-        # Window = 150: only first log should be included (100 < 150)
-        # After first: 100 accumulated. Still < 150, so continue.
-        # After second: 200 accumulated. >= 150, so break.
-        # So first two logs included.
+        # Window = 150: After 1st log, 100 accumulated (< 150), continue.
+        # After 2nd log, 200 accumulated (>= 150), break before 3rd.
+        # Both first and second logs are included.
         result = player_rolling_average(logs, window_minutes=150)
         expected = (100 * 1.0 + 100 * 3.0) / 200
         self.assertAlmostEqual(result["expected_goals"], expected)
