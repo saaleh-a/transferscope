@@ -315,24 +315,19 @@ class TransferPortalModel:
             preds = preds.flatten()
             for i, target in enumerate(targets):
                 if i < len(preds):
-                    result[target] = float(preds[i])
+                    # Per-90 stats are non-negative by definition
+                    result[target] = max(0.0, float(preds[i]))
 
         return result
 
     def _load_trained(self) -> None:
-        """Load trained weights and scaler from data/models/."""
-        import joblib
+        """Load trained weights and scalers from data/models/.
 
+        Delegates to ``load()`` which now handles both model weights
+        and scalers in a single call.
+        """
         model_dir = os.path.join(_MODELS_DIR, "transfer_portal")
         self.load(model_dir)
-
-        scaler_path = os.path.join(_MODELS_DIR, "feature_scaler.pkl")
-        if os.path.exists(scaler_path):
-            self._scaler = joblib.load(scaler_path)
-
-        target_scaler_path = os.path.join(_MODELS_DIR, "target_scalers.pkl")
-        if os.path.exists(target_scaler_path):
-            self._target_scalers = joblib.load(target_scaler_path)
 
     @staticmethod
     def _heuristic_fallback(feature_dict: Dict[str, float]) -> Dict[str, float]:
@@ -392,7 +387,8 @@ class TransferPortalModel:
             for i in range(n):
                 for j, target in enumerate(targets):
                     if j < preds.shape[1]:
-                        results[i][target] = float(preds[i, j])
+                        # Per-90 stats are non-negative by definition
+                        results[i][target] = max(0.0, float(preds[i, j]))
 
         return results
 
@@ -408,7 +404,14 @@ class TransferPortalModel:
         return directory
 
     def load(self, directory: Optional[str] = None) -> None:
-        """Load all group models from directory."""
+        """Load all group models and associated scalers from directory.
+
+        Scalers (``feature_scaler.pkl`` and ``target_scalers.pkl``) live in
+        the parent of *directory* (i.e. ``data/models/``).  They are loaded
+        automatically so that ``predict()`` produces correctly scaled output.
+        """
+        import joblib
+
         if directory is None:
             directory = os.path.join(_MODELS_DIR, "transfer_portal")
 
@@ -419,6 +422,18 @@ class TransferPortalModel:
                 self.models[group_name] = tf.keras.models.load_model(path)
 
         self.fitted = bool(self.models)
+
+        # Load feature scaler and per-group target scalers that live alongside
+        # the model directory.  Without these, predict() would feed unscaled
+        # features and return z-scores instead of real per-90 values.
+        parent_dir = os.path.dirname(directory)
+        scaler_path = os.path.join(parent_dir, "feature_scaler.pkl")
+        if self._scaler is None and os.path.exists(scaler_path):
+            self._scaler = joblib.load(scaler_path)
+
+        target_scaler_path = os.path.join(parent_dir, "target_scalers.pkl")
+        if not self._target_scalers and os.path.exists(target_scaler_path):
+            self._target_scalers = joblib.load(target_scaler_path)
 
 
 def _feature_keys() -> List[str]:

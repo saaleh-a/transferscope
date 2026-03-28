@@ -17,7 +17,18 @@ import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote as _url_quote
 
-import tls_requests as requests
+import requests as _stdlib_requests
+
+# Prefer tls_requests for Cloudflare bypass; fall back to stdlib requests
+# when tls_requests is not installed or its native TLS library fails to load.
+try:
+    import tls_requests as _tls_requests
+except ImportError:
+    _tls_requests = None
+
+# Active HTTP module — may be swapped to _stdlib_requests at runtime if
+# tls_requests raises OSError (native library download failure).
+_http = _tls_requests if _tls_requests is not None else _stdlib_requests
 
 from backend.data import cache
 
@@ -184,11 +195,16 @@ def _get(path: str) -> Optional[dict]:
     Retries up to ``_MAX_RETRIES`` times with exponential backoff for
     transient HTTP errors (429 rate-limit, 5xx server errors).
     Returns the parsed JSON dict, or None on any permanent error.
+
+    Uses ``tls_requests`` when available (Cloudflare bypass) and
+    falls back to stdlib ``requests`` if the native TLS library is
+    unavailable at runtime.
     """
+    global _http
     url = f"{_BASE_URL}{path}"
     for attempt in range(_MAX_RETRIES):
         try:
-            resp = requests.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
+            resp = _http.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
             if resp.status_code in _RETRYABLE_STATUS_CODES:
                 delay = _RETRY_BASE_DELAY * (2 ** attempt)  # 1s, 2s, 4s
                 _log.info(
@@ -199,14 +215,32 @@ def _get(path: str) -> Optional[dict]:
                 continue
             resp.raise_for_status()
             return resp.json()
-        except (ConnectionError, requests.exceptions.TLSError) as ce:
+        except (ConnectionError, OSError) as exc:
+            # tls_requests raises OSError when its native TLS library is
+            # unavailable (e.g. on Streamlit Cloud).  Fall back to stdlib
+            # requests and retry this attempt.
+            if _http is not _stdlib_requests:
+                _log.warning(
+                    "tls_requests unavailable (%s), falling back to stdlib requests",
+                    exc,
+                )
+                _http = _stdlib_requests
+                continue
             delay = _RETRY_BASE_DELAY * (2 ** attempt)
             _log.info(
                 "Sofascore connection error on %s — retry %d/%d in %.1fs (%s)",
-                path, attempt + 1, _MAX_RETRIES, delay, ce,
+                path, attempt + 1, _MAX_RETRIES, delay, exc,
             )
             time.sleep(delay)
         except Exception as exc:
+            # If tls_requests raises a non-standard exception, fall back
+            if _http is not _stdlib_requests:
+                _log.warning(
+                    "tls_requests error (%s), falling back to stdlib requests",
+                    exc,
+                )
+                _http = _stdlib_requests
+                continue
             _log.warning("Sofascore permanent error on %s: %s", path, exc)
             return None
     _log.warning("Sofascore request failed after %d retries: %s", _MAX_RETRIES, path)
