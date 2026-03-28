@@ -57,13 +57,14 @@ transferscope/
 │   ├── pages/
 │   │   ├── transfer_impact.py          # Fig 1 from paper: predicted perf change dashboard
 │   │   ├── shortlist_generator.py      # Fig 2 from paper: replacement shortlist
-│   │   └── hot_or_not.py              # Section 5: quick rumour validator
+│   │   ├── hot_or_not.py              # Section 5: quick rumour validator
+│   │   └── about.py                    # In-app methodology & backtest results reference
 │   ├── components/
 │   │   ├── swarm_plot.py               # Player vs league/team context strip plots
 │   │   ├── power_ranking_chart.py      # Before/after team Power Rankings timeline
 │   │   └── metric_bar.py              # Horizontal bar: predicted % change per metric
 │   └── theme.py                        # "Tactical Noir" dark theme + shared UI components
-├── tests/                              # 188 tests across 11 files (all mocked, no network)
+├── tests/                              # 303 tests across 15 files (all mocked, no network)
 └── data/
     ├── cache/                          # diskcache files — gitignored
     └── models/                         # Saved TF model weights — gitignored
