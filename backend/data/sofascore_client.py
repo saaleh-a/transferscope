@@ -1,9 +1,5 @@
 """Sofascore player stats client via direct HTTP API calls.
 
-Replaces mobfot/FotMob as the player stats source.
-Public API is identical to fotmob_client to avoid cascading changes
-in the frontend and feature pipeline.
-
 Sofascore returns raw totals; per-90 values are computed here as:
     per_90 = total / (minutes_played / 90)
 Percentage stats (e.g. pass_completion_pct) are stored as-is.
