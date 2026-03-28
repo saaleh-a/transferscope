@@ -15,6 +15,7 @@ meaningful clustering (< 10).
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
@@ -24,6 +25,17 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
 from backend.data.sofascore_client import CORE_METRICS
+
+_log = logging.getLogger(__name__)
+
+# Minimum minutes a player must have to be considered for the shortlist.
+# 270 min ≈ 3 full matches — low enough to include recent signings /
+# rotation players while still filtering out single-cameo appearances.
+MIN_MINUTES_THRESHOLD = 270
+
+# Candidates below this similarity score are flagged as low-confidence
+# so the UI can warn users that the match quality is weak.
+_LOW_CONFIDENCE_THRESHOLD = 0.3
 
 
 @dataclass
@@ -46,6 +58,7 @@ class Candidate:
     metric_scores: Dict[str, float] = field(default_factory=dict)
     cluster: int = -1  # K-means cluster label (-1 = unassigned)
     same_cluster_as_reference: bool = False  # True if in same cluster as reference player
+    low_confidence: bool = False  # True when similarity score is below threshold
 
 
 @dataclass
@@ -183,12 +196,46 @@ def score_candidates(
     Returns
     -------
     list[Candidate] sorted by score descending (higher = more similar).
+    Always returns at least min(20, total_candidates) results.  If strict
+    filtering removes all candidates the position filter is relaxed first,
+    then all filters are dropped, to guarantee a non-empty result.
     """
+    if not candidates or not weights:
+        return candidates
+
+    original_candidates = list(candidates)  # preserve unfiltered pool
+
     if filters is not None:
         candidates = filter_candidates(candidates, filters)
 
-    if not candidates or not weights:
-        return candidates
+        # Fallback 1: if position filter removed all candidates, retry
+        # without position restriction (most common cause of 0 results).
+        if not candidates and filters.positions is not None:
+            _log.info(
+                "Position filter left 0 candidates — retrying without "
+                "position restriction (%d candidates in pool)",
+                len(original_candidates),
+            )
+            relaxed = ShortlistFilters(
+                max_age=filters.max_age,
+                min_age=filters.min_age,
+                max_market_value=filters.max_market_value,
+                min_minutes_played=filters.min_minutes_played,
+                positions=None,  # drop position filter
+                leagues=filters.leagues,
+                max_power_ranking=filters.max_power_ranking,
+            )
+            candidates = filter_candidates(original_candidates, relaxed)
+
+        # Fallback 2: if *all* filters removed every candidate, use the
+        # full unfiltered pool so we always return something.
+        if not candidates:
+            _log.info(
+                "All filters left 0 candidates — using full unfiltered "
+                "pool (%d candidates)",
+                len(original_candidates),
+            )
+            candidates = original_candidates
 
     # No reference player → fall back to z-score ranking
     if reference_per90 is None:
@@ -258,6 +305,12 @@ def score_candidates(
 
     # Sort by score descending (most similar first)
     candidates.sort(key=lambda c: c.score, reverse=True)
+
+    # Mark low-confidence candidates so the UI can flag them.
+    for c in candidates:
+        if c.score < _LOW_CONFIDENCE_THRESHOLD:
+            c.low_confidence = True
+
     return candidates
 
 
