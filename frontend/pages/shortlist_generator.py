@@ -28,6 +28,7 @@ from backend.models.shortlist_scorer import (
     MIN_MINUTES_THRESHOLD,
     ShortlistFilters,
     compute_percentage_changes,
+    filter_candidates as _filter_candidates_fn,
     score_candidates,
 )
 from backend.utils.league_registry import LEAGUES
@@ -498,12 +499,11 @@ def render():
 
     # Count how many candidates would survive each filter independently
     # (for the debug expander — gives users actionable info).
-    from backend.models.shortlist_scorer import filter_candidates as _fc
-    _diag_minutes_pass = len(_fc(
+    _diag_minutes_pass = len(_filter_candidates_fn(
         candidates,
         ShortlistFilters(min_minutes_played=filters.min_minutes_played),
     )) if filters.min_minutes_played else total_before_filter
-    _diag_position_pass = len(_fc(
+    _diag_position_pass = len(_filter_candidates_fn(
         candidates,
         ShortlistFilters(positions=filters.positions),
     )) if filters.positions else total_before_filter
@@ -517,7 +517,7 @@ def render():
 
     # ── Debug expander ────────────────────────────────────────────────────
     with st.expander(
-        f"🔍 Debug: pipeline diagnostics",
+        "🔍 Debug: Pipeline Diagnostics",
         expanded=display_count == 0,
     ):
         st.markdown(
