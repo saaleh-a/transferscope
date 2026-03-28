@@ -221,7 +221,11 @@ class TestPaperHeuristicPlayerRating(unittest.TestCase):
     """Player quality modifier: elite players retain more individual output."""
 
     def test_high_rated_player_retains_more_on_upgrade(self):
-        """A 7.5-rated player should change less than a 5.5-rated player on upgrade."""
+        """A 7.5-rated player should deviate less from baseline than a 5.5-rated player.
+
+        The quality_scale modifier reduces effective_team_inf for elite players,
+        meaning they are less pulled toward the new team's averages on upgrade.
+        """
         player = _uniform_per90(1.0)
         result_elite = paper_heuristic_predict(
             player_per90=player,
@@ -237,16 +241,13 @@ class TestPaperHeuristicPlayerRating(unittest.TestCase):
             change_relative_ability=15.0,
             player_rating=5.5,
         )
-        # For a metric highly influenced by team (e.g. successful_passes),
-        # the elite player should deviate less from their original value
+        # For team-influenced metrics, the elite player (higher quality_scale
+        # → lower effective_team_inf) should deviate less from their own value.
         elite_diff = abs(result_elite["successful_passes"] - 1.0)
         avg_diff = abs(result_avg["successful_passes"] - 1.0)
-        # Not guaranteed for every metric, but for team-influenced ones
-        # the elite player's quality_scale makes effective_team_inf smaller
-        # so they change less.
-        # This is a soft check — just verify the mechanism exists
-        self.assertIsInstance(result_elite["successful_passes"], float)
-        self.assertIsInstance(result_avg["successful_passes"], float)
+        self.assertLess(elite_diff, avg_diff,
+            "Elite player (7.5 rating) should change less than average player (5.5) "
+            "for team-influenced metric on upgrade")
 
     def test_elite_protection_halved_for_downgrades(self):
         """Asymmetric: elite players not fully protected on downgrades."""
