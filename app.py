@@ -6,6 +6,7 @@ Tactical Noir UI: dark precision instrument for football transfer intelligence.
 import logging
 import os
 import threading
+import sys
 
 import streamlit as st
 
