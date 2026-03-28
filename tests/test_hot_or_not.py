@@ -72,7 +72,7 @@ def test_mixed_signals_strong_positive_avg_hot():
     pct = {
         "expected_goals": 18.5,
         "chances_created": 42.6,
-        "possession_won_final_3rd": 485.3,  # inflated defensive metric
+        "possession_won_final_3rd": 485.3,  # high % change from low baseline (~0.15 per 90)
         "successful_crosses": -48.9,
         "successful_dribbles": -21.4,
         "pass_completion_pct": -1.2,
@@ -94,10 +94,17 @@ def test_mixed_signals_strong_negative_avg_not():
 
 # ── Edge cases around the mixed override boundary ────────────────────────────
 
-def test_mixed_at_exactly_threshold_is_tepid():
-    """avg_change exactly at ±10% → mixed override still applies."""
+def test_mixed_at_exactly_positive_threshold_is_tepid():
+    """avg_change exactly at +10% → mixed override still applies."""
     pct = {"a": 15.0, "b": 12.0, "c": -15.0, "d": -12.0}
     verdict, _, _ = _verdict(avg_change=10.0, pct_changes=pct)
+    assert verdict == "TEPID"
+
+
+def test_mixed_at_exactly_negative_threshold_is_tepid():
+    """avg_change exactly at -10% → mixed override still applies."""
+    pct = {"a": 15.0, "b": 12.0, "c": -15.0, "d": -12.0}
+    verdict, _, _ = _verdict(avg_change=-10.0, pct_changes=pct)
     assert verdict == "TEPID"
 
 
