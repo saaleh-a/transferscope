@@ -41,23 +41,43 @@ _LABELS: Dict[str, str] = {
 }
 
 
-def _verdict(avg_change: float, has_data: bool = True) -> tuple:
-    """Return (verdict, color, emoji) based on average % change.
+_MIDFIELDER_METRICS: frozenset = frozenset({
+    "successful_passes", "pass_completion_pct", "accurate_long_balls",
+    "chances_created",
+})
 
-    Thresholds calibrated to the paper's case studies:
-    - HOT  (> +3%): Metrics predicted to meaningfully improve on average.
-    - TEPID (-3% to +3%): Roughly neutral transfer — marginal impact.
-    - NOT  (< -3%): Metrics predicted to meaningfully decline on average.
 
-    Previous thresholds were ±5% which was too strict — most realistic
-    transfers produce average changes of 5-15%, so a ±5% dead zone
-    made almost everything TEPID.
+def _verdict(
+    avg_change: float,
+    pct_changes: Dict[str, float],
+    has_data: bool = True,
+) -> tuple:
+    """Return (verdict, color, emoji) based on weighted average % change.
+
+    Thresholds (paper Section 5):
+    - HOT  (> +5%): Weighted average improvement across key position metrics.
+    - TEPID (-5% to +5%): Marginal impact, OR mixed signals where some
+      metrics improve strongly while others decline strongly.
+    - NOT  (< -5%): Weighted average decline across key position metrics.
+
+    Mixed signals override: if both strong improvers (>+10%) and strong
+    decliners (<-10%) exist among the metrics, the verdict is TEPID
+    regardless of the average.  This prevents a misleading HOT/NOT
+    when the picture is genuinely mixed.
     """
     if not has_data:
         return "UNKNOWN", "#888888", "question"
-    if avg_change > 3:
+
+    # Mixed signals check: strong movement in both directions
+    strong_up = sum(1 for v in pct_changes.values() if v > 10)
+    strong_down = sum(1 for v in pct_changes.values() if v < -10)
+    mixed = strong_up >= 2 and strong_down >= 2
+
+    if mixed:
+        return "TEPID", "#E3A507", "thinking_face"
+    if avg_change > 5:
         return "HOT", "#2DD4A8", "fire"
-    elif avg_change > -3:
+    elif avg_change > -5:
         return "TEPID", "#E3A507", "thinking_face"
     else:
         return "NOT", "#F45B69", "x"
@@ -291,15 +311,27 @@ def render():
     norm_pos = normalize_position(position)
 
     def _metric_weight(metric: str) -> float:
-        """Return position-aware weight for a metric."""
-        if norm_pos == "Forward" and metric in OFFENSIVE_METRICS:
-            return 1.5
-        if norm_pos == "Forward" and metric in DEFENSIVE_METRICS:
-            return 0.5
-        if norm_pos == "Defender" and metric in DEFENSIVE_METRICS:
-            return 1.5
-        if norm_pos == "Defender" and metric in OFFENSIVE_METRICS:
-            return 0.5
+        """Return position-aware weight for a metric.
+
+        Forwards:    offensive 1.5×, defensive 0.5×
+        Defenders:   defensive 1.5×, offensive 0.5×
+        Midfielders: passing/chance-creation 1.5×, defensive 0.75×
+        """
+        if norm_pos == "Forward":
+            if metric in OFFENSIVE_METRICS:
+                return 1.5
+            if metric in DEFENSIVE_METRICS:
+                return 0.5
+        elif norm_pos == "Defender":
+            if metric in DEFENSIVE_METRICS:
+                return 1.5
+            if metric in OFFENSIVE_METRICS:
+                return 0.5
+        elif norm_pos == "Midfielder":
+            if metric in _MIDFIELDER_METRICS:
+                return 1.5
+            if metric in DEFENSIVE_METRICS:
+                return 0.75
         return 1.0
 
     weighted_changes: list = []
@@ -311,7 +343,7 @@ def render():
 
     avg_change = sum(weighted_changes) / weight_sum if weight_sum > 0 else 0
 
-    verdict, color, emoji = _verdict(avg_change, has_data=has_real_data)
+    verdict, color, emoji = _verdict(avg_change, pct_changes, has_data=has_real_data)
 
     st.markdown("---")
 
@@ -347,25 +379,76 @@ def render():
     except Exception as e:
         st.warning(f"Could not load transfer history: {e}")
 
-    # ── Top 3 changes ────────────────────────────────────────────────────
-    section_header("Key Predicted Changes", "Top metric movements")
+    # ── Elo step-up / step-down context ─────────────────────────────────
+    if source_ranking and target_ranking:
+        pr_diff = target_norm - source_norm
+        direction = "step-up ⬆️" if pr_diff > 0 else "step-down ⬇️"
+        st.info(
+            f"**Elo context:** {current_team} ({source_norm:.1f}) → "
+            f"{target_club} ({target_norm:.1f}) — "
+            f"**{abs(pr_diff):.1f}-point {direction}**"
+        )
 
-    sorted_changes = sorted(pct_changes.items(), key=lambda x: abs(x[1]), reverse=True)
-    top3 = sorted_changes[:3]
+    # ── Top 3 Improving + Top 3 Declining ────────────────────────────────
+    sorted_improving = sorted(
+        ((m, c) for m, c in pct_changes.items() if c > 0),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    sorted_declining = sorted(
+        ((m, c) for m, c in pct_changes.items() if c < 0),
+        key=lambda x: x[1],
+    )
 
-    cols = st.columns(3)
-    for i, (metric, change) in enumerate(top3):
-        with cols[i]:
-            label = _LABELS.get(metric, metric)
-            current_val = current_per90_clean.get(metric, 0)
-            pred_val = predicted.get(metric, 0)
-            delta_color = "normal" if change >= 0 else "inverse"
-            st.metric(
-                label=label,
-                value=f"{pred_val:.2f}",
-                delta=f"{change:+.1f}%",
-                delta_color=delta_color,
-            )
+    top3_improving = sorted_improving[:3]
+    top3_declining = sorted_declining[:3]
+
+    if top3_improving:
+        section_header("Top Improving Metrics", "Predicted gains at new club")
+        cols = st.columns(min(3, len(top3_improving)))
+        for i, (metric, change) in enumerate(top3_improving):
+            with cols[i]:
+                label = _LABELS.get(metric, metric)
+                pred_val = predicted.get(metric, 0)
+                st.metric(
+                    label=label,
+                    value=f"{pred_val:.2f}",
+                    delta=f"{change:+.1f}%",
+                    delta_color="normal",
+                )
+
+    if top3_declining:
+        section_header("Top Declining Metrics", "Predicted drops at new club")
+        cols = st.columns(min(3, len(top3_declining)))
+        for i, (metric, change) in enumerate(top3_declining):
+            with cols[i]:
+                label = _LABELS.get(metric, metric)
+                pred_val = predicted.get(metric, 0)
+                st.metric(
+                    label=label,
+                    value=f"{pred_val:.2f}",
+                    delta=f"{change:+.1f}%",
+                    delta_color="inverse",
+                )
+
+    # ── Signal strength confidence ───────────────────────────────────────
+    strong_signal = sum(1 for v in pct_changes.values() if abs(v) > 5)
+    near_zero = sum(1 for v in pct_changes.values() if abs(v) <= 2)
+    total_metrics = len(pct_changes)
+
+    if total_metrics > 0:
+        signal_ratio = strong_signal / total_metrics
+        if signal_ratio >= 0.5:
+            signal_label = "🟢 High confidence"
+            signal_desc = f"{strong_signal}/{total_metrics} metrics show strong signal (>5% change)"
+        elif signal_ratio >= 0.25:
+            signal_label = "🟡 Moderate confidence"
+            signal_desc = f"{strong_signal}/{total_metrics} metrics show strong signal, {near_zero} near zero"
+        else:
+            signal_label = "🔴 Low confidence"
+            signal_desc = f"Only {strong_signal}/{total_metrics} metrics show strong signal — most changes are marginal"
+
+        st.markdown(f"**Signal strength:** {signal_label} — {signal_desc}")
 
     # ── Quick summary ────────────────────────────────────────────────────
     st.markdown("---")
@@ -375,14 +458,7 @@ def render():
 
     st.markdown(
         f"**Summary:** {improving} metrics improving, {stable} stable, "
-        f"{declining} declining across 13 core metrics."
+        f"{declining} declining across 13 core metrics.  "
+        f"Weighted average change: **{avg_change:+.1f}%** "
+        f"(position: {norm_pos})."
     )
-
-    if source_ranking and target_ranking:
-        pr_diff = target_norm - source_norm
-        direction = "stronger" if pr_diff > 0 else "weaker"
-        st.markdown(
-            f"**Club context:** {target_club} is rated "
-            f"{abs(pr_diff):.1f} points {direction} than {current_team} "
-            f"in global Power Rankings."
-        )
