@@ -6,10 +6,9 @@ Tactical Noir UI: dark precision instrument for football transfer intelligence.
 import logging
 import os
 import threading
-import sys
 
 import streamlit as st
-print("Streamlit Python:", sys.executable, flush=True)
+
 _log = logging.getLogger(__name__)
 
 st.set_page_config(
