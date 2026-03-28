@@ -562,10 +562,9 @@ def render():
         )
 
     if not teammate_per90s and not league_per90s:
-        st.info(
+        st.warning(
             "⚠️ League context data unavailable — could not load teammate or "
-            "league-level per-90 stats. The player marker is shown without "
-            "comparative context."
+            "league-level per-90 stats. Swarm plots cannot be rendered."
         )
         _log.warning(
             "No teammate or league per-90 data for swarm plots "
@@ -573,10 +572,10 @@ def render():
             team_id,
             tournament_id,
         )
-
-    swarm_plot.show_swarm_grid(
-        player_name=player_name,
-        player_per90=current_per90_clean,
-        teammate_per90s=teammate_per90s,
-        league_per90s=league_per90s,
-    )
+    else:
+        swarm_plot.show_swarm_grid(
+            player_name=player_name,
+            player_per90=current_per90_clean,
+            teammate_per90s=teammate_per90s,
+            league_per90s=league_per90s,
+        )
