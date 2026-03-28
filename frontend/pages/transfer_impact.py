@@ -98,7 +98,7 @@ def render():
             st.warning(f"Club search failed: {e}")
             club_results = []
     target_club_display = target_club_query
-    target_team_id = None  # Initialise before conditional to prevent NameError
+    target_team_id = None  # Initialize before conditional to prevent NameError
 
     if club_results:
         club_options = {
@@ -508,7 +508,7 @@ def render():
     else:
         st.info(
             "League data unavailable — league snapshots could not be loaded "
-            "for either the origin or target league."
+            "for the origin or target league."
         )
         _log.warning(
             "No league snapshots available: source='%s', target='%s'",
