@@ -93,10 +93,8 @@ class TestSofascoreRetry(unittest.TestCase):
     @patch("backend.data.sofascore_client._http.get")
     def test_no_retry_on_404(self, mock_get):
         """_get should NOT retry on 404 (non-retryable)."""
-        import requests as req
         resp_404 = MagicMock()
         resp_404.status_code = 404
-        resp_404.raise_for_status.side_effect = req.exceptions.HTTPError("404")
 
         mock_get.return_value = resp_404
 

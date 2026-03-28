@@ -213,7 +213,12 @@ def _get(path: str) -> Optional[dict]:
                 )
                 time.sleep(delay)
                 continue
-            resp.raise_for_status()
+            # Non-retryable HTTP errors — return None immediately.
+            # Explicit check avoids raise_for_status() whose exception
+            # hierarchy differs between tls_requests and stdlib requests.
+            if resp.status_code >= 400:
+                _log.warning("Sofascore HTTP %d on %s", resp.status_code, path)
+                return None
             return resp.json()
         except (ConnectionError, OSError) as exc:
             # tls_requests raises OSError when its native TLS library is
@@ -233,7 +238,7 @@ def _get(path: str) -> Optional[dict]:
             )
             time.sleep(delay)
         except Exception as exc:
-            # If tls_requests raises a non-standard exception, fall back
+            # If tls_requests raises a non-standard exception, fall back once.
             if _http is not _stdlib_requests:
                 _log.warning(
                     "tls_requests error (%s), falling back to stdlib requests",

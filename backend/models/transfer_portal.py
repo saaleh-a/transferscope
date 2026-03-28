@@ -428,7 +428,7 @@ class TransferPortalModel:
         # features and return z-scores instead of real per-90 values.
         parent_dir = os.path.dirname(directory)
         scaler_path = os.path.join(parent_dir, "feature_scaler.pkl")
-        if self._scaler is None and os.path.exists(scaler_path):
+        if not self._scaler and os.path.exists(scaler_path):
             self._scaler = joblib.load(scaler_path)
 
         target_scaler_path = os.path.join(parent_dir, "target_scalers.pkl")
