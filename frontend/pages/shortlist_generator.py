@@ -25,8 +25,10 @@ from backend.features import power_rankings
 from backend.features.adjustment_models import paper_heuristic_predict
 from backend.models.shortlist_scorer import (
     Candidate,
+    MIN_MINUTES_THRESHOLD,
     ShortlistFilters,
     compute_percentage_changes,
+    filter_candidates as _filter_candidates_fn,
     score_candidates,
 )
 from backend.utils.league_registry import LEAGUES
@@ -91,6 +93,7 @@ def _collect_league_candidates(
         return []
 
     candidates: List[Candidate] = []
+    skipped = 0
     for lp in league_players:
         lp_id = lp.get("id")
         if lp_id == player_id:
@@ -101,51 +104,64 @@ def _collect_league_candidates(
         if not any(lp_per90.get(m) is not None for m in CORE_METRICS):
             continue
 
-        lp_current = {}
-        for m in CORE_METRICS:
-            v = lp_per90.get(m)
-            lp_current[m] = v if v is not None else 0
+        try:
+            lp_current = {}
+            for m in CORE_METRICS:
+                v = lp_per90.get(m)
+                lp_current[m] = v if v is not None else 0
 
-        # Paper-aligned prediction: use team-position style data
-        # to predict how this candidate would perform at the source team.
-        lp_team = lp.get("team", "")
-        lp_ranking = power_rankings.get_team_ranking(lp_team)
-        lp_norm = lp_ranking.normalized_score if lp_ranking else 50.0
-        lp_league = lp_ranking.league_mean_normalized if lp_ranking else 50.0
-        # Relative ability change if player moved to the source team
-        delta_ra = (source_norm - source_league) - (lp_norm - lp_league)
+            # Paper-aligned prediction: use team-position style data
+            # to predict how this candidate would perform at the source team.
+            lp_team = lp.get("team", "")
+            lp_ranking = power_rankings.get_team_ranking(lp_team)
+            lp_norm = lp_ranking.normalized_score if lp_ranking else 50.0
+            lp_league = lp_ranking.league_mean_normalized if lp_ranking else 50.0
+            # Relative ability change if player moved to the source team
+            delta_ra = (source_norm - source_league) - (lp_norm - lp_league)
 
-        # Use the candidate's own stats as a proxy for their team's
-        # position average (fetching each candidate's team would be
-        # too many API calls).  The source team's position average
-        # is the real tactical style target.
-        predicted = paper_heuristic_predict(
-            player_per90=lp_current,
-            source_pos_avg=lp_current,
-            target_pos_avg=source_pos_avg,
-            change_relative_ability=delta_ra,
-            player_rating=lp.get("rating"),
-            source_league_mean=lp_league,
-            target_league_mean=source_league,
+            # Use the candidate's own stats as a proxy for their team's
+            # position average (fetching each candidate's team would be
+            # too many API calls).  The source team's position average
+            # is the real tactical style target.
+            predicted = paper_heuristic_predict(
+                player_per90=lp_current,
+                source_pos_avg=lp_current,
+                target_pos_avg=source_pos_avg,
+                change_relative_ability=delta_ra,
+                player_rating=lp.get("rating"),
+                source_league_mean=lp_league,
+                target_league_mean=source_league,
+            )
+
+            # Normalize position for consistent filtering
+            raw_pos = lp.get("position", "Unknown")
+            norm_pos = normalize_position(raw_pos)
+
+            candidates.append(Candidate(
+                player_id=lp_id,
+                name=lp.get("name", "Unknown"),
+                team=lp_team,
+                position=norm_pos if norm_pos != "Unknown" else raw_pos,
+                age=lp.get("age"),
+                minutes_played=lp.get("minutes_played"),
+                league=league_name,
+                predicted_per90=predicted,
+                current_per90=lp_current,
+                club_power_ranking=lp_norm,
+                rating=lp.get("rating"),
+            ))
+        except Exception as exc:
+            skipped += 1
+            _log.debug(
+                "Skipped player %s (id=%s) in %s: %s",
+                lp.get("name", "?"), lp_id, league_name, exc,
+            )
+
+    if skipped:
+        _log.info(
+            "League %s: %d players built, %d skipped due to errors",
+            league_name, len(candidates), skipped,
         )
-
-        # Normalize position for consistent filtering
-        raw_pos = lp.get("position", "Unknown")
-        norm_pos = normalize_position(raw_pos)
-
-        candidates.append(Candidate(
-            player_id=lp_id,
-            name=lp.get("name", "Unknown"),
-            team=lp_team,
-            position=norm_pos if norm_pos != "Unknown" else raw_pos,
-            age=lp.get("age"),
-            minutes_played=lp.get("minutes_played"),
-            league=league_name,
-            predicted_per90=predicted,
-            current_per90=lp_current,
-            club_power_ranking=lp_norm,
-            rating=lp.get("rating"),
-        ))
 
     return candidates
 
@@ -223,11 +239,13 @@ def render():
     section_header("Filters", "Narrow the candidate pool")
     fcol1, fcol2, fcol3 = st.columns(3)
     with fcol1:
-        # Defaults: age 35 (wide enough for experienced targets), min 200 mins
-        # (low to avoid excluding sparse-data candidates — None-passthrough
-        # filter design means unknowns pass through anyway).
+        # Defaults: age 35 (wide enough for experienced targets), min 270 mins
+        # (≈3 games — low to avoid excluding sparse-data candidates.
+        # None-passthrough filter design means unknowns pass through anyway).
         max_age = st.number_input("Max age", 16, 45, 35, key="f_age")
-        min_minutes = st.number_input("Min minutes played", 0, 5000, 200, key="f_mins")
+        min_minutes = st.number_input(
+            "Min minutes played", 0, 5000, MIN_MINUTES_THRESHOLD, key="f_mins",
+        )
     with fcol2:
         league_names = ["Any"] + [l.name for l in LEAGUES.values()]
         selected_leagues = st.multiselect("Leagues", league_names, default=["Any"], key="f_leagues")
@@ -362,15 +380,22 @@ def render():
             if li > 0:
                 time.sleep(_INTER_LEAGUE_DELAY)
 
-            league_candidates = _collect_league_candidates(
-                tid=tid,
-                season_id=selected_season_id,
-                player_id=player["id"],
-                source_norm=source_norm,
-                source_league=source_league,
-                source_pos_avg=source_pos_avg,
-                league_name=league_info.name,
-            )
+            try:
+                league_candidates = _collect_league_candidates(
+                    tid=tid,
+                    season_id=selected_season_id,
+                    player_id=player["id"],
+                    source_norm=source_norm,
+                    source_league=source_league,
+                    source_pos_avg=source_pos_avg,
+                    league_name=league_info.name,
+                )
+            except Exception as exc:
+                _log.warning(
+                    "Unhandled error scanning league %s: %s",
+                    league_info.name, exc,
+                )
+                league_candidates = []
 
             if league_candidates:
                 leagues_with_data += 1
@@ -469,9 +494,43 @@ def render():
         for m in CORE_METRICS
     }
 
-    # Score candidates using k-means clustering + weighted distance
+    # ── Pre-filter diagnostics ───────────────────────────────────────────
     total_before_filter = len(candidates)
+
+    # Count how many candidates would survive each filter independently
+    # (for the debug expander — gives users actionable info).
+    _diag_minutes_pass = len(_filter_candidates_fn(
+        candidates,
+        ShortlistFilters(min_minutes_played=filters.min_minutes_played),
+    )) if filters.min_minutes_played else total_before_filter
+    _diag_position_pass = len(_filter_candidates_fn(
+        candidates,
+        ShortlistFilters(positions=filters.positions),
+    )) if filters.positions else total_before_filter
+
+    # Score candidates using k-means clustering + weighted distance
     scored = score_candidates(candidates, weights, filters, reference_per90=reference_per90)
+
+    # Guarantee at least top 20 results (the scorer already handles
+    # filter relaxation internally, but double-check here).
+    display_count = min(len(scored), 20) if scored else 0
+
+    # ── Debug expander ────────────────────────────────────────────────────
+    with st.expander(
+        "🔍 Debug: Pipeline Diagnostics",
+        expanded=display_count == 0,
+    ):
+        st.markdown(
+            f"- **Leagues scanned:** {total_leagues}\n"
+            f"- **Players fetched:** {total_before_filter}\n"
+            f"- **Passing minutes filter** (≥{filters.min_minutes_played or 0} min): "
+            f"{_diag_minutes_pass}\n"
+            f"- **Passing position filter** "
+            f"({', '.join(filters.positions) if filters.positions else 'Any'}): "
+            f"{_diag_position_pass}\n"
+            f"- **Final shortlist count:** {len(scored)}\n"
+            f"- **Displayed:** {display_count}"
+        )
 
     if not scored:
         st.warning(
@@ -483,7 +542,7 @@ def render():
 
     # ── Display results ──────────────────────────────────────────────────
     section_header(
-        f"Top {min(len(scored), 20)} of {len(scored)} Candidates",
+        f"Top {display_count} of {len(scored)} Candidates",
         f"Ranked by style similarity (k-means clustering) — {total_before_filter} scanned, "
         f"{len(scored)} passed filters",
     )
@@ -495,6 +554,7 @@ def render():
         top_str = ", ".join(
             f"{_LABELS.get(m, m)}: {v:+.1f}%" for m, v in top_changes
         )
+        confidence = "⚠️ Low" if c.low_confidence else "✅ Good"
         rows.append({
             "Rank": len(rows) + 1,
             "Player": c.name,
@@ -504,6 +564,7 @@ def render():
             "Age": c.age if c.age is not None else "—",
             "Rating": f"{c.rating:.2f}" if c.rating is not None else "—",
             "Similarity": f"{c.score:.1%}",
+            "Confidence": confidence,
             "Cluster": "✓ Same" if c.same_cluster_as_reference else ("○ Diff" if c.cluster >= 0 else "—"),
             "Top Changes": top_str,
         })
