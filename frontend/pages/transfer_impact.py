@@ -98,6 +98,7 @@ def render():
             st.warning(f"Club search failed: {e}")
             club_results = []
     target_club_display = target_club_query
+    target_team_id = None  # Initialize before conditional to prevent NameError
 
     if club_results:
         club_options = {
@@ -455,6 +456,66 @@ def render():
     # ── (d) Swarm plots — with real league context data ──────────────────
     section_header("League Context", "Player positioning vs teammates and league")
 
+    # ── League snapshot lookups (null-guarded) ────────────────────────────
+    source_snapshot = None
+    target_snapshot = None
+
+    if src_league:
+        source_snapshot = power_rankings.get_league_snapshot(src_league)
+        if source_snapshot is None:
+            _log.warning(
+                "League snapshot unavailable for source league '%s'", src_league
+            )
+    else:
+        _log.warning(
+            "Source league code is None (team: '%s') — cannot look up league snapshot",
+            current_team,
+        )
+
+    if tgt_league:
+        target_snapshot = power_rankings.get_league_snapshot(tgt_league)
+        if target_snapshot is None:
+            _log.warning(
+                "League snapshot unavailable for target league '%s'", tgt_league
+            )
+    else:
+        _log.warning(
+            "Target league code is None (team: '%s') — cannot look up league snapshot",
+            target_club_display,
+        )
+
+    # Show league context summary cards
+    if source_snapshot or target_snapshot:
+        lc1, lc2 = st.columns(2)
+        with lc1:
+            if source_snapshot:
+                st.metric(
+                    f"📊 {source_snapshot.league_name} (origin)",
+                    f"{source_snapshot.mean_normalized:.1f}",
+                    help="Average league Power Rating (0–100 scale)",
+                )
+            else:
+                st.info("Origin league data unavailable")
+        with lc2:
+            if target_snapshot:
+                st.metric(
+                    f"📊 {target_snapshot.league_name} (target)",
+                    f"{target_snapshot.mean_normalized:.1f}",
+                    help="Average league Power Rating (0–100 scale)",
+                )
+            else:
+                st.info("Target league data unavailable")
+    else:
+        st.info(
+            "League data unavailable — league snapshots could not be loaded "
+            "for the origin or target league."
+        )
+        _log.warning(
+            "No league snapshots available: source='%s', target='%s'",
+            src_league,
+            tgt_league,
+        )
+
     # Reuse teammate data from the position-average fetch where possible
     teammate_per90s: List[Dict] = []
     league_per90s: List[Dict] = []
@@ -477,6 +538,11 @@ def render():
                         _log.warning("Failed to fetch teammate stats: %s", e)
         except Exception as e:
             _log.warning("Failed to fetch team players: %s", e)
+    else:
+        _log.warning(
+            "No team_id available for '%s' — cannot fetch teammate data",
+            current_team,
+        )
 
     # Populate league-level data from Sofascore tournament stats
     if tournament_id:
@@ -490,6 +556,23 @@ def render():
                     league_per90s.append(lp_per90)
         except Exception as e:
             _log.warning("Failed to fetch league player stats: %s", e)
+    else:
+        _log.warning(
+            "No tournament_id for player — cannot fetch league player stats"
+        )
+
+    if not teammate_per90s and not league_per90s:
+        st.info(
+            "⚠️ League context data unavailable — could not load teammate or "
+            "league-level per-90 stats. The player marker is shown without "
+            "comparative context."
+        )
+        _log.warning(
+            "No teammate or league per-90 data for swarm plots "
+            "(team_id=%s, tournament_id=%s)",
+            team_id,
+            tournament_id,
+        )
 
     swarm_plot.show_swarm_grid(
         player_name=player_name,
