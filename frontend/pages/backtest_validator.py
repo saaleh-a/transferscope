@@ -1,0 +1,472 @@
+"""Backtest Validator — compare predictions against actual post-transfer per-90.
+
+Loads historical transfer records, runs the prediction pipeline on pre-transfer
+stats, fetches actual post-transfer per-90, and displays accuracy metrics.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+from backend.data import sofascore_client
+from backend.data.sofascore_client import CORE_METRICS, normalize_position
+from backend.features import power_rankings, rolling_windows
+from backend.features.adjustment_models import paper_heuristic_predict
+from backend.models.transfer_portal import (
+    TransferPortalModel,
+    build_feature_dict,
+)
+from frontend.theme import (
+    section_header, player_info_card, COLORS, PLOTLY_LAYOUT,
+)
+
+_RECORDS_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data",
+    "models",
+    "transfer_records.json",
+)
+
+_LABELS: Dict[str, str] = {
+    "expected_goals": "xG",
+    "expected_assists": "xA",
+    "shots": "Shots",
+    "successful_dribbles": "Take-ons",
+    "successful_crosses": "Crosses",
+    "touches_in_opposition_box": "Pen. Area Entries",
+    "successful_passes": "Total Passes",
+    "pass_completion_pct": "Short Pass %",
+    "accurate_long_balls": "Long Passes",
+    "chances_created": "Passes Att 3rd",
+    "clearances": "Def Own 3rd",
+    "interceptions": "Def Mid 3rd",
+    "possession_won_final_3rd": "Def Att 3rd",
+}
+
+
+def _load_records() -> List[Dict[str, Any]]:
+    """Load transfer records from JSON, cached in session state."""
+    if "bt_records" in st.session_state:
+        return st.session_state["bt_records"]
+    if not os.path.exists(_RECORDS_PATH):
+        return []
+    with open(_RECORDS_PATH) as f:
+        records = json.load(f)
+    st.session_state["bt_records"] = records
+    return records
+
+
+def _record_label(r: Dict[str, Any]) -> str:
+    """Format a record as 'Player: From → To (Date)'."""
+    return (
+        f"{r['player_name']}: {r['from_club_name']} → "
+        f"{r['to_club_name']} ({r['transfer_date']})"
+    )
+
+
+_EPSILON = 0.001  # Minimum meaningful change threshold
+
+
+def _color_pct_error(val: float) -> str:
+    """Return CSS color for a percentage error value."""
+    if val < 10:
+        return COLORS["accent_green"]
+    elif val < 20:
+        return COLORS["accent_amber"]
+    return COLORS["accent_crimson"]
+
+
+def _is_direction_match(predicted_change: float, actual_change: float) -> bool:
+    """Return True if predicted and actual changes share the same direction."""
+    return (predicted_change > 0 and actual_change > 0) or \
+           (predicted_change < 0 and actual_change < 0)
+
+
+def _direction_icon(predicted_change: float, actual_change: float) -> str:
+    """Return ✅ or ❌ based on whether predicted direction matches actual."""
+    if abs(actual_change) < _EPSILON:
+        return "➖"  # no meaningful change
+    return "✅" if _is_direction_match(predicted_change, actual_change) else "❌"
+
+
+def render():
+    st.header("Backtest Validator")
+    st.caption(
+        "Compare model predictions against actual post-transfer per-90 stats "
+        "for historical transfers."
+    )
+
+    # ── Load records ─────────────────────────────────────────────────────
+    records = _load_records()
+    if not records:
+        st.error(
+            "No transfer records found. Expected file at "
+            f"`{_RECORDS_PATH}`."
+        )
+        return
+
+    # ── Searchable selectbox ─────────────────────────────────────────────
+    labels = [_record_label(r) for r in records]
+    selected_label = st.selectbox(
+        "Select transfer",
+        labels,
+        index=None,
+        placeholder="Search: Player: From → To (Date)",
+        key="bt_select",
+    )
+
+    if selected_label is None:
+        st.info("Select a historical transfer above to run the backtest.")
+        return
+
+    idx = labels.index(selected_label)
+    rec = records[idx]
+
+    player_id = rec["player_id"]
+    position = rec.get("position", "F")
+    from_club = rec["from_club_name"]
+    to_club = rec["to_club_name"]
+    transfer_date = rec["transfer_date"]
+    pre_tournament_id = rec["pre_transfer_tournament_id"]
+    pre_season_id = rec["pre_transfer_season_id"]
+    post_tournament_id = rec["post_transfer_tournament_id"]
+    post_season_id = rec["post_transfer_season_id"]
+
+    st.markdown("---")
+
+    # ── Pre-transfer stats ───────────────────────────────────────────────
+    with st.spinner("Fetching pre-transfer stats..."):
+        try:
+            pre_stats = sofascore_client.get_player_stats_for_season(
+                player_id, pre_tournament_id, pre_season_id
+            )
+        except Exception as e:
+            st.error(f"Failed to fetch pre-transfer stats: {e}")
+            return
+
+    pre_per90 = pre_stats.get("per90", {})
+    pre_per90_clean: Dict[str, float] = {
+        m: (pre_per90.get(m) if pre_per90.get(m) is not None else 0.0)
+        for m in CORE_METRICS
+    }
+    minutes = pre_stats.get("minutes_played", 0) or 0
+
+    player_name = pre_stats.get("name") or rec["player_name"]
+    player_position = pre_stats.get("position") or normalize_position(position)
+
+    player_info_card(
+        player_name, from_club, player_position, minutes,
+        season_label=f"Pre-transfer ({transfer_date})",
+        rating=pre_stats.get("rating"),
+    )
+
+    # ── Power Rankings ───────────────────────────────────────────────────
+    source_ranking = power_rankings.get_team_ranking(from_club)
+    target_ranking = power_rankings.get_team_ranking(to_club)
+
+    source_norm = source_ranking.normalized_score if source_ranking else 50.0
+    source_league = source_ranking.league_mean_normalized if source_ranking else 50.0
+    target_norm = target_ranking.normalized_score if target_ranking else 50.0
+    target_league = target_ranking.league_mean_normalized if target_ranking else 50.0
+
+    if source_ranking is None or target_ranking is None:
+        missing = []
+        if source_ranking is None:
+            missing.append(from_club)
+        if target_ranking is None:
+            missing.append(to_club)
+        st.warning(
+            f"⚠️ Could not find Power Ranking for: {', '.join(missing)}. "
+            "Using default (50.0) — predictions may be less accurate."
+        )
+
+    change_ra = (target_norm - target_league) - (source_norm - source_league)
+
+    # ── Team-position averages ───────────────────────────────────────────
+    source_pos_avg: Dict[str, float] = {}
+    target_pos_avg: Dict[str, float] = {}
+    from_club_id = rec.get("from_club_id")
+    to_club_id = rec.get("to_club_id")
+
+    if from_club_id:
+        try:
+            source_pos_avg, _ = sofascore_client.get_team_position_averages(
+                from_club_id, player_position
+            )
+        except Exception:
+            pass
+    if to_club_id:
+        try:
+            target_pos_avg, _ = sofascore_client.get_team_position_averages(
+                to_club_id, player_position
+            )
+        except Exception:
+            pass
+
+    if not source_pos_avg:
+        source_pos_avg = pre_per90_clean.copy()
+    if not target_pos_avg:
+        target_pos_avg = pre_per90_clean.copy()
+
+    # ── Run prediction ───────────────────────────────────────────────────
+    with st.spinner("Running prediction pipeline..."):
+        predicted: Dict[str, float] = {}
+        try:
+            model = TransferPortalModel()
+            model.load()
+            if model.fitted:
+                fd = build_feature_dict(
+                    player_per90=pre_per90_clean,
+                    team_ability_current=source_norm,
+                    team_ability_target=target_norm,
+                    league_ability_current=source_league,
+                    league_ability_target=target_league,
+                    team_pos_current=source_pos_avg,
+                    team_pos_target=target_pos_avg,
+                )
+                predicted = model.predict(fd)
+        except Exception:
+            st.warning("Model prediction unavailable, using heuristic fallback.")
+
+        if not predicted:
+            player_rating = pre_stats.get("rating")
+            predicted = paper_heuristic_predict(
+                player_per90=pre_per90_clean,
+                source_pos_avg=source_pos_avg,
+                target_pos_avg=target_pos_avg,
+                change_relative_ability=change_ra,
+                player_rating=player_rating,
+                source_league_mean=source_league,
+                target_league_mean=target_league,
+            )
+
+    # ── Fetch actual post-transfer stats ─────────────────────────────────
+    with st.spinner("Fetching actual post-transfer stats..."):
+        try:
+            post_stats = sofascore_client.get_player_stats_for_season(
+                player_id, post_tournament_id, post_season_id
+            )
+        except Exception as e:
+            st.error(f"Failed to fetch post-transfer stats: {e}")
+            post_stats = {}
+
+    post_per90 = post_stats.get("per90", {}) if post_stats else {}
+    post_minutes = (post_stats.get("minutes_played", 0) or 0) if post_stats else 0
+
+    # Check if post-transfer data is actually available
+    has_post_data = post_minutes > 0 and any(
+        post_per90.get(m) is not None for m in CORE_METRICS
+    )
+
+    if not has_post_data:
+        st.warning(
+            "⚠️ No post-transfer performance data available for this transfer. "
+            "The player may not have played enough minutes in the post-transfer "
+            f"season (tournament {post_tournament_id}, season {post_season_id}). "
+            "Predictions are shown below without actual comparison."
+        )
+        # Show predictions only
+        section_header("Predicted Per-90 (no actuals available)")
+        pred_rows = []
+        for m in CORE_METRICS:
+            pred_rows.append({
+                "Metric": _LABELS.get(m, m),
+                "Pre-Transfer": f"{pre_per90_clean.get(m, 0.0):.3f}",
+                "Predicted": f"{predicted.get(m, 0.0):.3f}",
+            })
+        st.dataframe(
+            pd.DataFrame(pred_rows),
+            use_container_width=True,
+            hide_index=True,
+        )
+        return
+
+    actual_per90: Dict[str, float] = {
+        m: (post_per90.get(m) if post_per90.get(m) is not None else 0.0)
+        for m in CORE_METRICS
+    }
+
+    # ── Comparison table ─────────────────────────────────────────────────
+    section_header("Prediction vs Actual", f"Post-transfer: {post_minutes:,} mins played")
+
+    table_rows = []
+    pct_errors: List[float] = []
+    direction_correct = 0
+    direction_total = 0
+
+    for m in CORE_METRICS:
+        pred_val = predicted.get(m, 0.0)
+        actual_val = actual_per90.get(m, 0.0)
+        pre_val = pre_per90_clean.get(m, 0.0)
+        diff = pred_val - actual_val
+
+        # Percentage error
+        if abs(actual_val) > _EPSILON:
+            pct_err = abs(diff) / abs(actual_val) * 100
+        else:
+            pct_err = 0.0 if abs(pred_val) < _EPSILON else 100.0
+        pct_errors.append(pct_err)
+
+        # Direction accuracy
+        predicted_change = pred_val - pre_val
+        actual_change = actual_val - pre_val
+        direction = _direction_icon(predicted_change, actual_change)
+        if abs(actual_change) > _EPSILON:
+            direction_total += 1
+            if _is_direction_match(predicted_change, actual_change):
+                direction_correct += 1
+
+        color = _color_pct_error(pct_err)
+        table_rows.append({
+            "Metric": _LABELS.get(m, m),
+            "Predicted": f"{pred_val:.3f}",
+            "Actual": f"{actual_val:.3f}",
+            "Difference": f"{diff:+.3f}",
+            "% Error": pct_err,
+            "Direction": direction,
+            "_pct_err_color": color,
+        })
+
+    # Build styled HTML table
+    _render_comparison_table(table_rows)
+
+    # ── Summary cards ────────────────────────────────────────────────────
+    st.markdown("---")
+    section_header("Summary", "Aggregate accuracy metrics")
+
+    mean_pct_error = sum(pct_errors) / len(pct_errors) if pct_errors else 0.0
+    within_10 = sum(1 for e in pct_errors if e < 10)
+    within_20 = sum(1 for e in pct_errors if e < 20)
+    dir_accuracy = (
+        direction_correct / direction_total * 100
+        if direction_total > 0 else 0.0
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Mean Abs % Error", f"{mean_pct_error:.1f}%")
+    with col2:
+        st.metric("Metrics < 10% Error", f"{within_10} / {len(CORE_METRICS)}")
+    with col3:
+        st.metric("Metrics < 20% Error", f"{within_20} / {len(CORE_METRICS)}")
+    with col4:
+        st.metric("Direction Accuracy", f"{dir_accuracy:.0f}%")
+
+    # ── Plotly grouped bar chart ─────────────────────────────────────────
+    st.markdown("---")
+    section_header("Predicted vs Actual", "Per-90 comparison by metric")
+
+    metric_labels = [_LABELS.get(m, m) for m in CORE_METRICS]
+    pred_vals = [predicted.get(m, 0.0) for m in CORE_METRICS]
+    actual_vals = [actual_per90.get(m, 0.0) for m in CORE_METRICS]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="Predicted",
+        x=metric_labels,
+        y=pred_vals,
+        marker_color=COLORS["accent_gold"],
+        opacity=0.9,
+    ))
+    fig.add_trace(go.Bar(
+        name="Actual",
+        x=metric_labels,
+        y=actual_vals,
+        marker_color=COLORS["accent_green"],
+        opacity=0.9,
+    ))
+    fig.update_layout(
+        **PLOTLY_LAYOUT,
+        barmode="group",
+        title="Predicted vs Actual Per-90",
+        xaxis_title="Metric",
+        yaxis_title="Per-90 Value",
+        height=450,
+    )
+    fig.update_xaxes(tickangle=-45)
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Direction accuracy detail ────────────────────────────────────────
+    st.markdown("---")
+    section_header("Direction Accuracy", "Did the model predict up/down correctly?")
+
+    dir_rows = []
+    for m in CORE_METRICS:
+        pre_val = pre_per90_clean.get(m, 0.0)
+        pred_val = predicted.get(m, 0.0)
+        actual_val = actual_per90.get(m, 0.0)
+        pred_change = pred_val - pre_val
+        actual_change = actual_val - pre_val
+
+        if abs(actual_change) < _EPSILON:
+            pred_dir = "↑" if pred_change > 0 else ("↓" if pred_change < 0 else "→")
+            dir_rows.append({
+                "Metric": _LABELS.get(m, m),
+                "Predicted Direction": pred_dir,
+                "Actual Direction": "→ (no change)",
+                "Result": "➖",
+            })
+        else:
+            pred_dir = "↑" if pred_change > 0 else "↓"
+            actual_dir = "↑" if actual_change > 0 else "↓"
+            correct = _is_direction_match(pred_change, actual_change)
+            dir_rows.append({
+                "Metric": _LABELS.get(m, m),
+                "Predicted Direction": pred_dir,
+                "Actual Direction": actual_dir,
+                "Result": "✅" if correct else "❌",
+            })
+
+    st.dataframe(
+        pd.DataFrame(dir_rows),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def _render_comparison_table(rows: List[Dict[str, Any]]) -> None:
+    """Render the comparison table with color-coded % Error column."""
+    header = (
+        "<table style='width:100%; border-collapse:collapse; "
+        "font-family: \"JetBrains Mono\", \"Fira Code\", monospace; font-size:0.85rem;'>"
+        "<thead><tr style='border-bottom:2px solid {border};'>"
+        "<th style='text-align:left; padding:8px; color:{text};'>Metric</th>"
+        "<th style='text-align:right; padding:8px; color:{text};'>Predicted</th>"
+        "<th style='text-align:right; padding:8px; color:{text};'>Actual</th>"
+        "<th style='text-align:right; padding:8px; color:{text};'>Difference</th>"
+        "<th style='text-align:right; padding:8px; color:{text};'>% Error</th>"
+        "<th style='text-align:center; padding:8px; color:{text};'>Direction</th>"
+        "</tr></thead><tbody>"
+    ).format(border=COLORS["border"], text=COLORS["text_secondary"])
+
+    c_border = COLORS["border"]
+    c_text = COLORS["text_primary"]
+    c_gold = COLORS["accent_gold"]
+    c_green = COLORS["accent_green"]
+
+    body = ""
+    for r in rows:
+        color = r["_pct_err_color"]
+        body += (
+            f"<tr style='border-bottom:1px solid {c_border};'>"
+            f"<td style='padding:8px; color:{c_text};'>{r['Metric']}</td>"
+            f"<td style='text-align:right; padding:8px; color:{c_gold};'>"
+            f"{r['Predicted']}</td>"
+            f"<td style='text-align:right; padding:8px; color:{c_green};'>"
+            f"{r['Actual']}</td>"
+            f"<td style='text-align:right; padding:8px; color:{c_text};'>"
+            f"{r['Difference']}</td>"
+            f"<td style='text-align:right; padding:8px; color:{color}; font-weight:600;'>"
+            f"{r['% Error']:.1f}%</td>"
+            f"<td style='text-align:center; padding:8px;'>{r['Direction']}</td>"
+            f"</tr>"
+        )
+
+    html = header + body + "</tbody></table>"
+    st.markdown(html, unsafe_allow_html=True)
