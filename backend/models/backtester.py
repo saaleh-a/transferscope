@@ -65,7 +65,6 @@ def run_backtest(
     -------
     dict — backtest report, also saved to data/models/backtest_report.json
     """
-    import joblib
 
     metric_to_idx = {m: i for i, m in enumerate(CORE_METRICS)}
     keys = _feature_keys_list()
@@ -79,14 +78,6 @@ def run_backtest(
 
     if os.path.isdir(model_dir):
         model.load(model_dir)
-        scaler_path = os.path.join(_MODELS_DIR, "feature_scaler.pkl")
-        if os.path.exists(scaler_path):
-            model._scaler = joblib.load(scaler_path)
-        # Load target scalers so predict() inverse-transforms predictions
-        # back to original per-90 space before comparison with y_test.
-        target_scaler_path = os.path.join(_MODELS_DIR, "target_scalers.pkl")
-        if os.path.exists(target_scaler_path):
-            model._target_scalers = joblib.load(target_scaler_path)
 
     has_trained = model.fitted and model._scaler is not None
 
