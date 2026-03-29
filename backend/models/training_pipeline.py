@@ -1926,7 +1926,7 @@ def run_pipeline(
         _report("Running backtest", f"{len(meta_test)} test samples")
         from backend.models.backtester import run_backtest, show_example_predictions
 
-        run_backtest(X_test, y_test, meta_test)
+        run_backtest(X_test, y_test, meta_test, meta_train=meta_train)
         show_example_predictions(meta_test, n=10)
     else:
         _report("Backtesting", "No test data available")

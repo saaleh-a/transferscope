@@ -49,6 +49,7 @@ def run_backtest(
     X_test: np.ndarray,
     y_test: np.ndarray,
     meta_test: List[Dict[str, Any]],
+    meta_train: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Run backtest on held-out test set.
 
@@ -60,11 +61,24 @@ def run_backtest(
     X_test : ndarray, shape (N, 43)
     y_test : ndarray, shape (N, 13)
     meta_test : list[dict]
+    meta_train : list[dict], optional
+        Metadata for training samples.  When provided, a data-leakage
+        check verifies no player appears in both train and test sets.
 
     Returns
     -------
     dict — backtest report, also saved to data/models/backtest_report.json
     """
+
+    if meta_train is not None:
+        train_ids = {m.get("player_id") for m in meta_train if m.get("player_id") is not None}
+        test_ids = {m.get("player_id") for m in meta_test if m.get("player_id") is not None}
+        overlap = train_ids & test_ids
+        if overlap:
+            raise ValueError(
+                f"DATA LEAKAGE: {len(overlap)} player(s) appear in both train and test sets: "
+                f"{list(overlap)[:5]}... Backtest aborted. Re-run with a clean temporal split."
+            )
 
     metric_to_idx = {m: i for i, m in enumerate(CORE_METRICS)}
     keys = _feature_keys_list()
@@ -210,6 +224,11 @@ def run_backtest(
     print(f"{'='*80}")
 
     # Save report
+    report["meta"] = {
+        "n_train": len(meta_train) if meta_train is not None else None,
+        "n_test": n,
+        "leakage_check": "passed" if meta_train is not None else "skipped",
+    }
     os.makedirs(_MODELS_DIR, exist_ok=True)
     report_path = os.path.join(_MODELS_DIR, "backtest_report.json")
     with open(report_path, "w") as f:
