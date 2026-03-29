@@ -70,9 +70,11 @@ def _verdict(
     - NOT  (< -5%): Weighted average decline across key position metrics.
 
     Mixed signals override: if both strong improvers (>+10%) and strong
-    decliners (<-10%) exist among the metrics, the verdict is TEPID
-    regardless of the average.  This prevents a misleading HOT/NOT
-    when the picture is genuinely mixed.
+    decliners (<-10%) exist among the metrics, the verdict is TEPID — but
+    only when the weighted average is moderate (within ±10%).  When the
+    position-weighted average is overwhelmingly positive or negative, the
+    net signal is strong enough to warrant a definitive HOT/NOT despite
+    some style trade-offs (e.g. a forward gaining xG but losing crosses).
     """
     if not has_data:
         return "UNKNOWN", "#888888", "question"
@@ -82,7 +84,10 @@ def _verdict(
     strong_down = sum(1 for v in pct_changes.values() if v < -_MIXED_SIGNAL_THRESHOLD)
     mixed = strong_up >= _MIXED_SIGNAL_MIN_COUNT and strong_down >= _MIXED_SIGNAL_MIN_COUNT
 
-    if mixed:
+    # Only override to TEPID when the weighted average is moderate.
+    # A strong net signal (e.g. +17% for a forward) should not be
+    # overridden by style trade-offs in secondary metrics.
+    if mixed and abs(avg_change) <= _MIXED_SIGNAL_THRESHOLD:
         return "TEPID", "#E3A507", "thinking_face"
     if avg_change > _VERDICT_THRESHOLD:
         return "HOT", "#2DD4A8", "fire"
