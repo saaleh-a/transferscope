@@ -362,20 +362,47 @@ class TestSofascoreClient(unittest.TestCase):
                     "id": 7,
                     "name": "Champions League",
                     "userCount": 5000000,
-                    "category": {},
+                    "category": {"flag": "🇪🇺", "alpha2": "EU"},
                 },
             ]
         }
-        # Should prefer domestic (has flag/alpha2) over international
+        # Should prefer domestic over CL even though CL has higher userCount
+        # CL is excluded both by ID blacklist and by alpha2="EU"
         tid = sofascore_client._discover_tournament_for_team(789)
         self.assertEqual(tid, 17)
+
+    @patch.object(sofascore_client, "_get")
+    def test_discover_tournament_for_team_skips_europa_league(self, mock_get):
+        """Europa League (id=679) should also be excluded."""
+        mock_get.return_value = {
+            "uniqueTournaments": [
+                {
+                    "id": 679,
+                    "name": "Europa League",
+                    "userCount": 3000000,
+                    "category": {"flag": "🇪🇺", "alpha2": "EU"},
+                },
+                {
+                    "id": 8,
+                    "name": "La Liga",
+                    "userCount": 800000,
+                    "category": {"flag": "spain", "alpha2": "ES"},
+                },
+            ]
+        }
+        tid = sofascore_client._discover_tournament_for_team(456)
+        self.assertEqual(tid, 8)
 
     @patch.object(sofascore_client, "_get")
     def test_discover_tournament_for_team_fallback(self, mock_get):
         """When no domestic league found, uses first tournament."""
         mock_get.return_value = {
             "uniqueTournaments": [
-                {"id": 7, "name": "Champions League", "category": {}},
+                {
+                    "id": 7,
+                    "name": "Champions League",
+                    "category": {"flag": "🇪🇺", "alpha2": "EU"},
+                },
             ]
         }
         tid = sofascore_client._discover_tournament_for_team(999)

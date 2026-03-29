@@ -1109,6 +1109,24 @@ def discover_tournament_for_team(team_id: int) -> Optional[int]:
     return _discover_tournament_for_team(team_id)
 
 
+# Known international club competition tournament IDs on Sofascore.
+# These must never be returned as a team's "domestic" league.
+_INTERNATIONAL_TOURNAMENT_IDS: frozenset = frozenset({
+    7,    # UEFA Champions League
+    679,  # UEFA Europa League
+    73,   # UEFA Europa Conference League
+    384,  # UEFA Super Cup
+    498,  # FIFA Club World Cup
+    480,  # Copa Libertadores
+    133,  # Copa Sudamericana
+    851,  # AFC Champions League
+})
+
+# Continental / international alpha2 codes used by Sofascore that do NOT
+# represent a real country.  Champions League uses "EU", for example.
+_NON_COUNTRY_ALPHA2: frozenset = frozenset({"EU", "INT", "WW"})
+
+
 def _discover_tournament_for_team(team_id: int) -> Optional[int]:
     """Fetch the primary unique tournament ID for a team via Sofascore API.
 
@@ -1138,10 +1156,19 @@ def _discover_tournament_for_team(team_id: int) -> Optional[int]:
         tid = t.get("id")
         if tid is None:
             continue
-        # Skip international tournaments (Champions League=7, Europa=679, etc.)
-        # Heuristic: domestic leagues have a "category" with a country
+
+        # Skip known international club competitions by ID
+        if int(tid) in _INTERNATIONAL_TOURNAMENT_IDS:
+            continue
+
+        # Skip tournaments whose category uses a continental alpha2 code
+        # (e.g. Champions League has alpha2="EU", not a real country)
         cat = t.get("category") or {}
-        is_domestic = cat.get("flag") is not None or cat.get("alpha2") is not None
+        alpha2 = cat.get("alpha2") or ""
+        if alpha2 in _NON_COUNTRY_ALPHA2:
+            continue
+
+        is_domestic = bool(alpha2) or cat.get("flag") is not None
         user_count = t.get("userCount") or 0
         if is_domestic and user_count > best_count:
             best = int(tid)
