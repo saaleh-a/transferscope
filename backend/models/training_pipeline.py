@@ -606,32 +606,12 @@ def build_training_sample(
     league_ability_current = from_snap.mean_normalized if from_snap else 50.0
     league_ability_target = to_snap.mean_normalized if to_snap else 50.0
 
-    # Block 4 — Team-position per-90 current (13 values)
+    # Block 4+5 — Team-position per-90 (13 values each, placeholder zeros)
+    # These are overwritten in build_full_dataset() with averages computed
+    # from the training samples themselves — zero API calls needed here.
     position = normalize_position(record.position) or "Forward"
-    try:
-        from_pos_avg, _ = sofascore_client.get_team_position_averages(
-            record.from_club_id, position
-        )
-    except Exception:
-        from_pos_avg = {m: 0.0 for m in CORE_METRICS}
-
-    team_pos_current = []
-    for m in CORE_METRICS:
-        v = from_pos_avg.get(m, 0.0)
-        team_pos_current.append(float(v) if v is not None else 0.0)
-
-    # Block 5 — Team-position per-90 target (13 values)
-    try:
-        to_pos_avg, _ = sofascore_client.get_team_position_averages(
-            record.to_club_id, position
-        )
-    except Exception:
-        to_pos_avg = {m: 0.0 for m in CORE_METRICS}
-
-    team_pos_target = []
-    for m in CORE_METRICS:
-        v = to_pos_avg.get(m, 0.0)
-        team_pos_target.append(float(v) if v is not None else 0.0)
+    team_pos_current = [0.0] * len(CORE_METRICS)
+    team_pos_target = [0.0] * len(CORE_METRICS)
 
     # Assemble the 43-feature vector
     features = np.array(
@@ -1087,19 +1067,10 @@ def build_non_transfer_sample(
     league_snap = league_snapshots.get(league_code) if league_code else None
     league_ability = league_snap.mean_normalized if league_snap else 50.0
 
-    # Team-position per-90 — same club for both
+    # Team-position per-90 — placeholder zeros, overwritten in
+    # build_full_dataset() with averages from the training data itself.
     position = normalize_position(record.position) or "Forward"
-    try:
-        pos_avg, _ = sofascore_client.get_team_position_averages(
-            record.club_id, position
-        )
-    except Exception:
-        pos_avg = {m: 0.0 for m in CORE_METRICS}
-
-    team_pos = []
-    for m in CORE_METRICS:
-        v = pos_avg.get(m, 0.0)
-        team_pos.append(float(v) if v is not None else 0.0)
+    team_pos = [0.0] * len(CORE_METRICS)
 
     # Same team → current == target for all ability and position features
     features = np.array(
@@ -1238,7 +1209,8 @@ def compute_team_position_averages(
         if not records:
             continue
         avg = {}
-        for metric in records[0].keys():
+        all_metrics = set().union(*[r.keys() for r in records])
+        for metric in all_metrics:
             vals = [r[metric] for r in records if metric in r]
             avg[metric] = float(np.mean(vals)) if vals else 0.0
         averages[key] = avg

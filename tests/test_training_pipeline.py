@@ -131,9 +131,6 @@ class TestBuildTrainingSample(unittest.TestCase):
         record = _make_mock_transfer_record()
 
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
 
         mock_pr.compute_daily_rankings.return_value = (
             {
@@ -170,9 +167,6 @@ class TestBuildTrainingSample(unittest.TestCase):
         stats = _make_mock_season_stats(900)
         stats["per90"] = partial_per90
         mock_client.get_player_stats_for_season.return_value = stats
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
 
         mock_pr.compute_daily_rankings.return_value = ({}, {})
         mock_pr.get_team_ranking.return_value = None
@@ -195,9 +189,6 @@ class TestBuildTrainingSample(unittest.TestCase):
         post_stats = _make_mock_season_stats(400)  # Below 450 threshold
 
         mock_client.get_player_stats_for_season.side_effect = [pre_stats, post_stats]
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
         mock_pr.compute_daily_rankings.return_value = ({}, {})
         mock_pr.get_team_ranking.return_value = None
 
@@ -265,9 +256,6 @@ class TestFullDatasetNoNans(unittest.TestCase):
         from backend.models.training_pipeline import TransferRecord, build_full_dataset
 
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
         mock_pr.compute_daily_rankings.return_value = ({}, {})
         mock_pr.get_team_ranking.return_value = None
 
@@ -340,9 +328,6 @@ class TestFirst1000MinuteTargets(unittest.TestCase):
 
         # Fallback season stats (should not be used for labels if logs work)
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(1350, 0.7)
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
         mock_pr.compute_daily_rankings.return_value = ({}, {})
         mock_pr.get_team_ranking.return_value = None
 
@@ -364,9 +349,6 @@ class TestFirst1000MinuteTargets(unittest.TestCase):
 
         mock_client.get_player_match_logs.return_value = []
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.8)
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
         mock_pr.compute_daily_rankings.return_value = ({}, {})
         mock_pr.get_team_ranking.return_value = None
 
@@ -410,9 +392,6 @@ class TestNonTransferSamples(unittest.TestCase):
 
         mock_client.get_player_match_logs.return_value = []
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.5)
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
         mock_client.get_league_player_stats.return_value = []
 
         mock_pr.compute_daily_rankings.return_value = ({}, {})
@@ -454,9 +433,6 @@ class TestNonTransferSamples(unittest.TestCase):
 
         mock_client.get_player_match_logs.return_value = []
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.5)
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
         mock_client.get_league_player_stats.return_value = []
         mock_pr.compute_daily_rankings.return_value = ({}, {})
         mock_pr.get_team_ranking.return_value = None
@@ -531,9 +507,6 @@ class TestNaiveLeagueExpectation(unittest.TestCase):
         # Pre-transfer per90: all metrics at 2.0
         mock_client.get_player_match_logs.return_value = []
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 2.0)
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
 
         # League player stats with known values
         league_players = [
@@ -578,15 +551,15 @@ class TestErrorHandling(unittest.TestCase):
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
     @mock.patch("backend.models.training_pipeline.power_rankings")
-    def test_uses_zero_priors_when_no_squad_data(self, mock_pr, mock_client):
-        """When get_team_position_averages raises, zeros should be used."""
+    def test_team_pos_placeholder_zeros_at_sample_level(self, mock_pr, mock_client):
+        """Team-position features are placeholder zeros at sample level,
+        to be injected later by build_full_dataset()."""
         from backend.models.training_pipeline import build_training_sample
 
         record = _make_mock_transfer_record()
 
         mock_client.get_player_match_logs.return_value = []
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.5)
-        mock_client.get_team_position_averages.side_effect = RuntimeError("API down")
         mock_client.get_league_player_stats.return_value = []
 
         mock_pr.compute_daily_rankings.return_value = ({}, {})
@@ -609,9 +582,6 @@ class TestErrorHandling(unittest.TestCase):
 
         mock_client.get_player_match_logs.return_value = []
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.5)
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
         mock_client.get_league_player_stats.return_value = []
 
         mock_pr.compute_daily_rankings.side_effect = RuntimeError("Elo service down")
@@ -640,9 +610,6 @@ class TestErrorHandling(unittest.TestCase):
 
         mock_client.get_player_match_logs.return_value = []
         mock_client.get_player_stats_for_season.return_value = stats
-        mock_client.get_team_position_averages.return_value = (
-            _make_mock_per90(0.3), []
-        )
         mock_client.get_league_player_stats.return_value = []
 
         mock_pr.compute_daily_rankings.return_value = ({}, {})
