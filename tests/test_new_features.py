@@ -245,7 +245,7 @@ class TestTransferHistory(unittest.TestCase):
         self.assertEqual(len(transfers), 2)
         self.assertEqual(transfers[0]["to_team"]["name"], "Arsenal")
         self.assertEqual(transfers[0]["from_team"]["name"], "AC Milan")
-        self.assertEqual(transfers[0]["type"], "transfer")
+        self.assertEqual(transfers[0]["type"], "Transfer")
         self.assertEqual(transfers[0]["transfer_date"], "2022-07-01")
 
     @patch.object(sofascore_client, "_get")

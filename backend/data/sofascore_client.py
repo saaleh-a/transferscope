@@ -292,6 +292,26 @@ def search_team(name: str) -> List[Dict[str, Any]]:
     return teams
 
 
+# Sofascore numeric transfer-type codes → human-readable labels
+_TRANSFER_TYPE_MAP: Dict[int, str] = {
+    1: "Transfer",
+    2: "Loan",
+    3: "Loan return",
+    4: "Free transfer",
+    5: "Swap",
+}
+
+
+def _normalize_transfer_type(raw: Any) -> str:
+    """Convert a Sofascore transfer type code to a readable label."""
+    if isinstance(raw, int):
+        return _TRANSFER_TYPE_MAP.get(raw, "Unknown")
+    if isinstance(raw, str):
+        # Already a string — title-case it for consistency
+        return raw.strip().title() if raw.strip() else "N/A"
+    return "N/A"
+
+
 def get_player_transfer_history(player_id: int) -> List[Dict[str, Any]]:
     """Fetch a player's transfer history from Sofascore.
 
@@ -328,7 +348,9 @@ def get_player_transfer_history(player_id: int) -> List[Dict[str, Any]]:
                     "id": to_team.get("id"),
                     "name": to_team.get("name", ""),
                 },
-                "type": entry.get("type") or entry.get("transferType", ""),
+                "type": _normalize_transfer_type(
+                    entry.get("type") or entry.get("transferType", "")
+                ),
             }
             transfers.append(t)
 
