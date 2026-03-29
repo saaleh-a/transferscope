@@ -61,23 +61,29 @@ _EPSILON = 0.001  # Minimum meaningful change threshold
 def _parse_season_years(name: str) -> Tuple[int, int]:
     """Parse season name to ``(start_year, end_year)``.
 
-    Examples::
+    Handles season names with text prefixes (e.g. from Sofascore API)::
 
-        "24/25"       → (2024, 2025)
-        "2024/2025"   → (2024, 2025)
-        "2024"        → (2024, 2024)
+        "24/25"                  → (2024, 2025)
+        "2024/2025"              → (2024, 2025)
+        "Liga Portugal 25/26"   → (2025, 2026)
+        "Premier League 2024/2025" → (2024, 2025)
+        "2024"                   → (2024, 2024)
+        "MLS 2025"               → (2025, 2025)
     """
     name = name.strip()
-    if "/" in name:
-        parts = name.split("/")
-        s, e = parts[0].strip(), parts[1].strip()
+    # Search for split-year pattern anywhere in the string (e.g. "25/26",
+    # "2024/2025", or "Liga Portugal 25/26").
+    m = re.search(r"(\d{2,4})\s*/\s*(\d{2,4})", name)
+    if m:
+        s, e = m.group(1), m.group(2)
         try:
             start = int(s) if len(s) == 4 else 2000 + int(s)
             end = int(e) if len(e) == 4 else 2000 + int(e)
             return (start, end)
         except ValueError:
-            return (0, 0)
-    m = re.match(r"(\d{4})", name)
+            pass  # Fall through to standalone year check below
+    # Search for a standalone 4-digit year anywhere in the string.
+    m = re.search(r"(\d{4})", name)
     if m:
         year = int(m.group(1))
         return (year, year)
