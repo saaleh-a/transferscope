@@ -754,6 +754,8 @@ def build_training_sample(
         "used_match_logs_features": used_match_logs_for_features,
         "used_match_logs_labels": used_match_logs_for_labels,
         "minutes_accumulated": minutes_accumulated,
+        "source_club_id": record.from_club_id,
+        "target_club_id": record.to_club_id,
     }
 
 
@@ -1198,7 +1200,49 @@ def build_non_transfer_sample(
         "league_means": league_means,
         "used_match_logs_features": used_match_logs_for_features,
         "used_match_logs_labels": used_match_logs_for_labels,
+        "source_club_id": record.club_id,
+        "target_club_id": record.club_id,
     }
+
+
+def compute_team_position_averages(
+    samples: list[dict],
+) -> dict[tuple[int, str], dict[str, float]]:
+    """Compute per-90 averages for each (club_id, position) pair
+    from a list of already-built training samples.
+
+    Parameters
+    ----------
+    samples : list[dict]
+        Each dict must contain:
+          - 'source_club_id'   (int)
+          - 'position'         (str, e.g. 'Midfielder')
+          - 'pre_per90'        (dict of metric -> float)
+
+    Returns
+    -------
+    dict keyed by (club_id, position) -> dict of metric -> mean float
+    """
+    from collections import defaultdict
+
+    buckets: dict = defaultdict(list)
+    for s in samples:
+        club_id = s.get("source_club_id")
+        position = s.get("position")
+        per90 = s.get("pre_per90", {})
+        if club_id and position and per90:
+            buckets[(club_id, position)].append(per90)
+
+    averages: dict = {}
+    for key, records in buckets.items():
+        if not records:
+            continue
+        avg = {}
+        for metric in records[0].keys():
+            vals = [r[metric] for r in records if metric in r]
+            avg[metric] = float(np.mean(vals)) if vals else 0.0
+        averages[key] = avg
+    return averages
 
 
 def build_full_dataset(
@@ -1275,6 +1319,33 @@ def build_full_dataset(
     if not samples:
         _log.error("No valid training samples built!")
         return np.empty((0, FEATURE_DIM)), np.empty((0, len(CORE_METRICS))), []
+
+    # ── Inject team-position averages from the training data itself ───────
+    # The batch Sofascore endpoint returns 404, so team_pos_current_* and
+    # team_pos_target_* features are all zeros.  Recompute them from the
+    # collected samples' pre_per90 grouped by (club_id, position).
+    team_pos_lookup = compute_team_position_averages(samples)
+
+    for s in samples:
+        src_key = (s.get("source_club_id"), s.get("position"))
+        tgt_key = (s.get("target_club_id"), s.get("position"))
+
+        src_avg = team_pos_lookup.get(src_key, {})
+        tgt_avg = team_pos_lookup.get(tgt_key, {})
+
+        # Overwrite team_pos slots in the feature vector
+        # Layout: [0:13] player, [13:17] abilities, [17:30] pos_current, [30:43] pos_target
+        _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4   # 17
+        _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 30
+        features = s["features"]
+        for i, m in enumerate(CORE_METRICS):
+            features[_POS_CURRENT_OFFSET + i] = src_avg.get(m, 0.0)
+            features[_POS_TARGET_OFFSET + i] = tgt_avg.get(m, 0.0)
+
+        # Also update the metadata dicts so downstream consumers see
+        # correct values (e.g. adjustment model training).
+        s["from_pos_avg"] = {m: src_avg.get(m, 0.0) for m in CORE_METRICS}
+        s["to_pos_avg"] = {m: tgt_avg.get(m, 0.0) for m in CORE_METRICS}
 
     X = np.stack([s["features"] for s in samples])
     y = np.stack([s["labels"] for s in samples])
