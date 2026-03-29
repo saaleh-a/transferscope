@@ -546,13 +546,13 @@ class TestGetPlayerMatchLogs(unittest.TestCase):
             self.assertGreater(match["minutes_played"], 0)
 
 
-class TestLeagueStats404ShortCircuit(unittest.TestCase):
-    """When the standings endpoint returns None (404), no further calls are made."""
+class TestLeagueStatsBatchEndpoint(unittest.TestCase):
+    """The batch statistics endpoint is used — a single API call per league/season."""
 
     @patch("backend.data.sofascore_client._get")
     @patch("backend.data.sofascore_client.cache")
-    def test_league_stats_stops_on_standings_404(self, mock_cache, mock_get):
-        """When standings returns None (404), no team/player calls are made."""
+    def test_league_stats_single_api_call(self, mock_cache, mock_get):
+        """When the batch endpoint returns None, only one API call is made."""
         mock_cache.make_key.return_value = "test_key"
         mock_cache.get.return_value = None  # no cache
 
@@ -564,23 +564,21 @@ class TestLeagueStats404ShortCircuit(unittest.TestCase):
         # The function should still return a list (possibly empty)
         self.assertIsInstance(result, list)
 
-        # Check which URLs were called — only standings should have been tried
+        # Only one batch API call should have been made
         called_urls = [call.args[0] for call in mock_get.call_args_list]
-
-        # Only the standings endpoint should have been called
-        standings_calls = [u for u in called_urls if "/standings/total" in u]
+        batch_calls = [u for u in called_urls if "/statistics/overall" in u]
         team_calls = [u for u in called_urls if "/team/" in u and "/players" in u]
-        player_calls = [u for u in called_urls if "/statistics/overall" in u]
+        player_calls = [u for u in called_urls if "/player/" in u]
 
-        self.assertTrue(
-            len(standings_calls) >= 1,
-            "Standings endpoint should have been called",
+        self.assertEqual(
+            len(batch_calls), 1,
+            "Exactly one batch statistics call should be made",
         )
         self.assertEqual(
             len(team_calls), 0,
-            "No team roster calls should be made when standings fails",
+            "No team roster calls should be made (batch endpoint used)",
         )
         self.assertEqual(
             len(player_calls), 0,
-            "No player stats calls should be made when standings fails",
+            "No per-player stats calls should be made (batch endpoint used)",
         )

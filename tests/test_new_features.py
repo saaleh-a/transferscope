@@ -269,7 +269,9 @@ class TestLeaguePlayerStats(unittest.TestCase):
         cache.close()
         os.environ["CACHE_DIR"] = _TEMP_DIR
         cache.clear_namespace("sofascore_league_stats")
+        cache.clear_namespace("sofascore_league_batch")
         cache.clear_namespace("sofascore_seasons")
+        cache.clear_namespace("sofascore_neg")
 
     def tearDown(self):
         cache.close()
@@ -279,16 +281,8 @@ class TestLeaguePlayerStats(unittest.TestCase):
         def side_effect(path):
             if "/seasons" in path:
                 return MOCK_SEASONS_RESPONSE
-            if "/standings/total" in path:
-                return MOCK_STANDINGS_RESPONSE
-            if "/team/42/players" in path:
-                return MOCK_TEAM_ROSTER_ARSENAL
-            if "/team/44/players" in path:
-                return MOCK_TEAM_ROSTER_LIVERPOOL
-            if "/player/961995/" in path and "/statistics/overall" in path:
-                return MOCK_PLAYER_STATS_SAKA
-            if "/player/111111/" in path and "/statistics/overall" in path:
-                return MOCK_PLAYER_STATS_SALAH
+            if "/statistics/overall" in path:
+                return MOCK_LEAGUE_STATS_RESPONSE
             return None
 
         mock_get.side_effect = side_effect
@@ -316,19 +310,15 @@ class TestLeaguePlayerStats(unittest.TestCase):
     def test_get_league_player_stats_empty_not_cached(self, mock_get):
         """Empty results must NOT be cached — transient failures should not
         poison the cache for 24 hours."""
-        # First call: standings returns None → 0 players
+        # First call: batch endpoint returns None → 0 players
         mock_get.return_value = None
         players = sofascore_client.get_league_player_stats(17, season_id=61627, limit=5)
         self.assertEqual(players, [])
 
         # Second call: API now works — should NOT return stale cached []
         def side_effect(path):
-            if "/standings/total" in path:
-                return MOCK_STANDINGS_RESPONSE
-            if "/team/42/players" in path:
-                return MOCK_TEAM_ROSTER_ARSENAL
-            if "/player/961995/" in path and "/statistics/overall" in path:
-                return MOCK_PLAYER_STATS_SAKA
+            if "/statistics/overall" in path:
+                return MOCK_LEAGUE_STATS_RESPONSE
             return None
 
         mock_get.side_effect = side_effect

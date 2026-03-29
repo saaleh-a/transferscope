@@ -34,6 +34,7 @@ class TestSofascoreRetry(unittest.TestCase):
     def setUp(self):
         cache.close()
         os.environ["CACHE_DIR"] = _TEMP_DIR
+        cache.clear_namespace("sofascore_neg")
 
     def tearDown(self):
         cache.close()
