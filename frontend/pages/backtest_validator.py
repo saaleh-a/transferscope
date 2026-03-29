@@ -208,6 +208,7 @@ def _resolve_transfer_context(
 
 
 def _color_pct_error(val: float) -> str:
+    """Return CSS color for a percentage error value."""
     if val < 10:
         return COLORS["accent_green"]
     if val < 20:
@@ -216,11 +217,13 @@ def _color_pct_error(val: float) -> str:
 
 
 def _is_direction_match(predicted_change: float, actual_change: float) -> bool:
+    """Return True if predicted and actual changes share the same direction."""
     return (predicted_change > 0 and actual_change > 0) or \
            (predicted_change < 0 and actual_change < 0)
 
 
 def _direction_icon(predicted_change: float, actual_change: float) -> str:
+    """Return ✅ or ❌ based on whether predicted direction matches actual."""
     if abs(actual_change) < _EPSILON:
         return "➖"
     return "✅" if _is_direction_match(predicted_change, actual_change) else "❌"
