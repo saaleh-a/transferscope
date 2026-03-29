@@ -25,13 +25,9 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
 from backend.data.sofascore_client import CORE_METRICS
+from backend.utils.constants import MIN_MINUTES_THRESHOLD
 
 _log = logging.getLogger(__name__)
-
-# Minimum minutes a player must have to be considered for the shortlist.
-# 270 min ≈ 3 full matches — low enough to include recent signings /
-# rotation players while still filtering out single-cameo appearances.
-MIN_MINUTES_THRESHOLD = 270
 
 # Candidates below this similarity score are flagged as low-confidence
 # so the UI can warn users that the match quality is weak.

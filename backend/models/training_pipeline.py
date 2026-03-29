@@ -67,7 +67,8 @@ DEFAULT_LEAGUE_CODES = [
     "SCO1",  # Scottish Premiership
 ]
 
-MIN_MINUTES_THRESHOLD = 450
+from backend.utils.constants import MIN_MINUTES_THRESHOLD
+
 API_CALL_DELAY_SECONDS = 2.0
 
 
