@@ -423,9 +423,10 @@ def get_league_player_stats(
 
     if not teams:
         _log.debug(
-            "get_league_player_stats: no teams found in standings for tid=%d sid=%d — not caching",
+            "get_league_player_stats: no teams found for tid=%d sid=%d — caching",
             tournament_id, season_id,
         )
+        cache.set(key, [])
         return []
 
     # Step 2 & 3 — For each team, get roster and then individual stats
