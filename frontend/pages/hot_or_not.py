@@ -24,21 +24,7 @@ from frontend.theme import (
     section_header, confidence_badge, verdict_display, player_info_card, COLORS,
 )
 
-_LABELS: Dict[str, str] = {
-    "expected_goals": "xG",
-    "expected_assists": "xA",
-    "shots": "Shots",
-    "successful_dribbles": "Take-ons",
-    "successful_crosses": "Crosses",
-    "touches_in_opposition_box": "Pen. Area Entries",
-    "successful_passes": "Total Passes",
-    "pass_completion_pct": "Short Pass %",
-    "accurate_long_balls": "Long Passes",
-    "chances_created": "Passes Att 3rd",
-    "clearances": "Def Own 3rd",
-    "interceptions": "Def Mid 3rd",
-    "possession_won_final_3rd": "Def Att 3rd",
-}
+from frontend.constants import METRIC_LABELS as _LABELS
 
 
 _MIDFIELDER_METRICS: frozenset = frozenset({
@@ -363,10 +349,30 @@ def render():
 
     verdict, color, emoji = _verdict(avg_change, pct_changes, has_data=has_real_data)
 
+    # Detect if verdict was downgraded by mixed signals
+    strong_up_count = sum(1 for v in pct_changes.values() if v > _MIXED_SIGNAL_THRESHOLD)
+    strong_down_count = sum(1 for v in pct_changes.values() if v < -_MIXED_SIGNAL_THRESHOLD)
+    mixed_override_active = (
+        verdict == "TEPID"
+        and avg_change > _VERDICT_THRESHOLD
+        and strong_up_count >= _MIXED_SIGNAL_MIN_COUNT
+        and strong_down_count >= _MIXED_SIGNAL_MIN_COUNT
+    )
+
     st.markdown("---")
 
     # Big verdict display
     verdict_display(verdict, player_name, current_team, target_club)
+
+    if mixed_override_active:
+        st.info(
+            f"ℹ️ **Mixed signals detected** — verdict downgraded from HOT to TEPID. "
+            f"{strong_up_count} metrics improved strongly (>+{_MIXED_SIGNAL_THRESHOLD:.0f}%) "
+            f"and {strong_down_count} declined strongly (<-{_MIXED_SIGNAL_THRESHOLD:.0f}%), "
+            f"indicating significant style trade-offs despite a positive average ({avg_change:+.1f}%). "
+            f"A definitive HOT verdict requires an average above +{_MIXED_SIGNAL_THRESHOLD:.0f}% "
+            f"when style trade-offs are present."
+        )
 
     if not has_real_data:
         st.error(

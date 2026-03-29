@@ -281,7 +281,8 @@ class TransferPortalModel:
         if not self.models:
             if self.is_trained():
                 try:
-                    self._load_trained()
+                    model_dir = os.path.join(_MODELS_DIR, "transfer_portal")
+                    self.load(model_dir)
                 except Exception as exc:
                     _log.warning("Failed to load trained model: %s", exc)
 
@@ -319,15 +320,6 @@ class TransferPortalModel:
                     result[target] = max(0.0, float(preds[i]))
 
         return result
-
-    def _load_trained(self) -> None:
-        """Load trained weights and scalers from data/models/.
-
-        Delegates to ``load()`` which now handles both model weights
-        and scalers in a single call.
-        """
-        model_dir = os.path.join(_MODELS_DIR, "transfer_portal")
-        self.load(model_dir)
 
     @staticmethod
     def _heuristic_fallback(feature_dict: Dict[str, float]) -> Dict[str, float]:

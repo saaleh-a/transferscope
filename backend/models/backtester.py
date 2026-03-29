@@ -49,6 +49,7 @@ def run_backtest(
     X_test: np.ndarray,
     y_test: np.ndarray,
     meta_test: List[Dict[str, Any]],
+    meta_train: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Run backtest on held-out test set.
 
@@ -60,33 +61,34 @@ def run_backtest(
     X_test : ndarray, shape (N, 43)
     y_test : ndarray, shape (N, 13)
     meta_test : list[dict]
+    meta_train : list[dict], optional
+        If provided, used to check for data leakage (overlapping player IDs).
 
     Returns
     -------
     dict — backtest report, also saved to data/models/backtest_report.json
     """
-    import joblib
+    # Data-leakage guard: hard stop if any test players appear in training data.
+    if meta_train is not None:
+        train_ids = {m.get("player_id") for m in meta_train if m.get("player_id") is not None}
+        test_ids = {m.get("player_id") for m in meta_test if m.get("player_id") is not None}
+        overlap = train_ids & test_ids
+        if overlap:
+            raise ValueError(
+                f"DATA LEAKAGE: {len(overlap)} player(s) appear in both train and test sets: "
+                f"{list(overlap)[:5]}... Backtest aborted. Re-run with a clean temporal split."
+            )
 
     metric_to_idx = {m: i for i, m in enumerate(CORE_METRICS)}
     keys = _feature_keys_list()
 
-    # Load trained model — set scalers on the model so predict() handles
-    # both feature scaling and target inverse-transform internally.
-    # Previous approach pre-scaled features manually, which risked double-
-    # scaling if model._scaler was ever set elsewhere.
+    # Load trained model — model.load() handles both model weights and
+    # scaler loading (feature_scaler.pkl + target_scalers.pkl) internally.
     model = TransferPortalModel()
     model_dir = os.path.join(_MODELS_DIR, "transfer_portal")
 
     if os.path.isdir(model_dir):
         model.load(model_dir)
-        scaler_path = os.path.join(_MODELS_DIR, "feature_scaler.pkl")
-        if os.path.exists(scaler_path):
-            model._scaler = joblib.load(scaler_path)
-        # Load target scalers so predict() inverse-transforms predictions
-        # back to original per-90 space before comparison with y_test.
-        target_scaler_path = os.path.join(_MODELS_DIR, "target_scalers.pkl")
-        if os.path.exists(target_scaler_path):
-            model._target_scalers = joblib.load(target_scaler_path)
 
     has_trained = model.fitted and model._scaler is not None
 
@@ -210,6 +212,12 @@ def run_backtest(
         "overall_improvement_pct": overall_improvement,
         "metrics_improved": metrics_improved,
         "metrics_total": len(CORE_METRICS),
+    }
+
+    report["meta"] = {
+        "n_train": len(meta_train) if meta_train else None,
+        "n_test": n,
+        "leakage_check": "passed" if meta_train is not None else "skipped — meta_train not provided",
     }
 
     print(f"\n{'='*80}")

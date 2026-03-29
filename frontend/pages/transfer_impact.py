@@ -71,6 +71,10 @@ def render():
 
     # Use cached results on subsequent reruns (e.g. widget interaction)
     search_results = st.session_state.get("ti_search_results")
+    stored_query = st.session_state.get("ti_player_query", "")
+    if search_results and stored_query != player_query:
+        st.caption("Query changed — click **Analyse Transfer** to search.")
+        return
     if not search_results:
         st.caption("Click **Analyse Transfer** to search.")
         return
