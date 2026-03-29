@@ -66,11 +66,16 @@ def render():
             st.warning(f"No players found for '{player_query}'.")
             return
         st.session_state["ti_search_results"] = search_results
+        st.session_state["ti_search_query"] = player_query  # ADD
         st.session_state["ti_player_query"] = player_query
         st.session_state["ti_target_club_query"] = target_club_query
 
     # Use cached results on subsequent reruns (e.g. widget interaction)
     search_results = st.session_state.get("ti_search_results")
+    stored_query = st.session_state.get("ti_search_query", "")
+    if search_results and stored_query != player_query:
+        st.caption("Query changed — click **Analyse Transfer** to search.")
+        return
     if not search_results:
         st.caption("Click **Analyse Transfer** to search.")
         return
