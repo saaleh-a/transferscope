@@ -349,10 +349,28 @@ def render():
 
     verdict, color, emoji = _verdict(avg_change, pct_changes, has_data=has_real_data)
 
+    strong_up_count = sum(1 for v in pct_changes.values() if v > _MIXED_SIGNAL_THRESHOLD)
+    strong_down_count = sum(1 for v in pct_changes.values() if v < -_MIXED_SIGNAL_THRESHOLD)
+    mixed_override_active = (
+        verdict == "TEPID"
+        and avg_change > _VERDICT_THRESHOLD
+        and strong_up_count >= _MIXED_SIGNAL_MIN_COUNT
+        and strong_down_count >= _MIXED_SIGNAL_MIN_COUNT
+    )
+
     st.markdown("---")
 
     # Big verdict display
     verdict_display(verdict, player_name, current_team, target_club)
+
+    if mixed_override_active:
+        st.info(
+            f"ℹ️ **Mixed signals detected** — verdict downgraded from HOT to TEPID. "
+            f"{strong_up_count} metrics improved strongly (>+{_MIXED_SIGNAL_THRESHOLD:.0f}%) "
+            f"and {strong_down_count} declined strongly (<-{_MIXED_SIGNAL_THRESHOLD:.0f}%). "
+            f"HOT requires avg above +{_MIXED_SIGNAL_THRESHOLD:.0f}% when style trade-offs exist "
+            f"(current avg: {avg_change:+.1f}%)."
+        )
 
     if not has_real_data:
         st.error(
