@@ -41,21 +41,7 @@ _log = logging.getLogger(__name__)
 # between leagues dramatically improves success rate.
 _INTER_LEAGUE_DELAY = 1.5
 
-_LABELS: Dict[str, str] = {
-    "expected_goals": "xG",
-    "expected_assists": "xA",
-    "shots": "Shots",
-    "successful_dribbles": "Take-ons",
-    "successful_crosses": "Crosses",
-    "touches_in_opposition_box": "Pen. Area Entries",
-    "successful_passes": "Total Passes",
-    "pass_completion_pct": "Short Pass %",
-    "accurate_long_balls": "Long Passes",
-    "chances_created": "Passes Att 3rd",
-    "clearances": "Def Own 3rd",
-    "interceptions": "Def Mid 3rd",
-    "possession_won_final_3rd": "Def Att 3rd",
-}
+from frontend.constants import METRIC_LABELS as _LABELS
 
 _WEIGHTS_EXPLANATION = (
     "Each weight controls how important a metric is when finding similar players. "

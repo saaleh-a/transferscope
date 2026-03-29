@@ -16,7 +16,7 @@ import streamlit as st
 from backend.data import sofascore_client
 from backend.data.sofascore_client import (
     CORE_METRICS,
-    _discover_tournament_for_team,
+    discover_tournament_for_team,
     get_player_stats_for_season,
     get_player_transfer_history,
     get_season_list,
@@ -36,21 +36,7 @@ from frontend.theme import (
     section_header,
 )
 
-_LABELS: Dict[str, str] = {
-    "expected_goals": "xG",
-    "expected_assists": "xA",
-    "shots": "Shots",
-    "successful_dribbles": "Take-ons",
-    "successful_crosses": "Crosses",
-    "touches_in_opposition_box": "Pen. Area Entries",
-    "successful_passes": "Total Passes",
-    "pass_completion_pct": "Short Pass %",
-    "accurate_long_balls": "Long Passes",
-    "chances_created": "Passes Att 3rd",
-    "clearances": "Def Own 3rd",
-    "interceptions": "Def Mid 3rd",
-    "possession_won_final_3rd": "Def Att 3rd",
-}
+from frontend.constants import METRIC_LABELS as _LABELS
 
 _EPSILON = 0.001  # Minimum meaningful change threshold
 
@@ -179,8 +165,8 @@ def _resolve_transfer_context(
     if not from_team_id or not to_team_id:
         return None
 
-    from_tid = _discover_tournament_for_team(from_team_id)
-    to_tid = _discover_tournament_for_team(to_team_id)
+    from_tid = discover_tournament_for_team(from_team_id)
+    to_tid = discover_tournament_for_team(to_team_id)
     if not from_tid or not to_tid:
         return None
 
