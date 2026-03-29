@@ -311,7 +311,7 @@ def render():
     transfer_labels = [
         f"{t['from_team']['name']} → {t['to_team']['name']}  "
         f"({t.get('transfer_date', 'Unknown date')}"
-        f"{', ' + t.get('type', '') if t.get('type') else ''})"
+        f"{', ' + str(t.get('type', '')) if t.get('type') else ''})"
         for t in valid_transfers
     ]
     selected_transfer_idx = st.selectbox(
