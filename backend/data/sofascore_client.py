@@ -554,7 +554,7 @@ def _get_league_team_ids(
     )
 
     teams: List[Dict[str, Any]] = []
-    seen_ids: set = set()
+    seen_ids: set[int] = set()
 
     if isinstance(raw, dict):
         for group in raw.get("standings", []):

@@ -1235,6 +1235,8 @@ def compute_team_position_averages(
 
     averages: dict = {}
     for key, records in buckets.items():
+        if not records:
+            continue
         avg = {}
         for metric in records[0].keys():
             vals = [r[metric] for r in records if metric in r]
@@ -1331,11 +1333,14 @@ def build_full_dataset(
         src_avg = team_pos_lookup.get(src_key, {})
         tgt_avg = team_pos_lookup.get(tgt_key, {})
 
-        # Overwrite team_pos slots in the feature vector (indices 17-42)
+        # Overwrite team_pos slots in the feature vector
+        # Layout: [0:13] player, [13:17] abilities, [17:30] pos_current, [30:43] pos_target
+        _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4   # 17
+        _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 30
         features = s["features"]
         for i, m in enumerate(CORE_METRICS):
-            features[17 + i] = src_avg.get(m, 0.0)   # team_pos_current
-            features[30 + i] = tgt_avg.get(m, 0.0)   # team_pos_target
+            features[_POS_CURRENT_OFFSET + i] = src_avg.get(m, 0.0)
+            features[_POS_TARGET_OFFSET + i] = tgt_avg.get(m, 0.0)
 
         # Also update the metadata dicts so downstream consumers see
         # correct values (e.g. adjustment model training).
