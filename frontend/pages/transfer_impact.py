@@ -399,7 +399,7 @@ def render():
             else ("color: #F45B69" if isinstance(v, (int, float)) and v < 0 else ""),
             subset=["Change %"],
         )
-    except Exception:
+    except (KeyError, ValueError, TypeError):
         styled = df_table
     st.dataframe(
         styled,
