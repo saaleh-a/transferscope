@@ -134,6 +134,9 @@ def render():
     selected_player = st.selectbox(
         "Select player", list(player_options.keys()), key="hon_player_select"
     )
+    if selected_player is None or selected_player not in player_options:
+        st.info("Select a player from the dropdown.")
+        return
     player_info = player_options[selected_player]
 
     # ── Target club autocomplete ─────────────────────────────────────────
@@ -153,8 +156,9 @@ def render():
         selected_club = st.selectbox(
             "Select target club", list(club_options.keys()), key="hon_club_select"
         )
-        target_club = club_options[selected_club]["name"]
-        target_team_id = club_options[selected_club].get("id")
+        if selected_club is not None and selected_club in club_options:
+            target_club = club_options[selected_club]["name"]
+            target_team_id = club_options[selected_club].get("id")
 
     # ── Season selector ──────────────────────────────────────────────────
     tournament_id = player_info.get("tournament_id")

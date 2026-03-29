@@ -86,7 +86,10 @@ def render():
         return " · ".join(parts)
 
     player_options = {_player_label(p): p for p in search_results}
-    selected = st.selectbox("Select player", list(player_options.keys()))
+    selected = st.selectbox("Select player", list(player_options.keys()), key="ti_player_select")
+    if selected is None or selected not in player_options:
+        st.info("Select a player from the dropdown.")
+        return
     player_info = player_options[selected]
     player_id = player_info["id"]
 
@@ -108,9 +111,10 @@ def render():
         selected_club = st.selectbox(
             "Select target club", list(club_options.keys()), key="ti_club_select"
         )
-        chosen = club_options[selected_club]
-        target_club_display = chosen["name"]
-        target_team_id = chosen.get("id")
+        if selected_club is not None and selected_club in club_options:
+            chosen = club_options[selected_club]
+            target_club_display = chosen["name"]
+            target_team_id = chosen.get("id")
     else:
         st.caption(f"Using '{target_club_query}' as target club name (no Sofascore results).")
 
@@ -399,12 +403,16 @@ def render():
             "Direction": "📈" if change > 2 else ("📉" if change < -2 else "➡️"),
         })
     df_table = pd.DataFrame(rows)
-    st.dataframe(
-        df_table.style.map(
+    try:
+        styled = df_table.style.map(
             lambda v: "color: #2DD4A8" if isinstance(v, (int, float)) and v > 0
             else ("color: #F45B69" if isinstance(v, (int, float)) and v < 0 else ""),
             subset=["Change %"],
-        ),
+        )
+    except (KeyError, ValueError, TypeError):
+        styled = df_table
+    st.dataframe(
+        styled,
         use_container_width=True,
         hide_index=True,
     )
