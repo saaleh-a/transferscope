@@ -355,8 +355,8 @@ class TransferPortalModel:
         return paper_heuristic_predict(
             player_per90=player_per90,
             change_relative_ability=change_ra,
-            src_pos_avg=src_pos_avg,
-            tgt_pos_avg=tgt_pos_avg,
+            source_pos_avg=src_pos_avg,
+            target_pos_avg=tgt_pos_avg,
         )
 
     def predict_batch(self, feature_dicts: List[Dict[str, float]]) -> List[Dict[str, float]]:

@@ -1749,10 +1749,11 @@ def _compare_model_vs_heuristic(
             heuristic_preds = paper_heuristic_predict(
                 player_per90=player_per90,
                 change_relative_ability=change_ra,
-                src_pos_avg=team_pos_current,
-                tgt_pos_avg=team_pos_target,
+                source_pos_avg=team_pos_current,
+                target_pos_avg=team_pos_target,
             )
-        except Exception:
+        except Exception as exc:
+            _log.warning("paper_heuristic_predict failed: %s", exc)
             heuristic_preds = player_per90.copy()
 
         # Compute errors
