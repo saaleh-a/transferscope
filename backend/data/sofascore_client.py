@@ -209,12 +209,12 @@ def _get(path: str) -> Optional[dict]:
         return None
 
     url = f"{_BASE_URL}{path}"
-    _last_retryable = False  # Track if failure was due to retryable status codes
+    _had_transient_failure = False  # Track if failure was due to transient errors (429/5xx/connection)
     for attempt in range(_MAX_RETRIES):
         try:
             resp = _http.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
             if resp.status_code in _RETRYABLE_STATUS_CODES:
-                _last_retryable = True
+                _had_transient_failure = True
                 delay = _RETRY_BASE_DELAY * (2 ** attempt)  # 1s, 2s, 4s
                 _log.info(
                     "Sofascore %d on %s — retry %d/%d in %.1fs",
@@ -240,7 +240,7 @@ def _get(path: str) -> Optional[dict]:
                 )
                 _http = _stdlib_requests
                 continue
-            _last_retryable = False
+            _had_transient_failure = True  # Connection errors are transient
             delay = _RETRY_BASE_DELAY * (2 ** attempt)
             _log.info(
                 "Sofascore connection error on %s — retry %d/%d in %.1fs (%s)",
@@ -260,8 +260,8 @@ def _get(path: str) -> Optional[dict]:
             cache.set(neg_key, _NEGATIVE_SENTINEL)
             return None
     _log.warning("Sofascore request failed after %d retries: %s", _MAX_RETRIES, path)
-    # Do NOT cache transient failures (429/5xx) — they should be retried next run
-    if not _last_retryable:
+    # Do NOT cache transient failures (429/5xx/connection) — they should be retried next run
+    if not _had_transient_failure:
         cache.set(neg_key, _NEGATIVE_SENTINEL)
     return None
 
