@@ -383,8 +383,12 @@ def get_league_player_stats(
 ) -> List[Dict[str, Any]]:
     """Fetch aggregated player stats for an entire league/tournament season.
 
-    Uses the batch statistics endpoint to collect all players' season stats
-    in a single API call per tournament/season combination.
+    Attempts the batch statistics endpoint first.  When it returns 404
+    (common for many Sofascore tournament/season combos), falls back to
+    discovering teams via the standings endpoint, fetching each team's
+    roster, and calling the per-player statistics endpoint which is
+    reliably available.
+
     Results are cached for 1 hour.
 
     Parameters
@@ -415,7 +419,7 @@ def get_league_player_stats(
     if cached is not None:
         return cached
 
-    # Fetch or retrieve cached batch response for this tournament/season
+    # ── Attempt 1: batch statistics endpoint ─────────────────────────────
     batch_key = cache.make_key(
         "sofascore_league_batch", str(tournament_id), str(season_id),
     )
@@ -431,14 +435,31 @@ def get_league_player_stats(
         if isinstance(batch_raw, dict):
             cache.set(batch_key, batch_raw)
 
-    if not isinstance(batch_raw, dict):
-        _log.warning(
-            "get_league_player_stats: batch endpoint returned %s for tid=%d sid=%d",
-            type(batch_raw).__name__, tournament_id, season_id,
-        )
-        return []
+    if isinstance(batch_raw, dict):
+        result = _parse_batch_league_stats(batch_raw, limit)
+        if result:
+            cache.set(key, result)
+            return result
 
-    # Parse the batch response — Sofascore uses "results" or "players" key
+    # ── Attempt 2: per-player fallback via standings + roster ────────────
+    _log.info(
+        "get_league_player_stats: batch endpoint unavailable for tid=%d "
+        "sid=%d, falling back to per-player stats",
+        tournament_id, season_id,
+    )
+    result = _league_stats_per_player_fallback(
+        tournament_id, season_id, limit,
+    )
+    if result:
+        cache.set(key, result)
+    return result
+
+
+def _parse_batch_league_stats(
+    batch_raw: dict,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Parse the batch statistics response into a list of player dicts."""
     entries = batch_raw.get("results") or batch_raw.get("players") or []
 
     players_map: Dict[int, Dict[str, Any]] = {}
@@ -509,15 +530,115 @@ def get_league_player_stats(
             "rating": avg_rating,
         }
 
-    result = list(players_map.values())
-    if not result:
+    return list(players_map.values())
+
+
+def _get_league_team_ids(
+    tournament_id: int,
+    season_id: int,
+) -> List[Dict[str, Any]]:
+    """Get teams in a league via the standings endpoint.
+
+    Returns list of dicts with ``id`` and ``name`` for each team.
+    """
+    standings_key = cache.make_key(
+        "sofascore_standings", str(tournament_id), str(season_id),
+    )
+    cached = cache.get(standings_key, max_age=86400)
+    if cached is not None:
+        return cached
+
+    raw = _get(
+        f"/unique-tournament/{tournament_id}/season/{season_id}"
+        f"/standings/total"
+    )
+
+    teams: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+
+    if isinstance(raw, dict):
+        for group in raw.get("standings", []):
+            if not isinstance(group, dict):
+                continue
+            for row in group.get("rows", []):
+                if not isinstance(row, dict):
+                    continue
+                team_data = row.get("team") or {}
+                tid = team_data.get("id")
+                tname = team_data.get("name", "")
+                if tid and tid not in seen_ids:
+                    teams.append({"id": tid, "name": tname})
+                    seen_ids.add(tid)
+
+    if teams:
+        cache.set(standings_key, teams)
+    return teams
+
+
+def _league_stats_per_player_fallback(
+    tournament_id: int,
+    season_id: int,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """Fallback: build league player stats from per-player API calls.
+
+    1. Discover teams via standings endpoint.
+    2. Fetch each team's roster via ``get_team_players_stats()``.
+    3. For each rostered player, call ``get_player_stats_for_season()``.
+    4. Return results in the same format as the batch endpoint.
+    """
+    teams = _get_league_team_ids(tournament_id, season_id)
+    if not teams:
         _log.warning(
-            "get_league_player_stats: 0 players collected for tid=%d sid=%d — not caching",
+            "get_league_player_stats fallback: no teams found for tid=%d sid=%d",
             tournament_id, season_id,
         )
-        return result
-    cache.set(key, result)
-    return result
+        return []
+
+    players_map: Dict[int, Dict[str, Any]] = {}
+
+    for team_info in teams:
+        if len(players_map) >= limit:
+            break
+
+        team_id = team_info["id"]
+        team_name = team_info["name"]
+        roster = get_team_players_stats(team_id)
+
+        for player in roster:
+            if len(players_map) >= limit:
+                break
+
+            pid = player.get("id")
+            if not pid or pid in players_map:
+                continue
+
+            stats = get_player_stats_for_season(pid, tournament_id, season_id)
+            if not stats:
+                continue
+
+            minutes = stats.get("minutes_played", 0)
+            if minutes == 0:
+                continue
+
+            per90 = stats.get("per90") or {}
+            position = stats.get("position") or _map_position(
+                player.get("position", "")
+            )
+
+            players_map[pid] = {
+                "id": pid,
+                "name": stats.get("name") or player.get("name", ""),
+                "team": team_name,
+                "team_id": team_id,
+                "position": position,
+                "age": stats.get("age"),
+                "minutes_played": minutes,
+                "per90": per90,
+                "rating": stats.get("rating"),
+            }
+
+    return list(players_map.values())
 
 
 def get_player_season_stats(
