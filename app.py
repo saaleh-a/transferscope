@@ -83,15 +83,23 @@ if st.sidebar.button("🗑️ Clear Cache", help="Clear cached API data to force
     except Exception as e:
         st.sidebar.error(f"Failed to clear cache: {e}")
 
-if page == "Transfer Impact":
-    from frontend.pages.transfer_impact import render
-    render()
-elif page == "Shortlist Generator":
-    from frontend.pages.shortlist_generator import render
-    render()
-elif page == "Hot or Not":
-    from frontend.pages.hot_or_not import render
-    render()
-elif page == "About & Methodology":
-    from frontend.pages.about import render
-    render()
+try:
+    if page == "Transfer Impact":
+        from frontend.pages.transfer_impact import render
+        render()
+    elif page == "Shortlist Generator":
+        from frontend.pages.shortlist_generator import render
+        render()
+    elif page == "Hot or Not":
+        from frontend.pages.hot_or_not import render
+        render()
+    elif page == "About & Methodology":
+        from frontend.pages.about import render
+        render()
+except Exception as exc:
+    _log.exception("Page render failed for '%s'", page)
+    st.error(
+        f"⚠️ Failed to render **{page}** — an unexpected error occurred.\n\n"
+        f"`{type(exc).__name__}: {exc}`\n\n"
+        "Try refreshing the page or clearing the cache (sidebar)."
+    )

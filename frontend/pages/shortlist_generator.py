@@ -200,6 +200,9 @@ def render():
         : p for p in results
     }
     selected = st.selectbox("Select player", list(options.keys()), key="shortlist_select")
+    if selected is None or selected not in options:
+        st.info("Select a player from the dropdown.")
+        return
     player = options[selected]
 
     with st.spinner("Fetching stats..."):
@@ -577,13 +580,14 @@ def render():
         detail_selection = st.selectbox(
             "View detailed prediction for:", candidate_names, key="detail_candidate"
         )
-        idx = candidate_names.index(detail_selection)
-        detail = scored[idx]
+        if detail_selection is not None and detail_selection in candidate_names:
+            idx = candidate_names.index(detail_selection)
+            detail = scored[idx]
 
-        st.markdown(f"### {detail.name} — Detailed Prediction")
-        from frontend.components import metric_bar
-        changes = compute_percentage_changes(detail.current_per90, detail.predicted_per90)
-        metric_bar.show(
-            detail.current_per90, detail.predicted_per90, changes,
-            title=f"Predicted Changes: {detail.name}",
-        )
+            st.markdown(f"### {detail.name} — Detailed Prediction")
+            from frontend.components import metric_bar
+            changes = compute_percentage_changes(detail.current_per90, detail.predicted_per90)
+            metric_bar.show(
+                detail.current_per90, detail.predicted_per90, changes,
+                title=f"Predicted Changes: {detail.name}",
+            )
