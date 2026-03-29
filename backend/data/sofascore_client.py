@@ -1104,6 +1104,11 @@ def _extract_unique_tournament_id(*dicts: Any) -> Optional[int]:
     return None
 
 
+def discover_tournament_for_team(team_id: int) -> Optional[int]:
+    """Public wrapper — see :func:`_discover_tournament_for_team`."""
+    return _discover_tournament_for_team(team_id)
+
+
 def _discover_tournament_for_team(team_id: int) -> Optional[int]:
     """Fetch the primary unique tournament ID for a team via Sofascore API.
 
@@ -1316,6 +1321,11 @@ def _get_cached_tournament_id(player_id: int) -> Optional[int]:
     if isinstance(meta, dict):
         return meta.get("tournament_id")
     return None
+
+
+def get_cached_tournament_id(player_id: int) -> Optional[int]:
+    """Public wrapper — see :func:`_get_cached_tournament_id`."""
+    return _get_cached_tournament_id(player_id)
 
 
 def _unix_to_iso(ts: Any) -> Optional[str]:
