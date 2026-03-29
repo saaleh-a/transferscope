@@ -67,7 +67,7 @@ DEFAULT_LEAGUE_CODES = [
     "SCO1",  # Scottish Premiership
 ]
 
-MIN_MINUTES_THRESHOLD = 450
+from backend.utils.constants import MIN_MINUTES_THRESHOLD
 API_CALL_DELAY_SECONDS = 2.0
 
 
@@ -1748,11 +1748,12 @@ def _compare_model_vs_heuristic(
         try:
             heuristic_preds = paper_heuristic_predict(
                 player_per90=player_per90,
+                source_pos_avg=team_pos_current,
+                target_pos_avg=team_pos_target,
                 change_relative_ability=change_ra,
-                src_pos_avg=team_pos_current,
-                tgt_pos_avg=team_pos_target,
             )
-        except Exception:
+        except Exception as exc:
+            _log.warning("paper_heuristic_predict failed: %s", exc)
             heuristic_preds = player_per90.copy()
 
         # Compute errors

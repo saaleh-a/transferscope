@@ -16,7 +16,7 @@ import streamlit as st
 from backend.data import sofascore_client
 from backend.data.sofascore_client import (
     CORE_METRICS,
-    _discover_tournament_for_team,
+    discover_tournament_for_team,
     get_player_stats_for_season,
     get_player_transfer_history,
     get_season_list,
@@ -179,8 +179,8 @@ def _resolve_transfer_context(
     if not from_team_id or not to_team_id:
         return None
 
-    from_tid = _discover_tournament_for_team(from_team_id)
-    to_tid = _discover_tournament_for_team(to_team_id)
+    from_tid = discover_tournament_for_team(from_team_id)
+    to_tid = discover_tournament_for_team(to_team_id)
     if not from_tid or not to_tid:
         return None
 

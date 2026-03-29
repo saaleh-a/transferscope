@@ -824,14 +824,13 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
 
     @mock.patch("backend.features.power_rankings.get_team_ranking")
     @mock.patch("backend.features.power_rankings.compute_daily_rankings")
-    @mock.patch("backend.data.sofascore_client.search_team")
     @mock.patch("backend.data.sofascore_client.get_team_position_averages")
     @mock.patch("backend.data.sofascore_client.get_player_stats_for_season")
     @mock.patch("backend.data.sofascore_client.get_player_match_logs")
     @mock.patch("backend.features.rolling_windows.player_rolling_average")
     def test_inference_uses_match_logs_when_available(
         self, mock_rolling, mock_logs, mock_season, mock_pos_avg,
-        mock_search_team, mock_daily, mock_team_ranking,
+        mock_daily, mock_team_ranking,
     ):
         """When match logs are available, use rolling average from them."""
         from backend.models.transfer_portal import build_feature_dict_from_player
@@ -849,7 +848,6 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             "minutes_played": 1080, "per90": _make_mock_per90(0.3),
         }
         mock_pos_avg.return_value = (_make_mock_per90(0.4), [])
-        mock_search_team.return_value = [{"name": "Target FC"}]
 
         mock_daily.return_value = ({}, {})
         mock_team_ranking.return_value = None
@@ -861,6 +859,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_club_id=300,
             target_league_id=8,
             position="Forward",
+            target_team_name="Target FC",
         )
 
         # Should have all 43 keys
@@ -871,13 +870,12 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
 
     @mock.patch("backend.features.power_rankings.get_team_ranking")
     @mock.patch("backend.features.power_rankings.compute_daily_rankings")
-    @mock.patch("backend.data.sofascore_client.search_team")
     @mock.patch("backend.data.sofascore_client.get_team_position_averages")
     @mock.patch("backend.data.sofascore_client.get_player_stats_for_season")
     @mock.patch("backend.data.sofascore_client.get_player_match_logs")
     def test_inference_falls_back_to_season_agg_when_no_logs(
         self, mock_logs, mock_season, mock_pos_avg,
-        mock_search_team, mock_daily, mock_team_ranking,
+        mock_daily, mock_team_ranking,
     ):
         """When no match logs are available, use season aggregate."""
         from backend.models.transfer_portal import build_feature_dict_from_player
@@ -888,7 +886,6 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             "minutes_played": 1080, "per90": _make_mock_per90(0.8),
         }
         mock_pos_avg.return_value = (_make_mock_per90(0.4), [])
-        mock_search_team.return_value = [{"name": "Target FC"}]
 
         mock_daily.return_value = ({}, {})
         mock_team_ranking.return_value = None
@@ -900,6 +897,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_club_id=300,
             target_league_id=8,
             position="Forward",
+            target_team_name="Target FC",
         )
 
         # Should have all 43 keys

@@ -354,9 +354,9 @@ class TransferPortalModel:
 
         return paper_heuristic_predict(
             player_per90=player_per90,
+            source_pos_avg=src_pos_avg,
+            target_pos_avg=tgt_pos_avg,
             change_relative_ability=change_ra,
-            src_pos_avg=src_pos_avg,
-            tgt_pos_avg=tgt_pos_avg,
         )
 
     def predict_batch(self, feature_dicts: List[Dict[str, float]]) -> List[Dict[str, float]]:
@@ -504,6 +504,7 @@ def build_feature_dict_from_player(
     target_club_id: int,
     target_league_id: int,
     position: str,
+    target_team_name: str = "",
     query_date: Optional[date] = None,
 ) -> Dict[str, float]:
     """Build a full feature dict for inference by fetching live data.
@@ -514,6 +515,13 @@ def build_feature_dict_from_player(
     2. Get power rankings for source (player's current club) and target.
     3. Get team-position averages for both clubs.
     4. Call build_feature_dict() with assembled components.
+
+    Parameters
+    ----------
+    target_team_name : str
+        Display name of the target club (e.g. "Arsenal") used for power
+        ranking lookup.  Preferred over resolving from *target_club_id*
+        via search.
     """
     from backend.data import sofascore_client
     from backend.data.sofascore_client import normalize_position
@@ -574,13 +582,6 @@ def build_feature_dict_from_player(
     league_ability_current = src_ranking.league_mean_normalized if src_ranking else 50.0
 
     # Target rankings
-    # Try to find target team name from search
-    try:
-        target_team_info = sofascore_client.search_team(str(target_club_id))
-        target_team_name = target_team_info[0]["name"] if target_team_info else ""
-    except Exception:
-        target_team_name = ""
-
     tgt_ranking = power_rankings.get_team_ranking(target_team_name) if target_team_name else None
     team_ability_target = tgt_ranking.normalized_score if tgt_ranking else 50.0
     league_ability_target = tgt_ranking.league_mean_normalized if tgt_ranking else 50.0
