@@ -454,5 +454,64 @@ class TestStripAccents(unittest.TestCase):
         self.assertEqual(_strip_accents("São Paulo FC"), "Sao Paulo FC")
 
 
+class TestExtremeAbbrevsFixes(unittest.TestCase):
+    """Regression tests for bugs in _EXTREME_ABBREVS keys."""
+
+    def test_mainz_key_has_no_space(self):
+        """Bug fix: '1fsv mainz05' had a space — must be '1fsvmainz05'.
+
+        The space caused the reverse abbreviation lookup to fail because
+        _normalize_team_name removes all spaces, making '1fsvmainz05' (no
+        space) the lookup key, which did not match the old spaced key.
+        """
+        from backend.features.power_rankings import _EXTREME_ABBREVS, _normalize_team_name
+
+        full_name = "1. FSV Mainz 05"
+        normalized = _normalize_team_name(full_name)
+        self.assertEqual(normalized, "1fsvmainz05")
+        # Key must exist without a space
+        self.assertIn(normalized, _EXTREME_ABBREVS)
+        self.assertNotIn("1fsv mainz05", _EXTREME_ABBREVS)
+        # Aliases must include 'mainz' and 'mainz05'
+        self.assertIn("mainz", _EXTREME_ABBREVS[normalized])
+        self.assertIn("mainz05", _EXTREME_ABBREVS[normalized])
+
+    def test_mainz_reverse_lookup_works(self):
+        """'Mainz' query must resolve to '1. FSV Mainz 05' via reverse lookup."""
+        teams = {"1. FSV Mainz 05": _make_ranking("1. FSV Mainz 05", "GER1")}
+        result = _fuzzy_find_team("Mainz", teams)
+        self.assertEqual(result, "1. FSV Mainz 05")
+
+    def test_mainz05_reverse_lookup_works(self):
+        """'Mainz 05' query must resolve to '1. FSV Mainz 05' via reverse lookup."""
+        teams = {"1. FSV Mainz 05": _make_ranking("1. FSV Mainz 05", "GER1")}
+        result = _fuzzy_find_team("Mainz 05", teams)
+        self.assertEqual(result, "1. FSV Mainz 05")
+
+    def test_cincinnati_key_is_correct(self):
+        """Bug fix: 'cincinnatitied' was a typo — must be 'cincinnati'.
+
+        The old key 'cincinnatitied' (with 'tied' appended) and alias
+        'cincinnatidied' were both typos and would never match any real
+        team name.  The correct key is 'cincinnati' (the normalized form
+        of 'FC Cincinnati' and 'Cincinnati').
+        """
+        from backend.features.power_rankings import _EXTREME_ABBREVS
+
+        self.assertIn("cincinnati", _EXTREME_ABBREVS)
+        self.assertNotIn("cincinnatitied", _EXTREME_ABBREVS)
+        # Must not contain the typo alias
+        self.assertNotIn("cincinnatidied", _EXTREME_ABBREVS.get("cincinnati", []))
+        # Must include the fccincinnati alias
+        self.assertIn("fccincinnati", _EXTREME_ABBREVS["cincinnati"])
+
+    def test_cincinnati_forward_lookup_works(self):
+        """'Cincinnati' must resolve to 'FCCincinnati' via abbreviation lookup."""
+        # Simulate a data source that stores the team without space (no FC stripping)
+        teams = {"FCCincinnati": _make_ranking("FCCincinnati", "USA1")}
+        result = _fuzzy_find_team("Cincinnati", teams)
+        self.assertEqual(result, "FCCincinnati")
+
+
 if __name__ == "__main__":
     unittest.main()
