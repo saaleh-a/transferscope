@@ -1,36 +1,39 @@
 """Backtest Validator — compare predictions against actual post-transfer per-90.
 
-Loads historical transfer records, runs the prediction pipeline on pre-transfer
-stats, fetches actual post-transfer per-90, and displays accuracy metrics.
+Search any player via Sofascore, pick a transfer, and compare model predictions
+against actual post-transfer per-90 stats from the correct season.
 """
 
 from __future__ import annotations
 
-import json
-import os
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 from backend.data import sofascore_client
-from backend.data.sofascore_client import CORE_METRICS, normalize_position
-from backend.features import power_rankings, rolling_windows
+from backend.data.sofascore_client import (
+    CORE_METRICS,
+    _discover_tournament_for_team,
+    get_player_stats_for_season,
+    get_player_transfer_history,
+    get_season_list,
+    normalize_position,
+    search_player,
+)
+from backend.features import power_rankings
 from backend.features.adjustment_models import paper_heuristic_predict
 from backend.models.transfer_portal import (
     TransferPortalModel,
     build_feature_dict,
 )
 from frontend.theme import (
-    section_header, player_info_card, COLORS, PLOTLY_LAYOUT,
-)
-
-_RECORDS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data",
-    "models",
-    "transfer_records.json",
+    COLORS,
+    PLOTLY_LAYOUT,
+    player_info_card,
+    section_header,
 )
 
 _LABELS: Dict[str, str] = {
@@ -49,35 +52,166 @@ _LABELS: Dict[str, str] = {
     "possession_won_final_3rd": "Def Att 3rd",
 }
 
-
-def _load_records() -> List[Dict[str, Any]]:
-    """Load transfer records from JSON, cached in session state."""
-    if "bt_records" in st.session_state:
-        return st.session_state["bt_records"]
-    if not os.path.exists(_RECORDS_PATH):
-        return []
-    with open(_RECORDS_PATH) as f:
-        records = json.load(f)
-    st.session_state["bt_records"] = records
-    return records
-
-
-def _record_label(r: Dict[str, Any]) -> str:
-    """Format a record as 'Player: From → To (Date)'."""
-    return (
-        f"{r['player_name']}: {r['from_club_name']} → "
-        f"{r['to_club_name']} ({r['transfer_date']})"
-    )
-
-
 _EPSILON = 0.001  # Minimum meaningful change threshold
+
+
+# ── Season matching helpers ──────────────────────────────────────────────────
+
+
+def _parse_season_years(name: str) -> Tuple[int, int]:
+    """Parse season name to ``(start_year, end_year)``.
+
+    Examples::
+
+        "24/25"       → (2024, 2025)
+        "2024/2025"   → (2024, 2025)
+        "2024"        → (2024, 2024)
+    """
+    name = name.strip()
+    if "/" in name:
+        parts = name.split("/")
+        s, e = parts[0].strip(), parts[1].strip()
+        try:
+            start = int(s) if len(s) == 4 else 2000 + int(s)
+            end = int(e) if len(e) == 4 else 2000 + int(e)
+            return (start, end)
+        except ValueError:
+            return (0, 0)
+    m = re.match(r"(\d{4})", name)
+    if m:
+        year = int(m.group(1))
+        return (year, year)
+    return (0, 0)
+
+
+def _match_season(
+    seasons: List[Dict[str, Any]],
+    transfer_year: int,
+    transfer_month: int,
+    mode: str,
+) -> Optional[Dict[str, Any]]:
+    """Pick the correct season for a transfer date.
+
+    Parameters
+    ----------
+    seasons : list
+        Season dicts with ``id`` and ``name``, newest first.
+    transfer_year, transfer_month : int
+        Year and month from the transfer date.
+    mode : ``"pre"`` or ``"post"``
+
+    Returns
+    -------
+    Season dict or *None*.
+    """
+    if not seasons:
+        return None
+
+    is_summer = 5 <= transfer_month <= 9
+
+    parsed: List[Tuple[Dict[str, Any], int, int]] = []
+    for s in seasons:
+        sy, ey = _parse_season_years(s.get("name", ""))
+        if sy > 0:
+            parsed.append((s, sy, ey))
+
+    if not parsed:
+        return seasons[0]
+
+    # Calendar-year leagues: prefer exact year, then nearest
+    # Split-year leagues: use summer/winter logic
+    best: Optional[Dict[str, Any]] = None
+
+    for s, sy, ey in parsed:
+        if sy == ey:
+            # Calendar-year league (MLS "2025")
+            if mode == "pre":
+                if sy == transfer_year:
+                    return s  # Same year — best match
+                if sy == transfer_year - 1 and best is None:
+                    best = s
+            else:  # post
+                if sy == transfer_year:
+                    return s  # Same year — best match
+                if sy == transfer_year + 1 and best is None:
+                    best = s
+        else:
+            # Split-year league ("24/25")
+            if is_summer:
+                if mode == "pre" and ey == transfer_year:
+                    return s  # Season that just ended
+                if mode == "post" and sy == transfer_year:
+                    return s  # Season about to start
+            else:
+                # Winter transfer — same season for both pre and post
+                if sy == transfer_year - 1 and ey == transfer_year:
+                    return s
+                if sy == transfer_year and transfer_month >= 8:
+                    return s
+
+    if best is not None:
+        return best
+
+    # Fallback: newest for post, second-newest for pre
+    if mode == "post":
+        return parsed[0][0]
+    return parsed[min(1, len(parsed) - 1)][0]
+
+
+def _resolve_transfer_context(
+    player_id: int,
+    from_team_id: Optional[int],
+    to_team_id: Optional[int],
+    transfer_date: str,
+) -> Optional[Dict[str, Any]]:
+    """Dynamically resolve tournament/season IDs for a transfer.
+
+    Returns dict with ``pre_tournament_id``, ``pre_season_id``,
+    ``post_tournament_id``, ``post_season_id``, and season name labels,
+    or *None* on failure.
+    """
+    if not from_team_id or not to_team_id:
+        return None
+
+    from_tid = _discover_tournament_for_team(from_team_id)
+    to_tid = _discover_tournament_for_team(to_team_id)
+    if not from_tid or not to_tid:
+        return None
+
+    from_seasons = get_season_list(from_tid)
+    to_seasons = get_season_list(to_tid)
+    if not from_seasons or not to_seasons:
+        return None
+
+    try:
+        year = int(transfer_date[:4])
+        month = int(transfer_date[5:7])
+    except (ValueError, IndexError):
+        return None
+
+    pre_season = _match_season(from_seasons, year, month, "pre")
+    post_season = _match_season(to_seasons, year, month, "post")
+    if not pre_season or not post_season:
+        return None
+
+    return {
+        "pre_tournament_id": from_tid,
+        "pre_season_id": pre_season["id"],
+        "pre_season_name": pre_season.get("name", ""),
+        "post_tournament_id": to_tid,
+        "post_season_id": post_season["id"],
+        "post_season_name": post_season.get("name", ""),
+    }
+
+
+# ── Display helpers ──────────────────────────────────────────────────────────
 
 
 def _color_pct_error(val: float) -> str:
     """Return CSS color for a percentage error value."""
     if val < 10:
         return COLORS["accent_green"]
-    elif val < 20:
+    if val < 20:
         return COLORS["accent_amber"]
     return COLORS["accent_crimson"]
 
@@ -91,59 +225,140 @@ def _is_direction_match(predicted_change: float, actual_change: float) -> bool:
 def _direction_icon(predicted_change: float, actual_change: float) -> str:
     """Return ✅ or ❌ based on whether predicted direction matches actual."""
     if abs(actual_change) < _EPSILON:
-        return "➖"  # no meaningful change
+        return "➖"
     return "✅" if _is_direction_match(predicted_change, actual_change) else "❌"
+
+
+# ── Main render ──────────────────────────────────────────────────────────────
 
 
 def render():
     st.header("Backtest Validator")
     st.caption(
-        "Compare model predictions against actual post-transfer per-90 stats "
-        "for historical transfers."
+        "Compare model predictions against actual post-transfer per-90 stats. "
+        "Search any player — stats are fetched live from Sofascore."
     )
 
-    # ── Load records ─────────────────────────────────────────────────────
-    records = _load_records()
-    if not records:
-        st.error(
-            "No transfer records found. Expected file at "
-            f"`{_RECORDS_PATH}`."
+    with st.expander("ℹ️ Data sources & limitations"):
+        st.markdown(
+            "**Predicted** — generated by the paper-aligned heuristic model "
+            "(or trained TF model when available). Uses the player's pre-transfer "
+            "per-90 stats adjusted by Power Rankings (team quality gap), "
+            "team-position averages, and per-metric sensitivity coefficients.\n\n"
+            "**Actual** — fetched from the Sofascore season statistics API for "
+            "the *first season after the transfer*, resolved dynamically from "
+            "the transfer date.\n\n"
+            "**Direction ✅/❌** — compares the *change from pre-transfer* baseline: "
+            "✅ means both predicted and actual moved in the same direction (both up "
+            "or both down); ❌ means they moved in opposite directions.\n\n"
+            "⚠️ **Limitation:** Sofascore returns aggregate season stats per "
+            "tournament — there is no per-club filter. If a player transferred "
+            "mid-season, the figures may include time at both clubs."
         )
-        return
 
-    # ── Searchable selectbox ─────────────────────────────────────────────
-    labels = [_record_label(r) for r in records]
-    selected_label = st.selectbox(
-        "Select transfer",
-        labels,
-        index=None,
-        placeholder="Search: Player: From → To (Date)",
-        key="bt_select",
+    # ── Step 1: Player search ────────────────────────────────────────────
+    player_query = st.text_input(
+        "🔍 Search player",
+        placeholder="e.g. Bukayo Saka, Boniface, Salah",
+        key="bt_player_query",
     )
 
-    if selected_label is None:
-        st.info("Select a historical transfer above to run the backtest.")
+    if not player_query or len(player_query.strip()) < 2:
+        st.info("Enter a player name above to search.")
         return
 
-    idx = labels.index(selected_label)
-    rec = records[idx]
+    with st.spinner("Searching…"):
+        results = search_player(player_query.strip())
 
-    player_id = rec["player_id"]
-    position = rec.get("position", "F")
-    from_club = rec["from_club_name"]
-    to_club = rec["to_club_name"]
-    transfer_date = rec["transfer_date"]
-    pre_tournament_id = rec["pre_transfer_tournament_id"]
-    pre_season_id = rec["pre_transfer_season_id"]
-    post_tournament_id = rec["post_transfer_tournament_id"]
-    post_season_id = rec["post_transfer_season_id"]
+    if not results:
+        st.warning("No players found. Try a different spelling.")
+        return
+
+    # ── Step 2: Select player ────────────────────────────────────────────
+    player_labels = [
+        f"{p['name']} — {p.get('team_name', 'Unknown')}"
+        + (f" (age {p['age']})" if p.get("age") else "")
+        for p in results
+    ]
+    selected_player_idx = st.selectbox(
+        "Select player",
+        range(len(player_labels)),
+        format_func=lambda i: player_labels[i],
+        key="bt_player_select",
+    )
+    player = results[selected_player_idx]
+    player_id = player["id"]
+    player_name = player["name"]
+
+    # ── Step 3: Fetch transfer history ───────────────────────────────────
+    with st.spinner("Loading transfer history…"):
+        transfers = get_player_transfer_history(player_id)
+
+    if not transfers:
+        st.warning(f"No transfer history found for {player_name}.")
+        return
+
+    # Filter out entries with missing team info
+    valid_transfers = [
+        t for t in transfers
+        if t.get("from_team", {}).get("id") and t.get("to_team", {}).get("id")
+        and t.get("from_team", {}).get("name") and t.get("to_team", {}).get("name")
+    ]
+    if not valid_transfers:
+        st.warning("No valid transfers with complete team data.")
+        return
+
+    transfer_labels = [
+        f"{t['from_team']['name']} → {t['to_team']['name']}  "
+        f"({t.get('transfer_date', 'Unknown date')}"
+        f"{', ' + t.get('type', '') if t.get('type') else ''})"
+        for t in valid_transfers
+    ]
+    selected_transfer_idx = st.selectbox(
+        "Select transfer",
+        range(len(transfer_labels)),
+        format_func=lambda i: transfer_labels[i],
+        key="bt_transfer_select",
+    )
+    transfer = valid_transfers[selected_transfer_idx]
+
+    from_team_id = transfer["from_team"]["id"]
+    from_club = transfer["from_team"]["name"]
+    to_team_id = transfer["to_team"]["id"]
+    to_club = transfer["to_team"]["name"]
+    transfer_date = transfer.get("transfer_date", "")
 
     st.markdown("---")
 
+    # ── Step 4: Resolve seasons dynamically ──────────────────────────────
+    with st.spinner("Resolving seasons…"):
+        ctx = _resolve_transfer_context(
+            player_id, from_team_id, to_team_id, transfer_date
+        )
+
+    if ctx is None:
+        st.error(
+            "Could not resolve tournament/season for this transfer. "
+            "The teams may not be in a recognized domestic league on Sofascore."
+        )
+        return
+
+    pre_tournament_id = ctx["pre_tournament_id"]
+    pre_season_id = ctx["pre_season_id"]
+    post_tournament_id = ctx["post_tournament_id"]
+    post_season_id = ctx["post_season_id"]
+
+    st.caption(
+        f"Pre-transfer: tournament {pre_tournament_id}, "
+        f"season {ctx['pre_season_name']} ({pre_season_id})  ·  "
+        f"Post-transfer: tournament {post_tournament_id}, "
+        f"season {ctx['post_season_name']} ({post_season_id})"
+    )
+
     # ── Pre-transfer stats ───────────────────────────────────────────────
-    with st.spinner("Fetching pre-transfer stats..."):
+    with st.spinner("Fetching pre-transfer stats…"):
         try:
-            pre_stats = sofascore_client.get_player_stats_for_season(
+            pre_stats = get_player_stats_for_season(
                 player_id, pre_tournament_id, pre_season_id
             )
         except Exception as e:
@@ -157,14 +372,22 @@ def render():
     }
     minutes = pre_stats.get("minutes_played", 0) or 0
 
-    player_name = pre_stats.get("name") or rec["player_name"]
-    player_position = pre_stats.get("position") or normalize_position(position)
+    player_position = pre_stats.get("position") or normalize_position(
+        player.get("position", "F")
+    )
 
     player_info_card(
         player_name, from_club, player_position, minutes,
-        season_label=f"Pre-transfer ({transfer_date})",
+        season_label=f"Pre-transfer · {ctx['pre_season_name']} ({transfer_date})",
         rating=pre_stats.get("rating"),
     )
+
+    if minutes == 0:
+        st.warning(
+            "⚠️ No pre-transfer minutes found in this season. "
+            "The player may not have been registered in this league/season."
+        )
+        return
 
     # ── Power Rankings ───────────────────────────────────────────────────
     source_ranking = power_rankings.get_team_ranking(from_club)
@@ -191,23 +414,19 @@ def render():
     # ── Team-position averages ───────────────────────────────────────────
     source_pos_avg: Dict[str, float] = {}
     target_pos_avg: Dict[str, float] = {}
-    from_club_id = rec.get("from_club_id")
-    to_club_id = rec.get("to_club_id")
 
-    if from_club_id:
-        try:
-            source_pos_avg, _ = sofascore_client.get_team_position_averages(
-                from_club_id, player_position
-            )
-        except Exception:
-            pass
-    if to_club_id:
-        try:
-            target_pos_avg, _ = sofascore_client.get_team_position_averages(
-                to_club_id, player_position
-            )
-        except Exception:
-            pass
+    try:
+        source_pos_avg, _ = sofascore_client.get_team_position_averages(
+            from_team_id, player_position
+        )
+    except Exception:
+        pass
+    try:
+        target_pos_avg, _ = sofascore_client.get_team_position_averages(
+            to_team_id, player_position
+        )
+    except Exception:
+        pass
 
     if not source_pos_avg:
         source_pos_avg = pre_per90_clean.copy()
@@ -215,7 +434,7 @@ def render():
         target_pos_avg = pre_per90_clean.copy()
 
     # ── Run prediction ───────────────────────────────────────────────────
-    with st.spinner("Running prediction pipeline..."):
+    with st.spinner("Running prediction pipeline…"):
         predicted: Dict[str, float] = {}
         try:
             model = TransferPortalModel()
@@ -232,7 +451,7 @@ def render():
                 )
                 predicted = model.predict(fd)
         except Exception:
-            st.warning("Model prediction unavailable, using heuristic fallback.")
+            pass
 
         if not predicted:
             player_rating = pre_stats.get("rating")
@@ -247,9 +466,9 @@ def render():
             )
 
     # ── Fetch actual post-transfer stats ─────────────────────────────────
-    with st.spinner("Fetching actual post-transfer stats..."):
+    with st.spinner("Fetching actual post-transfer stats…"):
         try:
-            post_stats = sofascore_client.get_player_stats_for_season(
+            post_stats = get_player_stats_for_season(
                 player_id, post_tournament_id, post_season_id
             )
         except Exception as e:
@@ -259,19 +478,17 @@ def render():
     post_per90 = post_stats.get("per90", {}) if post_stats else {}
     post_minutes = (post_stats.get("minutes_played", 0) or 0) if post_stats else 0
 
-    # Check if post-transfer data is actually available
     has_post_data = post_minutes > 0 and any(
         post_per90.get(m) is not None for m in CORE_METRICS
     )
 
     if not has_post_data:
         st.warning(
-            "⚠️ No post-transfer performance data available for this transfer. "
-            "The player may not have played enough minutes in the post-transfer "
-            f"season (tournament {post_tournament_id}, season {post_season_id}). "
+            "⚠️ No post-transfer performance data available. "
+            f"Season: {ctx['post_season_name']} "
+            f"(tournament {post_tournament_id}, season {post_season_id}). "
             "Predictions are shown below without actual comparison."
         )
-        # Show predictions only
         section_header("Predicted Per-90 (no actuals available)")
         pred_rows = []
         for m in CORE_METRICS:
@@ -293,7 +510,10 @@ def render():
     }
 
     # ── Comparison table ─────────────────────────────────────────────────
-    section_header("Prediction vs Actual", f"Post-transfer: {post_minutes:,} mins played")
+    section_header(
+        "Prediction vs Actual",
+        f"Post-transfer: {ctx['post_season_name']} · {post_minutes:,} mins played",
+    )
 
     table_rows = []
     pct_errors: List[float] = []
@@ -306,14 +526,12 @@ def render():
         pre_val = pre_per90_clean.get(m, 0.0)
         diff = pred_val - actual_val
 
-        # Percentage error
         if abs(actual_val) > _EPSILON:
             pct_err = abs(diff) / abs(actual_val) * 100
         else:
             pct_err = 0.0 if abs(pred_val) < _EPSILON else 100.0
         pct_errors.append(pct_err)
 
-        # Direction accuracy
         predicted_change = pred_val - pre_val
         actual_change = actual_val - pre_val
         direction = _direction_icon(predicted_change, actual_change)
@@ -325,6 +543,7 @@ def render():
         color = _color_pct_error(pct_err)
         table_rows.append({
             "Metric": _LABELS.get(m, m),
+            "Pre": f"{pre_val:.3f}",
             "Predicted": f"{pred_val:.3f}",
             "Actual": f"{actual_val:.3f}",
             "Difference": f"{diff:+.3f}",
@@ -333,8 +552,11 @@ def render():
             "_pct_err_color": color,
         })
 
-    # Build styled HTML table
     _render_comparison_table(table_rows)
+    st.caption(
+        "**Direction** compares change from pre-transfer: ✅ = both predicted "
+        "and actual moved the same way (↑↑ or ↓↓), ❌ = opposite directions."
+    )
 
     # ── Summary cards ────────────────────────────────────────────────────
     st.markdown("---")
@@ -381,10 +603,11 @@ def render():
         marker_color=COLORS["accent_green"],
         opacity=0.9,
     ))
+    layout = dict(PLOTLY_LAYOUT)
+    layout["title"] = dict(text="Predicted vs Actual Per-90", **PLOTLY_LAYOUT["title"])
     fig.update_layout(
-        **PLOTLY_LAYOUT,
+        **layout,
         barmode="group",
-        title="Predicted vs Actual Per-90",
         xaxis_title="Metric",
         yaxis_title="Per-90 Value",
         height=450,
@@ -394,7 +617,10 @@ def render():
 
     # ── Direction accuracy detail ────────────────────────────────────────
     st.markdown("---")
-    section_header("Direction Accuracy", "Did the model predict up/down correctly?")
+    section_header(
+        "Direction Accuracy",
+        "Did the model predict whether each metric would rise or fall?",
+    )
 
     dir_rows = []
     for m in CORE_METRICS:
@@ -408,8 +634,11 @@ def render():
             pred_dir = "↑" if pred_change > 0 else ("↓" if pred_change < 0 else "→")
             dir_rows.append({
                 "Metric": _LABELS.get(m, m),
-                "Predicted Direction": pred_dir,
-                "Actual Direction": "→ (no change)",
+                "Pre": f"{pre_val:.3f}",
+                "Predicted": f"{pred_val:.3f}",
+                "Actual": f"{actual_val:.3f}",
+                "Pred Δ": f"{pred_change:+.3f} {pred_dir}",
+                "Actual Δ": "→ (no change)",
                 "Result": "➖",
             })
         else:
@@ -418,8 +647,11 @@ def render():
             correct = _is_direction_match(pred_change, actual_change)
             dir_rows.append({
                 "Metric": _LABELS.get(m, m),
-                "Predicted Direction": pred_dir,
-                "Actual Direction": actual_dir,
+                "Pre": f"{pre_val:.3f}",
+                "Predicted": f"{pred_val:.3f}",
+                "Actual": f"{actual_val:.3f}",
+                "Pred Δ": f"{pred_change:+.3f} {pred_dir}",
+                "Actual Δ": f"{actual_change:+.3f} {actual_dir}",
                 "Result": "✅" if correct else "❌",
             })
 
@@ -432,23 +664,26 @@ def render():
 
 def _render_comparison_table(rows: List[Dict[str, Any]]) -> None:
     """Render the comparison table with color-coded % Error column."""
+    c_border = COLORS["border"]
+    c_text = COLORS["text_primary"]
+    c_sec = COLORS["text_secondary"]
+    c_muted = COLORS["text_muted"]
+    c_gold = COLORS["accent_gold"]
+    c_green = COLORS["accent_green"]
+
     header = (
         "<table style='width:100%; border-collapse:collapse; "
         "font-family: \"JetBrains Mono\", \"Fira Code\", monospace; font-size:0.85rem;'>"
-        "<thead><tr style='border-bottom:2px solid {border};'>"
-        "<th style='text-align:left; padding:8px; color:{text};'>Metric</th>"
-        "<th style='text-align:right; padding:8px; color:{text};'>Predicted</th>"
-        "<th style='text-align:right; padding:8px; color:{text};'>Actual</th>"
-        "<th style='text-align:right; padding:8px; color:{text};'>Difference</th>"
-        "<th style='text-align:right; padding:8px; color:{text};'>% Error</th>"
-        "<th style='text-align:center; padding:8px; color:{text};'>Direction</th>"
+        f"<thead><tr style='border-bottom:2px solid {c_border};'>"
+        f"<th style='text-align:left; padding:8px; color:{c_sec};'>Metric</th>"
+        f"<th style='text-align:right; padding:8px; color:{c_sec};'>Pre</th>"
+        f"<th style='text-align:right; padding:8px; color:{c_sec};'>Predicted</th>"
+        f"<th style='text-align:right; padding:8px; color:{c_sec};'>Actual</th>"
+        f"<th style='text-align:right; padding:8px; color:{c_sec};'>Diff</th>"
+        f"<th style='text-align:right; padding:8px; color:{c_sec};'>% Error</th>"
+        f"<th style='text-align:center; padding:8px; color:{c_sec};'>Dir</th>"
         "</tr></thead><tbody>"
-    ).format(border=COLORS["border"], text=COLORS["text_secondary"])
-
-    c_border = COLORS["border"]
-    c_text = COLORS["text_primary"]
-    c_gold = COLORS["accent_gold"]
-    c_green = COLORS["accent_green"]
+    )
 
     body = ""
     for r in rows:
@@ -456,6 +691,8 @@ def _render_comparison_table(rows: List[Dict[str, Any]]) -> None:
         body += (
             f"<tr style='border-bottom:1px solid {c_border};'>"
             f"<td style='padding:8px; color:{c_text};'>{r['Metric']}</td>"
+            f"<td style='text-align:right; padding:8px; color:{c_muted};'>"
+            f"{r['Pre']}</td>"
             f"<td style='text-align:right; padding:8px; color:{c_gold};'>"
             f"{r['Predicted']}</td>"
             f"<td style='text-align:right; padding:8px; color:{c_green};'>"
