@@ -381,10 +381,11 @@ def render():
         marker_color=COLORS["accent_green"],
         opacity=0.9,
     ))
+    layout = dict(PLOTLY_LAYOUT)
+    layout["title"] = dict(text="Predicted vs Actual Per-90", **PLOTLY_LAYOUT["title"])
     fig.update_layout(
-        **PLOTLY_LAYOUT,
+        **layout,
         barmode="group",
-        title="Predicted vs Actual Per-90",
         xaxis_title="Metric",
         yaxis_title="Per-90 Value",
         height=450,
