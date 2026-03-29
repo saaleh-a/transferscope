@@ -46,6 +46,7 @@ from backend.models.transfer_portal import (
     _feature_keys,
     build_feature_dict,
 )
+from backend.utils.constants import MIN_MINUTES_THRESHOLD
 from backend.utils.league_registry import LEAGUES
 
 _log = logging.getLogger(__name__)
@@ -66,8 +67,6 @@ DEFAULT_LEAGUE_CODES = [
     "TUR1",  # Super Lig
     "SCO1",  # Scottish Premiership
 ]
-
-from backend.utils.constants import MIN_MINUTES_THRESHOLD
 
 API_CALL_DELAY_SECONDS = 2.0
 
