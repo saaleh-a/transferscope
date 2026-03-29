@@ -15,16 +15,13 @@ from urllib.parse import quote as _url_quote
 
 import requests as _stdlib_requests
 
-# Prefer tls_requests for Cloudflare bypass; fall back to stdlib requests
-# when tls_requests is not installed or its native TLS library fails to load.
+# Prefer curl_cffi for Cloudflare bypass (TLS fingerprint impersonation).
+# Falls back to stdlib requests if curl_cffi is not installed.
 try:
-    import tls_requests as _tls_requests
-except ImportError:
-    _tls_requests = None
-
-# Active HTTP module — may be swapped to _stdlib_requests at runtime if
-# tls_requests raises OSError (native library download failure).
-_http = _tls_requests if _tls_requests is not None else _stdlib_requests
+    from curl_cffi.requests import Session as _CurlSession
+    _http = _CurlSession(impersonate="chrome110")
+except (ImportError, Exception):
+    _http = _stdlib_requests
 
 from backend.data import cache
 
@@ -192,9 +189,8 @@ def _get(path: str) -> Optional[dict]:
     transient HTTP errors (429 rate-limit, 5xx server errors).
     Returns the parsed JSON dict, or None on any permanent error.
 
-    Uses ``tls_requests`` when available (Cloudflare bypass) and
-    falls back to stdlib ``requests`` if the native TLS library is
-    unavailable at runtime.
+    Uses ``curl_cffi`` when available (Cloudflare bypass) and
+    falls back to stdlib ``requests`` if curl_cffi is not installed.
     """
     global _http
     url = f"{_BASE_URL}{path}"
@@ -211,18 +207,17 @@ def _get(path: str) -> Optional[dict]:
                 continue
             # Non-retryable HTTP errors — return None immediately.
             # Explicit check avoids raise_for_status() whose exception
-            # hierarchy differs between tls_requests and stdlib requests.
+            # hierarchy differs between curl_cffi and stdlib requests.
             if resp.status_code >= 400:
                 _log.warning("Sofascore HTTP %d on %s", resp.status_code, path)
                 return None
             return resp.json()
         except (ConnectionError, OSError) as exc:
-            # tls_requests raises OSError when its native TLS library is
-            # unavailable (e.g. on Streamlit Cloud).  Fall back to stdlib
-            # requests and retry this attempt.
+            # curl_cffi may raise OSError on certain platforms.  Fall back
+            # to stdlib requests and retry this attempt.
             if _http is not _stdlib_requests:
                 _log.warning(
-                    "tls_requests unavailable (%s), falling back to stdlib requests",
+                    "curl_cffi unavailable (%s), falling back to stdlib requests",
                     exc,
                 )
                 _http = _stdlib_requests
@@ -234,10 +229,10 @@ def _get(path: str) -> Optional[dict]:
             )
             time.sleep(delay)
         except Exception as exc:
-            # If tls_requests raises a non-standard exception, fall back once.
+            # If curl_cffi raises a non-standard exception, fall back once.
             if _http is not _stdlib_requests:
                 _log.warning(
-                    "tls_requests error (%s), falling back to stdlib requests",
+                    "curl_cffi error (%s), falling back to stdlib requests",
                     exc,
                 )
                 _http = _stdlib_requests

@@ -263,7 +263,7 @@ return result  # {"name": "Saka", "per90": {"expected_goals": 0.31, ...}, "minut
 #### Glossary
 - **Per-90**: A statistic normalized to 90 minutes of play. If a player scored 2 goals in 180 minutes, their per-90 goals = 1.0.
 - **`_SOFASCORE_KEY_MAP`**: A dict mapping each of 23 canonical metric names to 3-5 Sofascore API aliases, because Sofascore changes field names between endpoints.
-- **`_get(path)`**: The HTTP wrapper. Uses `tls_requests` (Cloudflare bypass) with stdlib `requests` fallback. Retries on 429/500 errors.
+- **`_get(path)`**: The HTTP wrapper. Uses `curl_cffi` (Cloudflare bypass) with stdlib `requests` fallback. Retries on 429/500 errors.
 
 ---
 
