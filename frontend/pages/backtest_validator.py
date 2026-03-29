@@ -81,7 +81,7 @@ def _parse_season_years(name: str) -> Tuple[int, int]:
             end = int(e) if len(e) == 4 else 2000 + int(e)
             return (start, end)
         except ValueError:
-            pass
+            pass  # Fall through to standalone year check below
     # Search for a standalone 4-digit year anywhere in the string.
     m = re.search(r"(\d{4})", name)
     if m:
