@@ -391,9 +391,14 @@ def render():
                     "Date": t.get("transfer_date", "N/A"),
                     "From": t.get("from_team", {}).get("name", "N/A"),
                     "To": t.get("to_team", {}).get("name", "N/A"),
-                    "Type": t.get("type", "N/A"),
                 })
             st.dataframe(pd.DataFrame(th_rows), use_container_width=True, hide_index=True)
+            _tm_query = player_info.get("name", "").replace(" ", "+")
+            st.caption(
+                f"[Verify on Transfermarkt ↗]"
+                f"(https://www.transfermarkt.com/schnellsuche/ergebnis/schnellsuche"
+                f"?query={_tm_query})"
+            )
     except Exception as e:
         st.warning(f"Could not load transfer history: {e}")
 

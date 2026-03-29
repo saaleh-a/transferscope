@@ -286,9 +286,20 @@ def render():
         format_func=lambda i: player_labels[i],
         key="bt_player_select",
     )
+    # Guard against stale selectbox state after search query changes
+    if selected_player_idx >= len(results):
+        selected_player_idx = 0
     player = results[selected_player_idx]
     player_id = player["id"]
     player_name = player["name"]
+
+    # Transfermarkt verification link
+    _tm_query = player_name.replace(" ", "+")
+    st.caption(
+        f"[Verify transfer history on Transfermarkt ↗]"
+        f"(https://www.transfermarkt.com/schnellsuche/ergebnis/schnellsuche"
+        f"?query={_tm_query})"
+    )
 
     # ── Step 3: Fetch transfer history ───────────────────────────────────
     with st.spinner("Loading transfer history…"):
@@ -308,10 +319,13 @@ def render():
         st.warning("No valid transfers with complete team data.")
         return
 
+    # NOTE: Sofascore transfer type labels (e.g. "Loan return") are
+    # frequently inaccurate — permanent transfers may be labelled as loans
+    # and vice-versa.  We omit the type from the dropdown to avoid
+    # confusion and provide a Transfermarkt link above for verification.
     transfer_labels = [
         f"{t['from_team']['name']} → {t['to_team']['name']}  "
-        f"({t.get('transfer_date', 'Unknown date')}"
-        f"{', ' + str(t.get('type', '')) if t.get('type') else ''})"
+        f"({t.get('transfer_date', 'Unknown date')})"
         for t in valid_transfers
     ]
     selected_transfer_idx = st.selectbox(
@@ -320,6 +334,9 @@ def render():
         format_func=lambda i: transfer_labels[i],
         key="bt_transfer_select",
     )
+    # Guard against stale selectbox state after player/search changes
+    if selected_transfer_idx >= len(valid_transfers):
+        selected_transfer_idx = 0
     transfer = valid_transfers[selected_transfer_idx]
 
     from_team_id = transfer["from_team"]["id"]
@@ -565,10 +582,10 @@ def render():
     mean_pct_error = sum(pct_errors) / len(pct_errors) if pct_errors else 0.0
     within_10 = sum(1 for e in pct_errors if e < 10)
     within_20 = sum(1 for e in pct_errors if e < 20)
-    dir_accuracy = (
-        direction_correct / direction_total * 100
-        if direction_total > 0 else 0.0
-    )
+    dir_accuracy_label = "N/A"
+    if direction_total > 0:
+        dir_accuracy = direction_correct / direction_total * 100
+        dir_accuracy_label = f"{dir_accuracy:.0f}%"
 
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -578,7 +595,7 @@ def render():
     with col3:
         st.metric("Metrics < 20% Error", f"{within_20} / {len(CORE_METRICS)}")
     with col4:
-        st.metric("Direction Accuracy", f"{dir_accuracy:.0f}%")
+        st.metric("Direction Accuracy", dir_accuracy_label)
 
     # ── Plotly grouped bar chart ─────────────────────────────────────────
     st.markdown("---")
