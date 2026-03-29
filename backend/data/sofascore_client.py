@@ -1168,7 +1168,7 @@ def _discover_tournament_for_team(team_id: int) -> Optional[int]:
         if alpha2 in _NON_COUNTRY_ALPHA2:
             continue
 
-        is_domestic = bool(alpha2) or cat.get("flag") is not None
+        is_domestic = bool(alpha2)
         user_count = t.get("userCount") or 0
         if is_domestic and user_count > best_count:
             best = int(tid)

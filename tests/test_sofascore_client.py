@@ -367,7 +367,7 @@ class TestSofascoreClient(unittest.TestCase):
             ]
         }
         # Should prefer domestic over CL even though CL has higher userCount
-        # CL is excluded both by ID blacklist and by alpha2="EU"
+        # CL is excluded by ID blacklist (id=7) and alpha2 filter ("EU")
         tid = sofascore_client._discover_tournament_for_team(789)
         self.assertEqual(tid, 17)
 
