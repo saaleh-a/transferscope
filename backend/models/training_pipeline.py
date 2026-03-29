@@ -1814,6 +1814,7 @@ def run_pipeline(
     league_codes: Optional[List[str]] = None,
     seasons_back: int = 5,
     skip_discovery: bool = False,
+    skip_build: bool = False,
     skip_training: bool = False,
     val_ratio: float = 0.15,
     test_ratio: float = 0.10,
@@ -1830,6 +1831,9 @@ def run_pipeline(
         Number of historical seasons to use.
     skip_discovery : bool
         If True, load cached transfer records instead of discovering.
+    skip_build : bool
+        If True, load pre-built feature matrices from
+        ``data/models/matrices/`` instead of rebuilding from API.
     skip_training : bool
         If True, skip model training (backtest only).
     val_ratio, test_ratio : float
@@ -1884,19 +1888,44 @@ def run_pipeline(
         _report("Insufficient data", f"Only {len(records)} transfers found — need ≥10")
         return False
 
-    # Step 3: Build full dataset
-    _report("Building dataset", "Discovering non-transfer samples…")
-    transfer_player_ids = {r.player_id for r in records}
-    # Target approximately 20% of transfer samples as non-transfer controls
-    nt_target = max(1, len(records) // 5)
-    non_transfer_records = discover_non_transfers(
-        league_codes, seasons_back,
-        exclude_player_ids=transfer_player_ids,
-        target_count=nt_target,
-    )
-    _report("Non-transfers found", f"{len(non_transfer_records)} records (target: {nt_target})")
+    # Step 3: Build full dataset (or load pre-built matrices)
+    _MATRICES_DIR = os.path.join(_MODELS_DIR, "matrices")
 
-    X, y, metadata = build_full_dataset(records, non_transfer_records)
+    if skip_build:
+        X_path = os.path.join(_MATRICES_DIR, "X.npy")
+        y_path = os.path.join(_MATRICES_DIR, "y.npy")
+        meta_path = os.path.join(_MATRICES_DIR, "metadata.json")
+        if os.path.exists(X_path) and os.path.exists(y_path) and os.path.exists(meta_path):
+            X = np.load(X_path)
+            y = np.load(y_path)
+            with open(meta_path, "r") as f:
+                metadata = json.load(f)
+            _report("Loaded feature matrices", f"{len(X)} samples from data/models/matrices/")
+        else:
+            _report("WARNING: --skip-build set but no matrices found — building from API")
+            skip_build = False
+
+    if not skip_build:
+        _report("Building dataset", "Discovering non-transfer samples…")
+        transfer_player_ids = {r.player_id for r in records}
+        # Target approximately 20% of transfer samples as non-transfer controls
+        nt_target = max(1, len(records) // 5)
+        non_transfer_records = discover_non_transfers(
+            league_codes, seasons_back,
+            exclude_player_ids=transfer_player_ids,
+            target_count=nt_target,
+        )
+        _report("Non-transfers found", f"{len(non_transfer_records)} records (target: {nt_target})")
+
+        X, y, metadata = build_full_dataset(records, non_transfer_records)
+
+        # Save feature matrices to disk for --skip-build on subsequent runs
+        os.makedirs(_MATRICES_DIR, exist_ok=True)
+        np.save(os.path.join(_MATRICES_DIR, "X.npy"), X)
+        np.save(os.path.join(_MATRICES_DIR, "y.npy"), y)
+        with open(os.path.join(_MATRICES_DIR, "metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=2, default=str)
+        _report("Saved feature matrices", f"{len(X)} samples → data/models/matrices/")
 
     if len(metadata) < 10:
         _report("Insufficient data", f"Only {len(metadata)} valid samples")
@@ -1962,6 +1991,11 @@ def main() -> None:
         help="Skip training, run backtesting only (requires existing weights)",
     )
     parser.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Load pre-built feature matrices from data/models/matrices/ instead of rebuilding from API",
+    )
+    parser.add_argument(
         "--val-ratio",
         type=float,
         default=0.15,
@@ -1991,6 +2025,7 @@ def main() -> None:
         league_codes=league_codes,
         seasons_back=args.seasons_back,
         skip_discovery=args.skip_discovery,
+        skip_build=args.skip_build,
         skip_training=args.skip_training,
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,

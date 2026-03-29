@@ -182,6 +182,10 @@ _RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
 _LEAGUE_STATS_INTER_REQUEST_DELAY = 0.5  # seconds between bulk API calls
 
 
+_NEGATIVE_CACHE_TTL = 86400  # 24 hours — cache dead endpoints to avoid re-fetching
+_NEGATIVE_SENTINEL = "__NEGATIVE__"  # Marker stored in cache for None results
+
+
 def _get(path: str) -> Optional[dict]:
     """Execute a GET request against the Sofascore API with retry.
 
@@ -189,15 +193,28 @@ def _get(path: str) -> Optional[dict]:
     transient HTTP errors (429 rate-limit, 5xx server errors).
     Returns the parsed JSON dict, or None on any permanent error.
 
+    HTTP 404 and other non-retryable failures are cached for 24 hours
+    so the same dead endpoint is not re-fetched on the next pipeline run.
+    Transient errors (429, 5xx) are NOT cached.
+
     Uses ``curl_cffi`` when available (Cloudflare bypass) and
     falls back to stdlib ``requests`` if curl_cffi is not installed.
     """
     global _http
+
+    # Check negative cache — avoid re-fetching known-dead endpoints
+    neg_key = cache.make_key("sofascore_neg", path)
+    neg_cached = cache.get(neg_key, max_age=_NEGATIVE_CACHE_TTL)
+    if neg_cached is not None:
+        return None
+
     url = f"{_BASE_URL}{path}"
+    _had_transient_failure = False  # Track if failure was due to transient errors (429/5xx/connection)
     for attempt in range(_MAX_RETRIES):
         try:
             resp = _http.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
             if resp.status_code in _RETRYABLE_STATUS_CODES:
+                _had_transient_failure = True
                 delay = _RETRY_BASE_DELAY * (2 ** attempt)  # 1s, 2s, 4s
                 _log.info(
                     "Sofascore %d on %s — retry %d/%d in %.1fs",
@@ -205,11 +222,12 @@ def _get(path: str) -> Optional[dict]:
                 )
                 time.sleep(delay)
                 continue
-            # Non-retryable HTTP errors — return None immediately.
+            # Non-retryable HTTP errors — cache and return None immediately.
             # Explicit check avoids raise_for_status() whose exception
             # hierarchy differs between curl_cffi and stdlib requests.
             if resp.status_code >= 400:
                 _log.warning("Sofascore HTTP %d on %s", resp.status_code, path)
+                cache.set(neg_key, _NEGATIVE_SENTINEL)
                 return None
             return resp.json()
         except (ConnectionError, OSError) as exc:
@@ -222,6 +240,7 @@ def _get(path: str) -> Optional[dict]:
                 )
                 _http = _stdlib_requests
                 continue
+            _had_transient_failure = True  # Connection errors are transient
             delay = _RETRY_BASE_DELAY * (2 ** attempt)
             _log.info(
                 "Sofascore connection error on %s — retry %d/%d in %.1fs (%s)",
@@ -238,8 +257,12 @@ def _get(path: str) -> Optional[dict]:
                 _http = _stdlib_requests
                 continue
             _log.warning("Sofascore permanent error on %s: %s", path, exc)
+            cache.set(neg_key, _NEGATIVE_SENTINEL)
             return None
     _log.warning("Sofascore request failed after %d retries: %s", _MAX_RETRIES, path)
+    # Do NOT cache transient failures (429/5xx/connection) — they should be retried next run
+    if not _had_transient_failure:
+        cache.set(neg_key, _NEGATIVE_SENTINEL)
     return None
 
 
@@ -360,9 +383,9 @@ def get_league_player_stats(
 ) -> List[Dict[str, Any]]:
     """Fetch aggregated player stats for an entire league/tournament season.
 
-    Uses standings, team rosters, and individual player statistics endpoints
-    to collect season stats for all players in the tournament.
-    Results are cached for 1 day.
+    Uses the batch statistics endpoint to collect all players' season stats
+    in a single API call per tournament/season combination.
+    Results are cached for 1 hour.
 
     Parameters
     ----------
@@ -371,7 +394,7 @@ def get_league_player_stats(
     season_id : int, optional
         Specific season ID.  If ``None``, the current season is fetched.
     limit : int
-        Maximum number of players to fetch (default 200).
+        Maximum number of players to return (default 200).
 
     Returns
     -------
@@ -383,152 +406,142 @@ def get_league_player_stats(
     if season_id is None:
         return []
 
+    # Check result-level cache (includes limit)
     key = cache.make_key(
         "sofascore_league_stats", str(tournament_id), str(season_id),
         str(limit),
     )
-    cached = cache.get(key, max_age=86400)
-    if cached:
+    cached = cache.get(key, max_age=3600)
+    if cached is not None:
         return cached
 
-    # Step 1 — Get all teams from league standings
-    standings_raw = _get(
-        f"/unique-tournament/{tournament_id}/season/{season_id}/standings/total"
+    # Fetch or retrieve cached batch response for this tournament/season
+    batch_key = cache.make_key(
+        "sofascore_league_batch", str(tournament_id), str(season_id),
     )
-    if not isinstance(standings_raw, dict):
+    batch_cached = cache.get(batch_key, max_age=3600)
+
+    if batch_cached is not None:
+        batch_raw = batch_cached
+    else:
+        batch_raw = _get(
+            f"/unique-tournament/{tournament_id}/season/{season_id}"
+            f"/statistics/overall"
+        )
+        if isinstance(batch_raw, dict):
+            cache.set(batch_key, batch_raw)
+
+    if not isinstance(batch_raw, dict):
         _log.warning(
-            "get_league_player_stats: standings endpoint returned %s for tid=%d sid=%d — not caching",
-            type(standings_raw).__name__, tournament_id, season_id,
+            "get_league_player_stats: batch endpoint returned %s for tid=%d sid=%d",
+            type(batch_raw).__name__, tournament_id, season_id,
         )
         return []
 
-    standings = standings_raw.get("standings") or []
-    teams: List[Dict[str, Any]] = []
-    for group in standings:
-        if not isinstance(group, dict):
-            continue
-        for row in group.get("rows") or []:
-            if not isinstance(row, dict):
-                continue
-            team_data = row.get("team") or {}
-            team_id = team_data.get("id")
-            team_name = team_data.get("name", "")
-            if team_id is not None:
-                teams.append({"id": team_id, "name": team_name})
+    # Parse the batch response — Sofascore uses "results" or "players" key
+    entries = batch_raw.get("results") or batch_raw.get("players") or []
 
-    if not teams:
-        _log.debug(
-            "get_league_player_stats: no teams found in standings for tid=%d sid=%d — caching empty result",
-            tournament_id, season_id,
-        )
-        cache.set(key, [])
-        return []
-
-    # Step 2 & 3 — For each team, get roster and then individual stats
     players_map: Dict[int, Dict[str, Any]] = {}
-
-    for idx, team_info in enumerate(teams):
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
         if len(players_map) >= limit:
             break
 
-        team_id = team_info["id"]
-        team_name = team_info["name"]
-
-        # Step 2 — Get team roster (delay between teams to avoid rate-limiting)
-        if idx > 0:
-            time.sleep(_LEAGUE_STATS_INTER_REQUEST_DELAY)
-        roster_raw = _get(f"/team/{team_id}/players")
-        if not isinstance(roster_raw, dict):
+        player_data = entry.get("player") or {}
+        if not isinstance(player_data, dict):
             continue
 
-        roster_players: List[Dict[str, Any]] = []
-        for group in roster_raw.get("players") or []:
-            if not isinstance(group, dict):
-                continue
-            # Sofascore wraps each player in a group with a 'player' key
-            player_entry = group.get("player")
-            if isinstance(player_entry, dict):
-                roster_players.append(player_entry)
-            else:
-                # Alternate roster format: players nested under 'members' key
-                for member in group.get("players") or group.get("members") or []:
-                    if isinstance(member, dict):
-                        p = member.get("player") or member
-                        if isinstance(p, dict):
-                            roster_players.append(p)
+        pid = player_data.get("id")
+        if pid is None or pid in players_map:
+            continue
 
-        # Step 3 — Fetch individual stats for each player
-        for player_data in roster_players:
-            if len(players_map) >= limit:
-                break
+        team_data = entry.get("team") or {}
+        team_id = team_data.get("id")
+        team_name = team_data.get("name", "")
 
-            pid = player_data.get("id")
-            if pid is None or pid in players_map:
-                continue
+        # Statistics may be nested under "statistics" or at top level
+        stats = entry.get("statistics") or {}
+        if not isinstance(stats, dict):
+            continue
 
-            time.sleep(_LEAGUE_STATS_INTER_REQUEST_DELAY)
-            stats_raw = _get(
-                f"/player/{pid}/unique-tournament/{tournament_id}"
-                f"/season/{season_id}/statistics/overall"
-            )
-            if not isinstance(stats_raw, dict):
-                continue
+        # minutesPlayed may also be at the entry level
+        minutes = int(
+            stats.get("minutesPlayed")
+            or entry.get("minutesPlayed")
+            or 0
+        )
+        if minutes == 0:
+            continue
 
-            stats = stats_raw.get("statistics") or {}
-            if not isinstance(stats, dict):
-                continue
+        per90 = _parse_stats(stats, minutes)
 
-            minutes = int(stats.get("minutesPlayed") or 0)
-            if minutes == 0:
-                continue
+        # Age from dateOfBirthTimestamp
+        dob_ts = player_data.get("dateOfBirthTimestamp")
+        player_age = None
+        if dob_ts is not None:
+            try:
+                age_seconds = time.time() - int(dob_ts)
+                if age_seconds > 0:
+                    player_age = int(age_seconds / (365.25 * 86400))
+            except (ValueError, TypeError):
+                pass
 
-            # Step 4 — Parse stats via existing _parse_stats
-            per90 = _parse_stats(stats, minutes)
+        # Rating (Sofascore 0-10 scale)
+        avg_rating = stats.get("rating")
+        if avg_rating is not None:
+            try:
+                avg_rating = float(avg_rating)
+            except (ValueError, TypeError):
+                avg_rating = None
 
-            # Age from dateOfBirthTimestamp
-            dob_ts = player_data.get("dateOfBirthTimestamp")
-            player_age = None
-            if dob_ts is not None:
-                try:
-                    age_seconds = time.time() - int(dob_ts)
-                    if age_seconds > 0:
-                        player_age = int(age_seconds / (365.25 * 86400))
-                except (ValueError, TypeError):
-                    pass
-
-            # Rating (Sofascore 0-10 scale)
-            avg_rating = stats.get("rating")
-            if avg_rating is not None:
-                try:
-                    avg_rating = float(avg_rating)
-                except (ValueError, TypeError):
-                    avg_rating = None
-
-            # Step 5 — Same return dict format
-            players_map[pid] = {
-                "id": pid,
-                "name": player_data.get("name") or player_data.get("shortName", ""),
-                "team": team_name,
-                "team_id": team_id,
-                "position": _map_position(
-                    player_data.get("position") or ""
-                ),
-                "age": player_age,
-                "minutes_played": minutes,
-                "per90": per90,
-                "rating": avg_rating,
-            }
+        players_map[pid] = {
+            "id": pid,
+            "name": player_data.get("name") or player_data.get("shortName", ""),
+            "team": team_name,
+            "team_id": team_id,
+            "position": _map_position(
+                player_data.get("position") or ""
+            ),
+            "age": player_age,
+            "minutes_played": minutes,
+            "per90": per90,
+            "rating": avg_rating,
+        }
 
     result = list(players_map.values())
     if not result:
         _log.warning(
-            "get_league_player_stats: 0 players collected for tid=%d sid=%d "
-            "(%d teams found) — not caching",
-            tournament_id, season_id, len(teams),
+            "get_league_player_stats: 0 players collected for tid=%d sid=%d — not caching",
+            tournament_id, season_id,
         )
         return result
     cache.set(key, result)
     return result
+
+
+def get_player_season_stats(
+    player_id: int,
+    tournament_id: int,
+    season_id: int,
+) -> Optional[Dict[str, Any]]:
+    """Look up a single player's season stats from the batch league endpoint.
+
+    Calls :func:`get_league_player_stats` (which caches the full batch
+    response) and returns the stats dict for *player_id*, or ``None`` if
+    the player is not found in the batch results.
+
+    Returns
+    -------
+    dict or None — the player dict with ``id``, ``name``, ``team``,
+    ``team_id``, ``position``, ``age``, ``minutes_played``, ``per90``,
+    ``rating``, or ``None`` if not found.
+    """
+    all_players = get_league_player_stats(tournament_id, season_id=season_id)
+    for p in all_players:
+        if p.get("id") == player_id:
+            return p
+    return None
 
 
 def get_season_list(tournament_id: int) -> List[Dict[str, Any]]:
