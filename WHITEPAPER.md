@@ -144,12 +144,12 @@ Each group slices only its relevant features internally (GROUP_FEATURE_SUBSETS),
 
 A Streamlit application with three pages, styled with a custom "Tactical Noir" dark theme (deep charcoal, amber/gold data accents, JetBrains Mono for numbers, Outfit for headings):
 
-**Transfer Impact.** The user enters a player and a target club (with Sofascore autocomplete). The system fetches stats, computes Power Rankings, builds predictions via dual simulation (player simulated at both current and target clubs, per paper Section 4), and displays:
+**Transfer Impact.** The user enters a player and a target club (with Sofascore autocomplete). The system fetches stats, computes Power Rankings, builds predictions (player predicted at target club, compared against actual per-90 stats), and displays:
 - Metric bars showing predicted percentage changes for all 13 metrics
 - Power Ranking timeline comparing source and target clubs
 - RAG confidence indicator
 - Swarm plots showing the player's position in their current league distribution
-- A detailed predictions table with "Simulated Current" vs "Predicted" columns
+- A detailed predictions table with "Actual (per 90)" vs "Predicted (per 90)" columns
 
 **Shortlist Generator.** The user selects a player to replace and assigns weights to each metric. The system scans players across selected leagues (defaulting to the Big 5 European leagues for reliability — Sofascore rate-limits rapid sequential requests, so a 1.5-second delay is inserted between league API calls), clusters candidates by playing style using k-means (k=√(n/2), capped 3–10), scores them by weighted Euclidean distance to the reference player with a 15% same-cluster bonus, and returns a ranked table with filters for age, position, league, minutes played, and club Power Ranking cap. The player's own league is always scanned first. Filters use a None-passthrough design — candidates with unknown age or minutes pass through rather than being silently excluded, since Sofascore API data is often sparse. A per-league diagnostic panel shows which leagues returned data and how many candidates were found.
 

@@ -107,21 +107,22 @@ structure). This means for a cross-league downgrade:
 """
     )
 
-    # ── Dual simulation ──────────────────────────────────────────────────
-    section_header("Dual Simulation", "How we compare predictions")
+    # ── Prediction approach ─────────────────────────────────────────────
+    section_header("Prediction Approach", "How we compare predictions")
     st.markdown(
         """
-Following the paper's methodology (Section 4), we simulate the player at **both**
-their current and target clubs, then compare the two model outputs.
+The model predicts how a player would perform at the target club, and the
+percentage change is measured against the player's **actual observed per-90
+stats** at their current club.
 
 ```
-predicted_current = model(player, current_team → current_team, ra=0)
-predicted_target  = model(player, current_team → target_team, ra=Δ)
-% change = (predicted_target − predicted_current) / predicted_current
+actual_current   = player's real per-90 stats at current club
+predicted_target = model(player, current_team → target_team, ra=Δ)
+% change = (predicted_target − actual_current) / actual_current
 ```
 
-This is more robust than comparing raw observed stats vs predicted stats, because
-both sides come from the same model process — reducing noise sensitivity.
+This approach anchors predictions to what the player actually does, giving a
+clear view of how the transfer would change their output.
 """
     )
 
