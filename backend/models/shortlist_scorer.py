@@ -367,8 +367,9 @@ def compute_percentage_changes(
 
     Returns dict[metric -> percentage change].
     Positive = improvement, negative = decline.
-    When current is zero/missing, uses absolute difference as proxy
-    instead of reporting a misleading 100%.
+    When current is zero/missing, returns 0.0 — a percentage change cannot be
+    computed from a zero base, and displaying the raw delta (e.g. +0.3 xG/90)
+    in a column labelled "Change %" would be misleading.
     """
     changes = {}
     for metric in CORE_METRICS:
@@ -379,6 +380,7 @@ def compute_percentage_changes(
         if current != 0:
             changes[metric] = ((predicted - current) / abs(current)) * 100
         else:
-            # Can't compute meaningful percentage from zero base
+            # Percentage undefined for zero base — return 0.0 to avoid
+            # misleading values in the "Change %" display column.
             changes[metric] = 0.0
     return changes

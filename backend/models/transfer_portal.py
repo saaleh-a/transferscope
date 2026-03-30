@@ -371,6 +371,8 @@ class TransferPortalModel:
             source_pos_avg=src_pos_avg,
             target_pos_avg=tgt_pos_avg,
             change_relative_ability=change_ra,
+            source_league_mean=league_current,
+            target_league_mean=league_target,
         )
 
     def predict_batch(self, feature_dicts: List[Dict[str, float]]) -> List[Dict[str, float]]:
@@ -555,7 +557,9 @@ def build_feature_dict_from_player(
     source_club_id: Optional[int] = None
 
     if match_logs:
-        rolling = player_rolling_average(match_logs)
+        # get_player_match_logs returns ascending (oldest first); reverse so
+        # player_rolling_average picks the MOST RECENT 1000 minutes of form.
+        rolling = player_rolling_average(list(reversed(match_logs)))
         player_per90 = {m: (rolling.get(m) or 0.0) for m in CORE_METRICS}
         # Infer source club from season stats
         stats = sofascore_client.get_player_stats_for_season(
