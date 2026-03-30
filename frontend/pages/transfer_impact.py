@@ -336,10 +336,10 @@ def render():
             target_league_mean=source_league_mean,
         )
 
-    # Paper-faithful baseline: compare predicted-at-target vs predicted-at-current
-    # (not raw stats vs predicted). This makes both sides come from the same
-    # model process, reducing noise sensitivity (paper Section 4).
-    baseline = predicted_current if predicted_current else current_per90_clean
+    # Use actual current stats as baseline for Change % — more intuitive
+    # for users than model-vs-model comparison.  predicted_current is still
+    # shown as "Simulated Current" in the table for reference.
+    baseline = current_per90_clean
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
     pct_changes = compute_percentage_changes(baseline, predicted_target)
