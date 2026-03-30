@@ -90,7 +90,8 @@ class TestBuildTrainingData(unittest.TestCase):
         self.assertIn("position", pr)
         self.assertIn("metric", pr)
         self.assertIn("change_relative_ability", pr)
-        self.assertEqual(pr["change_relative_ability"], 5.0)  # 10.0 - 5.0
+        # change_ra = 10.0 - 5.0 = 5.0, normalized by /50.0 → 0.1
+        self.assertAlmostEqual(pr["change_relative_ability"], 5.0 / 50.0)
 
     @patch("backend.features.power_rankings.get_team_ranking")
     @patch("backend.data.sofascore_client.get_player_transfer_history")
