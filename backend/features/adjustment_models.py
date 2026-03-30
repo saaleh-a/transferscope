@@ -848,8 +848,11 @@ def paper_heuristic_predict(
         # Uses league_gap (positive = weaker league → more per-90 output).
         opp_effect = opp_sens * league_gap
 
-        # Combined adjustment: additive (faithful to paper's linear model
-        # structure in Appendix A.3 where all terms are summed).
+        # Combined adjustment: multiplicative scaling (team_effect and
+        # opp_effect are fractional multipliers, so the adjustment is
+        # proportional to the player's base level — consistent with the
+        # paper's β1·x1 term where predicted output scales with the
+        # player's previous per-90).
         combined_factor = 1.0 + team_effect + opp_effect
 
         pred = base * combined_factor

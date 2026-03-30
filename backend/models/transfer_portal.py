@@ -339,7 +339,21 @@ class TransferPortalModel:
                     # Uses safe_pre which falls back to training mean if the
                     # API returned an implausibly low value (> 3σ below mean).
                     pre_val = safe_pre.get(target, 0.0)
-                    result[target] = max(0.0, pre_val + float(preds[i]))
+                    delta = float(preds[i])
+                    # Clip extreme deltas: cap absolute per-90 change to ±3×
+                    # the pre-transfer value (or ±1.0 floor for small metrics).
+                    # Prevents runaway predictions from overfitted models.
+                    max_delta = max(3.0 * abs(pre_val), 1.0)
+                    if abs(delta) > max_delta:
+                        _log.warning(
+                            "Clipping extreme delta for %s: %.3f → %.3f "
+                            "(pre_val=%.3f)",
+                            target, delta,
+                            max_delta if delta > 0 else -max_delta,
+                            pre_val,
+                        )
+                        delta = max(-max_delta, min(max_delta, delta))
+                    result[target] = max(0.0, pre_val + delta)
 
         return result
 
@@ -406,7 +420,11 @@ class TransferPortalModel:
                         # Model predicts delta (post − pre); add pre-transfer
                         # value back to recover absolute post-transfer per-90.
                         pre_val = feature_dicts[i].get(f"player_{target}", 0.0)
-                        results[i][target] = max(0.0, pre_val + float(preds[i, j]))
+                        delta = float(preds[i, j])
+                        # Clip extreme deltas (same logic as predict())
+                        max_delta = max(3.0 * abs(pre_val), 1.0)
+                        delta = max(-max_delta, min(max_delta, delta))
+                        results[i][target] = max(0.0, pre_val + delta)
 
         return results
 

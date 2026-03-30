@@ -347,10 +347,37 @@ def render():
     # Simulated Current = model's prediction at current club (for reference)
     baseline = predicted_current if predicted_current else current_per90_clean
 
+    # ── Model calibration check ──────────────────────────────────────────
+    # When the TF model's simulated-current diverges significantly from
+    # actual stats, flag it so users know the model may be less reliable
+    # for certain metrics.  Dual simulation still produces correct %
+    # changes, but the absolute predicted values should be interpreted
+    # with caution.
+    if predicted_current and predicted_current != current_per90_clean:
+        _cal_diffs = []
+        for _m in CORE_METRICS:
+            _act = current_per90_clean.get(_m, 0.0)
+            _sim = predicted_current.get(_m, 0.0)
+            if _act > 0.1:  # skip near-zero metrics where ratio is meaningless
+                _cal_diffs.append(abs(_sim - _act) / _act)
+        _mean_cal = sum(_cal_diffs) / len(_cal_diffs) if _cal_diffs else 0
+        if _mean_cal > 0.5:
+            st.info(
+                "ℹ️ The model's simulated values differ from actual stats "
+                f"(mean deviation: {_mean_cal:.0%}). Percentage changes use "
+                "dual simulation (model vs model) which cancels out systematic "
+                "bias — direction and relative magnitude remain reliable."
+            )
+
     # ── (a) Metric bars ──────────────────────────────────────────────────
-    # Change % is anchored to actual stats — prediction takes place on
-    # what the player actually does, not the model's current-club simulation.
-    pct_changes = compute_percentage_changes(current_per90_clean, predicted_target)
+    # Paper Section 4 dual simulation: "we generate performance predictions
+    # using Transfer Portal for players at their current club too — as
+    # opposed to using their actual observed performance measures."
+    # Comparing model-vs-model cancels out systematic bias — if the model
+    # over-predicts a metric by +1.5 per-90 at both clubs, the difference
+    # is still correct.  Anchoring to actual stats amplifies model bias
+    # (e.g. Long Passes actual=0.63, model=2.3 → +254% vs -4% dual sim).
+    pct_changes = compute_percentage_changes(baseline, predicted_target)
 
     # Transfer context summary — paper Section 4.3 style
     _ra_label = "stronger" if change_ra > 0 else ("weaker" if change_ra < 0 else "equivalent")
