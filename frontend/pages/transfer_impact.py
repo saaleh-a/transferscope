@@ -348,8 +348,9 @@ def render():
     baseline = predicted_current if predicted_current else current_per90_clean
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
-    # Change % is anchored to actual stats — prediction takes place on
-    # what the player actually does, not the model's current-club simulation.
+    # Predicted (per 90) is anchored to actual per-90, not simulated current.
+    # Change % = (predicted_target - actual) / actual, so the metric bar
+    # annotation consistently shows actual → predicted_target.
     pct_changes = compute_percentage_changes(current_per90_clean, predicted_target)
 
     # Transfer context summary — paper Section 4.3 style
@@ -375,7 +376,7 @@ def render():
         unsafe_allow_html=True,
     )
 
-    metric_bar.show(baseline, predicted_target, pct_changes,
+    metric_bar.show(current_per90_clean, predicted_target, pct_changes,
                     title=f"Predicted Changes: {player_name} → {target_club_display}")
 
     # ── Summary table — right after metric bars for easy comparison ──────

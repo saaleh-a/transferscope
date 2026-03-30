@@ -309,16 +309,17 @@ per-metric depending on whether the target team's style fits them:
 **Dual simulation (paper Section 4):**
 
 The Transfer Impact page simulates the player at **both** their current
-and target clubs, then compares the two model outputs. This is faithful
-to the paper: "we generate performance predictions using Transfer Portal
-for players at their current club too — as opposed to using their actual
-observed performance measures at their current club." Both sides come from
-the same model process, reducing noise sensitivity.
+and target clubs. The "Simulated Current" column in the detailed table
+shows what the model predicts if the player stays, for reference.
+However, percentage changes are anchored to the player's **actual** observed
+per-90 stats — not the simulated current. This makes the displayed % change
+directly interpretable: "how does the prediction compare to what the player
+actually does today?"
 
 ```
 predicted_current = predict(player, current_team → current_team, ra=0)
 predicted_target  = predict(player, current_team → target_team, ra=Δ)
-% change = (predicted_target - predicted_current) / predicted_current
+% change = (predicted_target - actual_per90) / actual_per90
 ```
 
 ---
@@ -367,7 +368,7 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Streamlit not FastAPI + React: speed of build, sufficient for personal tool
 - diskcache not Redis: local tool, SQLite is enough
 - All stats stored and displayed as per-90 — never raw totals in UI
-- Dual simulation for Transfer Impact: predict at both current and target clubs, compare model vs model (paper Section 4)
+- Dual simulation for Transfer Impact: predict at both current and target clubs; % change is anchored to actual per-90 (not simulated current) — `(predicted_target - actual) / actual`
 - Per-metric style differentiation: `_TEAM_INFLUENCE`, `_ABILITY_SENSITIVITY`, `_OPP_QUALITY_SENS`, `_LEAGUE_STYLE_COEFF` all keyed per-metric, not flat group multipliers
 - Asymmetric prediction calibration: `_DAMPING_FACTOR_DOWN=0.05`, `_DAMPING_FACTOR_UP=0.10`; elite quality_scale halved for downgrades
 - Multi-tournament stats fallback: when primary tournament returns 0 minutes, try all team tournaments

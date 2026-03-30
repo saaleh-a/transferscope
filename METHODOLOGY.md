@@ -578,7 +578,7 @@ metric_score[m] = max(0.0, 1.0 - abs(metric_diff) / 3.0)
 pct_change = ((predicted - current) / abs(current)) * 100
 ```
 
-This is displayed in metric bar charts and the Hot or Not verdict. Both pages use **dual simulation** per the paper's methodology — percentage changes compare model-predicted-at-target vs model-predicted-at-current (not raw stats vs predicted).
+This is displayed in metric bar charts and the Hot or Not verdict. The Transfer Impact page anchors percentage changes to the player's **actual per-90** (not the simulated current): `compute_percentage_changes(current_per90_clean, predicted_target)`. The metric bar annotation shows `actual → predicted_target`, so the chart is readable without needing to understand the dual simulation.
 
 ---
 
@@ -620,19 +620,20 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
        player_stats, source_pos_avg → target_pos_avg, ra=Δ)
    → Style differences AND ability differences are per-metric
 
-9. compute_percentage_changes(predicted_current, predicted_target)
+9. compute_percentage_changes(current_per90_clean, predicted_target)
    → {expected_goals: +14.2%, shots: -3.1%, crosses: +8.5%, ...}
+   → % change = (predicted_target - actual) / actual — anchored to player's actual per-90
    → Note: some metrics UP, some DOWN — reflects style fit
 
 10. Render:
-    → metric_bar.show(...)        # bar chart of changes
+    → metric_bar.show(current_per90_clean, predicted_target, pct_changes)  # actual → predicted
     → power_ranking_chart.show()  # timeline comparison
     → swarm_plot.show_swarm_grid()# league context
     → confidence_badge()          # RAG indicator
     → predictions table           # full breakdown
 ```
 
-> **In plain English:** The system searches for the player and target club, fetches all their data, calculates how strong both teams/leagues are, fetches what each team's position players typically produce (tactical style), simulates the player at both clubs using the same model, then draws everything on screen. The key is that the comparison is model-vs-model (not raw stats vs prediction), and different stats can go up or down depending on style fit.
+> **In plain English:** The system searches for the player and target club, fetches all their data, calculates how strong both teams/leagues are, fetches what each team's position players typically produce (tactical style), simulates the player at the target club, then draws everything on screen. The percentage changes are anchored to the player's actual per-90 stats (so if a player scores 0.40 xG/90 and the model predicts 0.46 at the new club, the bar shows +15%). The "Simulated Current" column in the detailed table shows what the model would predict if the player stayed — useful for reference but not used as the percentage anchor.
 
 ---
 
