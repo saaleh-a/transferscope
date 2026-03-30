@@ -432,11 +432,17 @@ def build_training_data_from_transfers(
         if actual is None:
             continue
 
-        # Team adjustment row
+        # Team adjustment row.
+        # naive_league_expectation is the league-average per-90 for this metric,
+        # used as the regression offset in TeamAdjustmentModel.  When building
+        # training data from a single player's transfer history we don't have the
+        # full league-average per-90 distribution, so we use 0.0 (neutral) rather
+        # than league_mean_normalized which is an Elo score on a 0–100 scale and
+        # would produce nonsensical regression targets (e.g. 0.35 xG - 65.0 = -64.65).
         team_rows.append({
             "metric": metric,
             "team_relative_feature": new_ranking.relative_ability,
-            "naive_league_expectation": new_ranking.league_mean_normalized,
+            "naive_league_expectation": 0.0,
             "actual": actual,
         })
 
@@ -694,9 +700,12 @@ def paper_heuristic_predict(
     -------
     dict[str, float] — predicted per-90 values at the target club.
     """
-    # Scale to roughly [-1, 1] for typical transfers; extreme league
-    # jumps can exceed this range (e.g. ±1.5).
-    ra = change_relative_ability / 100.0
+    # Scale to roughly [-1, 1] for typical transfers (change_ra ranges
+    # from roughly -50 to +50 for same-league moves, per CLAUDE.md polynomial
+    # normalization which maps -50..+50 to -1..+1 using / 50.0, consistent
+    # with PlayerAdjustmentModel.predict()).  Extreme cross-league jumps can
+    # exceed this range (e.g. ±1.5).
+    ra = change_relative_ability / 50.0
 
     # Detect whether we have real team-position data or just fallback
     # (both source and target are the same → no style data available).
