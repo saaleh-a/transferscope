@@ -1057,7 +1057,11 @@ def get_player_stats(
                     # currently only shows seasons for one tournament).
                     _cache_player_meta(player_id, best_tid)
 
-    cache.set(key, result)
+    # Only cache results that have actual data.  If minutes_played == 0
+    # the API call likely failed or returned the wrong season — caching
+    # that empty result would poison every subsequent call for 24 hours.
+    if result["minutes_played"] > 0:
+        cache.set(key, result)
     return result
 
 
