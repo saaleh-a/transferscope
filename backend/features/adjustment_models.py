@@ -453,7 +453,10 @@ def build_training_data_from_transfers(
             "player_previous_per90": actual,  # approximation
             "avg_position_feature_new_team": actual,
             "diff_avg_position_old_vs_new": 0.0,
-            "change_relative_ability": change_ra,
+            # Normalize to [-1, 1] range (same convention as training_pipeline)
+            # so that predict(), which also divides by 50, operates on the
+            # same scale the model was trained on.
+            "change_relative_ability": change_ra / 50.0,
             "actual": actual,
         })
 
