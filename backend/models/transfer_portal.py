@@ -316,8 +316,10 @@ class TransferPortalModel:
             preds = preds.flatten()
             for i, target in enumerate(targets):
                 if i < len(preds):
-                    # Per-90 stats are non-negative by definition
-                    result[target] = max(0.0, float(preds[i]))
+                    # Model predicts delta (post − pre); add pre-transfer value
+                    # back to recover the absolute post-transfer per-90 stat.
+                    pre_val = feature_dict.get(f"player_{target}", 0.0)
+                    result[target] = max(0.0, pre_val + float(preds[i]))
 
         return result
 
@@ -379,8 +381,10 @@ class TransferPortalModel:
             for i in range(n):
                 for j, target in enumerate(targets):
                     if j < preds.shape[1]:
-                        # Per-90 stats are non-negative by definition
-                        results[i][target] = max(0.0, float(preds[i, j]))
+                        # Model predicts delta (post − pre); add pre-transfer
+                        # value back to recover absolute post-transfer per-90.
+                        pre_val = feature_dicts[i].get(f"player_{target}", 0.0)
+                        results[i][target] = max(0.0, pre_val + float(preds[i, j]))
 
         return results
 

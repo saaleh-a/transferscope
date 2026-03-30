@@ -1643,11 +1643,19 @@ def train_neural_network(
     # (e.g. successful_passes 30-80 vs expected_goals 0-1)
     target_scalers: Dict[str, StandardScaler] = {}
 
+    # Compute deltas: train model to predict (post - pre) instead of absolute
+    # post-transfer values.  Pre-transfer per-90 is already an excellent
+    # predictor of post-transfer per-90, so the model only needs to learn
+    # small adjustments.  predict() adds pre back to recover absolute values.
+    # X[:, :len(CORE_METRICS)] are the unscaled pre-transfer per-90 stats.
+    y_train_delta = y_train - X_train[:, :len(CORE_METRICS)]
+    y_val_delta = y_val - X_val[:, :len(CORE_METRICS)]
+
     for group_name, targets in MODEL_GROUPS.items():
         # Get target columns
         target_indices = [metric_to_idx[t] for t in targets]
-        y_group_train_raw = y_train[:, target_indices]
-        y_group_val_raw = y_val[:, target_indices]
+        y_group_train_raw = y_train_delta[:, target_indices]
+        y_group_val_raw = y_val_delta[:, target_indices]
 
         # Scale targets so all groups train on comparable loss scales
         y_scaler = StandardScaler()
