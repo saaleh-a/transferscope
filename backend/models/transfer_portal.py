@@ -299,26 +299,23 @@ class TransferPortalModel:
         all_keys = _feature_keys()
         key_to_idx = {k: i for i, k in enumerate(all_keys)}
 
-        # Build a safe pre_val lookup: if the API returned a value more than
-        # 3 sigma below the training mean (e.g. stale cache, wrong API scale),
-        # fall back to the training mean so the delta anchor is never garbage.
+        # Build safe pre_val lookup.  The model predicts a delta (post − pre),
+        # so the anchor matters: if the API returned 0 for a metric (missing
+        # advanced stats, partial season, etc.) anchoring to 0 gives a
+        # garbage prediction.  Fall back to the training-distribution mean
+        # for that metric so predictions remain plausible even when the live
+        # API omits certain stats (xG, shots, dribbles are often missing).
         safe_pre: Dict[str, float] = {}
-        if self._scaler is not None:
-            for idx, key in enumerate(all_keys):
-                if not key.startswith("player_"):
-                    continue
-                metric = key[len("player_"):]
-                raw = feature_dict.get(key, 0.0)
-                mean = float(self._scaler.mean_[idx])
-                std = float(self._scaler.scale_[idx])
-                if std > 0 and (mean - raw) / std > 3.0:
-                    safe_pre[metric] = mean   # API value implausibly low
-                else:
-                    safe_pre[metric] = raw
-        else:
-            for key in all_keys:
-                if key.startswith("player_"):
-                    safe_pre[key[len("player_"):]] = feature_dict.get(key, 0.0)
+        for idx, key in enumerate(all_keys):
+            if not key.startswith("player_"):
+                continue
+            metric = key[len("player_"):]
+            raw = feature_dict.get(key, 0.0)
+            if raw <= 0.0 and self._scaler is not None:
+                # Stat missing or zero — use training mean as anchor
+                safe_pre[metric] = float(self._scaler.mean_[idx])
+            else:
+                safe_pre[metric] = raw
 
         result = {}
 
