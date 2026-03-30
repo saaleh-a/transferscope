@@ -25,6 +25,13 @@ from backend.data.sofascore_client import CORE_METRICS
 
 _log = logging.getLogger(__name__)
 
+# ── Delta clipping parameters ────────────────────────────────────────────────
+# Cap absolute per-90 delta to ±DELTA_CLIP_MULTIPLIER × pre-transfer value.
+# For small metrics (pre_val near zero), a minimum floor of DELTA_CLIP_FLOOR
+# prevents overly tight clipping.  Prevents runaway TF model predictions.
+DELTA_CLIP_MULTIPLIER = 3.0
+DELTA_CLIP_FLOOR = 1.0
+
 # ── Target group definitions ─────────────────────────────────────────────────
 
 MODEL_GROUPS: Dict[str, List[str]] = {
@@ -158,6 +165,24 @@ class TransferPortalModel:
         self.fitted = False
         self._scaler: Any = None  # StandardScaler, loaded from data/models/ if trained
         self._target_scalers: Dict[str, Any] = {}  # Per-group target scalers
+
+    @staticmethod
+    def _clip_delta(delta: float, pre_val: float, target: str = "") -> float:
+        """Clip an extreme model delta to a plausible range.
+
+        Caps |delta| to DELTA_CLIP_MULTIPLIER × |pre_val|, with a floor
+        of DELTA_CLIP_FLOOR for small-valued metrics.
+        """
+        max_delta = max(DELTA_CLIP_MULTIPLIER * abs(pre_val), DELTA_CLIP_FLOOR)
+        if abs(delta) > max_delta:
+            _log.warning(
+                "Clipping extreme delta for %s: %.3f → %.3f (pre_val=%.3f)",
+                target, delta,
+                max_delta if delta > 0 else -max_delta,
+                pre_val,
+            )
+            return max(-max_delta, min(max_delta, delta))
+        return delta
 
     def build(self, input_dim: int) -> None:
         """Build all 4 group models with per-group feature dimensions."""
@@ -339,20 +364,7 @@ class TransferPortalModel:
                     # Uses safe_pre which falls back to training mean if the
                     # API returned an implausibly low value (> 3σ below mean).
                     pre_val = safe_pre.get(target, 0.0)
-                    delta = float(preds[i])
-                    # Clip extreme deltas: cap absolute per-90 change to ±3×
-                    # the pre-transfer value (or ±1.0 floor for small metrics).
-                    # Prevents runaway predictions from overfitted models.
-                    max_delta = max(3.0 * abs(pre_val), 1.0)
-                    if abs(delta) > max_delta:
-                        _log.warning(
-                            "Clipping extreme delta for %s: %.3f → %.3f "
-                            "(pre_val=%.3f)",
-                            target, delta,
-                            max_delta if delta > 0 else -max_delta,
-                            pre_val,
-                        )
-                        delta = max(-max_delta, min(max_delta, delta))
+                    delta = self._clip_delta(float(preds[i]), pre_val, target)
                     result[target] = max(0.0, pre_val + delta)
 
         return result
@@ -420,10 +432,7 @@ class TransferPortalModel:
                         # Model predicts delta (post − pre); add pre-transfer
                         # value back to recover absolute post-transfer per-90.
                         pre_val = feature_dicts[i].get(f"player_{target}", 0.0)
-                        delta = float(preds[i, j])
-                        # Clip extreme deltas (same logic as predict())
-                        max_delta = max(3.0 * abs(pre_val), 1.0)
-                        delta = max(-max_delta, min(max_delta, delta))
+                        delta = self._clip_delta(float(preds[i, j]), pre_val, target)
                         results[i][target] = max(0.0, pre_val + delta)
 
         return results
