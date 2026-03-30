@@ -370,14 +370,12 @@ def render():
             )
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
-    # Paper Section 4 dual simulation: "we generate performance predictions
-    # using Transfer Portal for players at their current club too — as
-    # opposed to using their actual observed performance measures."
-    # Comparing model-vs-model cancels out systematic bias — if the model
-    # over-predicts a metric by +1.5 per-90 at both clubs, the difference
-    # is still correct.  Anchoring to actual stats amplifies model bias
-    # (e.g. Long Passes actual=0.63, model=2.3 → +254% vs -4% dual sim).
-    pct_changes = compute_percentage_changes(baseline, predicted_target)
+    # Percentage changes are computed relative to the player's ACTUAL per-90
+    # stats — this is what users care about: "how will my real stats change?"
+    # The model applies its adjustments (style shift, team quality, opposition
+    # quality) to the actual per-90 values, so the predicted target already
+    # reflects the model's view of how the player's real output will change.
+    pct_changes = compute_percentage_changes(current_per90_clean, predicted_target)
 
     # Transfer context summary — paper Section 4.3 style
     _ra_label = "stronger" if change_ra > 0 else ("weaker" if change_ra < 0 else "equivalent")
@@ -402,7 +400,7 @@ def render():
         unsafe_allow_html=True,
     )
 
-    metric_bar.show(baseline, predicted_target, pct_changes,
+    metric_bar.show(current_per90_clean, predicted_target, pct_changes,
                     title=f"Predicted Changes: {player_name} → {target_club_display}")
 
     # ── Summary table — right after metric bars for easy comparison ──────
