@@ -18,6 +18,14 @@ from typing import Dict, List, Optional, Tuple
 import streamlit as st
 
 from backend.data import sofascore_client, elo_router
+
+
+@st.cache_data(ttl=86400)
+def _get_league_players_cached(tournament_id: int, season_id) -> list:
+    """Fetch league player stats once per day — shared across all sessions."""
+    return sofascore_client.get_league_player_stats(
+        tournament_id, season_id, limit=100
+    )
 from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
 from backend.features import power_rankings, rolling_windows
 from backend.features.adjustment_models import paper_heuristic_predict
@@ -336,13 +344,13 @@ def render():
             target_league_mean=source_league_mean,
         )
 
-    # Use actual current stats as baseline for Change % — more intuitive
-    # for users than model-vs-model comparison.  predicted_current is still
-    # shown as "Simulated Current" in the table for reference.
-    baseline = current_per90_clean
+    # Simulated Current = model's prediction at current club (for reference)
+    baseline = predicted_current if predicted_current else current_per90_clean
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
-    pct_changes = compute_percentage_changes(baseline, predicted_target)
+    # Change % is anchored to actual stats — prediction takes place on
+    # what the player actually does, not the model's current-club simulation.
+    pct_changes = compute_percentage_changes(current_per90_clean, predicted_target)
 
     # Transfer context summary — paper Section 4.3 style
     _ra_label = "stronger" if change_ra > 0 else ("weaker" if change_ra < 0 else "equivalent")
@@ -572,8 +580,8 @@ def render():
     # Populate league-level data from Sofascore tournament stats
     if tournament_id:
         try:
-            league_players = sofascore_client.get_league_player_stats(
-                tournament_id, selected_season_id, limit=100
+            league_players = _get_league_players_cached(
+                tournament_id, selected_season_id
             )
             for lp in league_players:
                 lp_per90 = lp.get("per90")
