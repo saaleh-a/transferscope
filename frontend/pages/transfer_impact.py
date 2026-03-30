@@ -320,7 +320,8 @@ def render():
         )
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
-    # Change % is anchored to actual per-90 stats.
+    # Change % is anchored to actual per-90 stats — what the player really
+    # does at their current club, giving a direct view of transfer impact.
     pct_changes = compute_percentage_changes(current_per90_clean, predicted_target)
 
     # Transfer context summary — paper Section 4.3 style
