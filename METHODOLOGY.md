@@ -613,14 +613,13 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
    → Blend with prior if low minutes
    → RAG confidence: GREEN (weight=0.95, 2100 mins)
 
-8. Dual simulation (paper Section 4):
-   predicted_current = paper_heuristic_predict(
-       player_stats, source_pos_avg → source_pos_avg, ra=0)
+8. Predict at target club:
    predicted_target = paper_heuristic_predict(
        player_stats, source_pos_avg → target_pos_avg, ra=Δ)
    → Style differences AND ability differences are per-metric
 
-9. compute_percentage_changes(predicted_current, predicted_target)
+9. compute_percentage_changes(actual_per90, predicted_target)
+   → % change anchored to actual observed per-90 stats
    → {expected_goals: +14.2%, shots: -3.1%, crosses: +8.5%, ...}
    → Note: some metrics UP, some DOWN — reflects style fit
 

@@ -285,12 +285,11 @@ def render():
 
     # Only use the TF model if trained weights have been saved to disk.
     predicted_target = {}
-    predicted_current = {}
     try:
         model = TransferPortalModel()
         model.load()  # load() sets self.fitted = True only if files exist
         if model.fitted:
-            # Paper Section 4: simulate at TARGET club
+            # Predict at TARGET club
             fd_target = build_feature_dict(
                 player_per90=current_per90_clean,
                 team_ability_current=source_norm,
@@ -301,23 +300,9 @@ def render():
                 team_pos_target=target_pos_avg,
             )
             predicted_target = model.predict(fd_target)
-            # Paper Section 4: simulate at CURRENT club as baseline
-            # "we generate performance predictions using Transfer Portal
-            # for players at their current club too"
-            fd_current = build_feature_dict(
-                player_per90=current_per90_clean,
-                team_ability_current=source_norm,
-                team_ability_target=source_norm,
-                league_ability_current=source_league_mean,
-                league_ability_target=source_league_mean,
-                team_pos_current=source_pos_avg,
-                team_pos_target=source_pos_avg,
-            )
-            predicted_current = model.predict(fd_current)
     except Exception as e:
         st.warning(f"TF model prediction failed, using heuristic fallback: {e}")
         predicted_target = {}
-        predicted_current = {}
 
     # Paper-aligned heuristic fallback: uses team-position style data +
     # relative ability polynomial to give per-metric predictions
@@ -333,23 +318,9 @@ def render():
             source_league_mean=source_league_mean,
             target_league_mean=target_league_mean,
         )
-        # Paper Section 4: baseline = simulate at current club (ra=0, same team)
-        predicted_current = paper_heuristic_predict(
-            player_per90=current_per90_clean,
-            source_pos_avg=source_pos_avg,
-            target_pos_avg=source_pos_avg,
-            change_relative_ability=0.0,
-            player_rating=player_rating,
-            source_league_mean=source_league_mean,
-            target_league_mean=source_league_mean,
-        )
-
-    # Simulated Current = model's prediction at current club (for reference)
-    baseline = predicted_current if predicted_current else current_per90_clean
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
-    # Change % is anchored to actual stats — prediction takes place on
-    # what the player actually does, not the model's current-club simulation.
+    # Change % is anchored to actual per-90 stats.
     pct_changes = compute_percentage_changes(current_per90_clean, predicted_target)
 
     # Transfer context summary — paper Section 4.3 style
@@ -375,7 +346,7 @@ def render():
         unsafe_allow_html=True,
     )
 
-    metric_bar.show(baseline, predicted_target, pct_changes,
+    metric_bar.show(current_per90_clean, predicted_target, pct_changes,
                     title=f"Predicted Changes: {player_name} → {target_club_display}")
 
     # ── Summary table — right after metric bars for easy comparison ──────
@@ -410,7 +381,6 @@ def render():
             "Group": _GROUPS.get(m, ""),
             "Metric": _LABELS.get(m, m),
             "Actual (per 90)": round(current_per90_clean.get(m, 0), 3),
-            "Simulated Current": round(baseline.get(m, 0), 3),
             "Predicted (per 90)": round(predicted_target.get(m, 0), 3),
             "Change %": round(change, 1),
             "Direction": "📈" if change > 2 else ("📉" if change < -2 else "➡️"),
