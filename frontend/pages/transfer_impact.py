@@ -401,6 +401,7 @@ def render():
         rows.append({
             "Group": _GROUPS.get(m, ""),
             "Metric": _LABELS.get(m, m),
+            "Actual (per 90)": round(current_per90_clean.get(m, 0), 3),
             "Simulated Current": round(baseline.get(m, 0), 3),
             "Predicted (per 90)": round(predicted_target.get(m, 0), 3),
             "Change %": round(change, 1),

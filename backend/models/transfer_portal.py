@@ -299,6 +299,27 @@ class TransferPortalModel:
         all_keys = _feature_keys()
         key_to_idx = {k: i for i, k in enumerate(all_keys)}
 
+        # Build a safe pre_val lookup: if the API returned a value more than
+        # 3 sigma below the training mean (e.g. stale cache, wrong API scale),
+        # fall back to the training mean so the delta anchor is never garbage.
+        safe_pre: Dict[str, float] = {}
+        if self._scaler is not None:
+            for idx, key in enumerate(all_keys):
+                if not key.startswith("player_"):
+                    continue
+                metric = key[len("player_"):]
+                raw = feature_dict.get(key, 0.0)
+                mean = float(self._scaler.mean_[idx])
+                std = float(self._scaler.scale_[idx])
+                if std > 0 and (mean - raw) / std > 3.0:
+                    safe_pre[metric] = mean   # API value implausibly low
+                else:
+                    safe_pre[metric] = raw
+        else:
+            for key in all_keys:
+                if key.startswith("player_"):
+                    safe_pre[key[len("player_"):]] = feature_dict.get(key, 0.0)
+
         result = {}
 
         for group_name, targets in MODEL_GROUPS.items():
@@ -318,7 +339,9 @@ class TransferPortalModel:
                 if i < len(preds):
                     # Model predicts delta (post − pre); add pre-transfer value
                     # back to recover the absolute post-transfer per-90 stat.
-                    pre_val = feature_dict.get(f"player_{target}", 0.0)
+                    # Uses safe_pre which falls back to training mean if the
+                    # API returned an implausibly low value (> 3σ below mean).
+                    pre_val = safe_pre.get(target, 0.0)
                     result[target] = max(0.0, pre_val + float(preds[i]))
 
         return result
