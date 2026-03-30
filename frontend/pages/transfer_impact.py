@@ -347,34 +347,26 @@ def render():
     # Simulated Current = model's prediction at current club (for reference)
     baseline = predicted_current if predicted_current else current_per90_clean
 
-    # ── Model calibration check ──────────────────────────────────────────
-    # When the TF model's simulated-current diverges significantly from
-    # actual stats, flag it so users know the model may be less reliable
-    # for certain metrics.  Dual simulation still produces correct %
-    # changes, but the absolute predicted values should be interpreted
-    # with caution.
-    if predicted_current and predicted_current != current_per90_clean:
-        _cal_diffs = []
+    # ── Re-anchor model adjustments to actual per-90 ─────────────────────
+    # The model produces predicted_target and predicted_current, both of
+    # which may diverge from the player's actual stats (model bias).
+    # We extract the model's DELTA (the adjustment it thinks the transfer
+    # causes) and apply that delta to the player's ACTUAL per-90 values.
+    # This way predictions are grounded in reality:
+    #   predicted = actual + (model_target - model_current)
+    if predicted_current and predicted_target:
+        reanchored = {}
         for _m in CORE_METRICS:
-            _act = current_per90_clean.get(_m, 0.0)
-            _sim = predicted_current.get(_m, 0.0)
-            if _act > 0.1:  # skip near-zero metrics where ratio is meaningless
-                _cal_diffs.append(abs(_sim - _act) / _act)
-        _mean_cal = sum(_cal_diffs) / len(_cal_diffs) if _cal_diffs else 0
-        if _mean_cal > 0.5:
-            st.info(
-                "ℹ️ The model's simulated values differ from actual stats "
-                f"(mean deviation: {_mean_cal:.0%}). Percentage changes use "
-                "dual simulation (model vs model) which cancels out systematic "
-                "bias — direction and relative magnitude remain reliable."
-            )
+            _actual = current_per90_clean.get(_m, 0.0)
+            _sim_current = predicted_current.get(_m, 0.0)
+            _sim_target = predicted_target.get(_m, 0.0)
+            _delta = _sim_target - _sim_current
+            reanchored[_m] = max(0.0, _actual + _delta)
+        predicted_target = reanchored
 
     # ── (a) Metric bars ──────────────────────────────────────────────────
     # Percentage changes are computed relative to the player's ACTUAL per-90
-    # stats — this is what users care about: "how will my real stats change?"
-    # The model applies its adjustments (style shift, team quality, opposition
-    # quality) to the actual per-90 values, so the predicted target already
-    # reflects the model's view of how the player's real output will change.
+    # stats — the model delta has been re-anchored to actual above.
     pct_changes = compute_percentage_changes(current_per90_clean, predicted_target)
 
     # Transfer context summary — paper Section 4.3 style
