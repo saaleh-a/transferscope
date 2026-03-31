@@ -593,3 +593,23 @@ def render():
                 detail.current_per90, detail.predicted_per90, changes,
                 title=f"Predicted Changes: {detail.name}",
             )
+
+            # Pizza chart: predicted profile vs reference player
+            try:
+                from frontend.components import player_pizza
+                st.markdown("#### Style Profile Comparison")
+                pizza_col1, pizza_col2 = st.columns(2)
+                with pizza_col1:
+                    player_pizza.show(
+                        detail.predicted_per90,
+                        player_name=detail.name,
+                        comparison_per90=reference_per90,
+                        comparison_name=player_name,
+                    )
+                with pizza_col2:
+                    player_pizza.show(
+                        reference_per90,
+                        player_name=f"{player_name} (Reference)",
+                    )
+            except Exception as exc:
+                _log.debug("Pizza chart unavailable: %s", exc)

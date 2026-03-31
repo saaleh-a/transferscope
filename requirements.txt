@@ -9,3 +9,4 @@ soccerdata>=1.7.0
 streamlit>=1.29.0
 tensorflow>=2.15.0
 curl-cffi>=0.7.1
+mplsoccer>=1.4.0
