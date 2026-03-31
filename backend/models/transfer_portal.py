@@ -7,8 +7,8 @@ Group 3 - Dribbling: Take-ons (1 head)
 Group 4 - Defending: Def own third, Def mid third, Def att third (3 heads)
 
 Architecture per group:
-  Input -> Dense(128, relu) -> BatchNorm -> Dropout(0.3)
-  -> Dense(64, relu) -> BatchNorm -> Dropout(0.3)
+  Input -> Dense(128, relu) -> BatchNormalization -> Dropout(0.3)
+  -> Dense(64, relu) -> BatchNormalization -> Dropout(0.3)
   -> [Linear output head per target]
 """
 

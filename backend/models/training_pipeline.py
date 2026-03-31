@@ -1246,6 +1246,11 @@ def inject_team_pos_averages(
     Returns
     -------
     ndarray — updated *X* (modified in-place and also returned).
+
+    Side Effects
+    ------------
+    *metadata* dicts are also updated in-place with 'from_pos_avg' and
+    'to_pos_avg' keys for downstream consumers (e.g. adjustment models).
     """
     team_pos_lookup = compute_team_position_averages(train_metadata)
 
@@ -1700,8 +1705,10 @@ def train_neural_network(
         )
         mean_w = raw_weights.mean()
         sample_weights = raw_weights / mean_w if mean_w > 0 else raw_weights
-        print(f"\n  Sample weights: min={sample_weights.min():.3f}, "
-              f"max={sample_weights.max():.3f}, mean={sample_weights.mean():.3f}")
+        _log.info(
+            "Sample weights: min=%.3f, max=%.3f, mean=%.3f",
+            sample_weights.min(), sample_weights.max(), sample_weights.mean(),
+        )
 
     for group_name, targets in MODEL_GROUPS.items():
         # Get target columns
