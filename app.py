@@ -59,7 +59,7 @@ st.sidebar.markdown("---")
 
 page = st.sidebar.radio(
     "Navigation",
-    ["Transfer Impact", "Shortlist Generator", "Hot or Not", "Backtest Validator", "About & Methodology"],
+    ["Transfer Impact", "Shortlist Generator", "Hot or Not", "Backtest Validator", "Diagnostics", "About & Methodology"],
     label_visibility="collapsed",
 )
 
@@ -95,6 +95,9 @@ try:
         render()
     elif page == "Backtest Validator":
         from frontend.pages.backtest_validator import render
+        render()
+    elif page == "Diagnostics":
+        from frontend.pages.diagnostics import render
         render()
     elif page == "About & Methodology":
         from frontend.pages.about import render
