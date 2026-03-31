@@ -1677,19 +1677,27 @@ def train_neural_network(
 
         print(f"\n  Group: {group_name} ({len(targets)} targets, {len(group_indices)} features)")
 
-        # Recompile with explicit learning rate
+        # Recompile with Huber loss (robust to outlier deltas) and lower
+        # learning rate for stable convergence on small delta targets.
         model.models[group_name].compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
-            loss="mse",
+            optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),
+            loss=tf.keras.losses.Huber(delta=1.0),
             metrics=["mae"],
         )
 
-        # Early stopping
+        # Early stopping + learning rate reduction on plateau
         callbacks = [
             tf.keras.callbacks.EarlyStopping(
                 monitor="val_loss",
-                patience=10,
+                patience=15,
                 restore_best_weights=True,
+                verbose=0,
+            ),
+            tf.keras.callbacks.ReduceLROnPlateau(
+                monitor="val_loss",
+                factor=0.5,
+                patience=5,
+                min_lr=1e-5,
                 verbose=0,
             ),
         ]
@@ -1697,7 +1705,7 @@ def train_neural_network(
         history = model.models[group_name].fit(
             X_group_train,
             y_group_train,
-            epochs=100,
+            epochs=150,
             batch_size=32,
             validation_data=(X_group_val, y_group_val),
             callbacks=callbacks,

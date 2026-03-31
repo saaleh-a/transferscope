@@ -27,10 +27,34 @@ _log = logging.getLogger(__name__)
 
 # ── Delta clipping parameters ────────────────────────────────────────────────
 # Cap absolute per-90 delta to ±DELTA_CLIP_MULTIPLIER × pre-transfer value.
-# For small metrics (pre_val near zero), a minimum floor of DELTA_CLIP_FLOOR
-# prevents overly tight clipping.  Prevents runaway TF model predictions.
-DELTA_CLIP_MULTIPLIER = 3.0
-DELTA_CLIP_FLOOR = 1.0
+# For small metrics (pre_val near zero), use _METRIC_CLIP_FLOORS to set a
+# plausible per-metric maximum delta.  Prevents runaway TF model predictions.
+DELTA_CLIP_MULTIPLIER = 2.0
+
+# Per-metric clip floors — calibrated to each metric's typical per-90 range.
+# For metrics with small absolute values (xG, xA), tight floors prevent the
+# model from making absurdly large predictions when pre_val is near zero.
+_METRIC_CLIP_FLOORS: Dict[str, float] = {
+    "expected_goals": 0.15,              # typical range: 0.05–0.40
+    "expected_assists": 0.10,            # typical range: 0.03–0.25
+    "shots": 0.80,                       # typical range: 0.5–4.0
+    "successful_dribbles": 0.60,         # typical range: 0.2–3.0
+    "successful_crosses": 0.30,          # typical range: 0.1–1.5
+    "touches_in_opposition_box": 1.00,   # typical range: 0.5–5.0
+    "successful_passes": 8.00,           # typical range: 10–80
+    "pass_completion_pct": 3.00,         # typical range: 70–92
+    "accurate_long_balls": 0.60,         # typical range: 0.5–5.0
+    "chances_created": 0.30,             # typical range: 0.1–2.0
+    "clearances": 0.80,                  # typical range: 0.5–5.0
+    "interceptions": 0.40,               # typical range: 0.2–2.0
+    "possession_won_final_3rd": 0.40,    # typical range: 0.2–2.0
+}
+DELTA_CLIP_FLOOR = 0.5  # fallback floor for unknown metrics
+
+# ── Delta shrinkage ──────────────────────────────────────────────────────────
+# Multiply predicted deltas by this factor to pull toward naive baseline
+# (zero delta).  Prevents systematic overshoot when the model is uncertain.
+DELTA_SHRINKAGE = 0.6
 
 # ── Target group definitions ─────────────────────────────────────────────────
 
@@ -145,11 +169,23 @@ _MODELS_DIR = os.path.join(
 
 
 def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.keras.Model:
-    """Build a multi-head model for one target group."""
+    """Build a multi-head model for one target group.
+
+    Uses L2 regularization on Dense layers and Huber loss for robustness
+    to outlier deltas in training data.
+    """
+    l2_reg = tf.keras.regularizers.l2(1e-3)
+
     inp = tf.keras.Input(shape=(input_dim,), name=f"{group_name}_input")
-    x = tf.keras.layers.Dense(128, activation="relu", name=f"{group_name}_dense1")(inp)
+    x = tf.keras.layers.Dense(
+        128, activation="relu", kernel_regularizer=l2_reg,
+        name=f"{group_name}_dense1",
+    )(inp)
     x = tf.keras.layers.Dropout(0.3, name=f"{group_name}_drop1")(x)
-    x = tf.keras.layers.Dense(64, activation="relu", name=f"{group_name}_dense2")(x)
+    x = tf.keras.layers.Dense(
+        64, activation="relu", kernel_regularizer=l2_reg,
+        name=f"{group_name}_dense2",
+    )(x)
     x = tf.keras.layers.Dropout(0.3, name=f"{group_name}_drop2")(x)
 
     outputs = []
@@ -164,7 +200,11 @@ def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.
         combined = outputs[0]
 
     model = tf.keras.Model(inputs=inp, outputs=combined, name=f"{group_name}_model")
-    model.compile(optimizer="adam", loss="mse", metrics=["mae"])
+    model.compile(
+        optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),
+        loss=tf.keras.losses.Huber(delta=1.0),
+        metrics=["mae"],
+    )
     return model
 
 
@@ -182,10 +222,12 @@ class TransferPortalModel:
     def _clip_delta(delta: float, pre_val: float, target: str = "") -> float:
         """Clip an extreme model delta to a plausible range.
 
-        Caps |delta| to DELTA_CLIP_MULTIPLIER × |pre_val|, with a floor
-        of DELTA_CLIP_FLOOR for small-valued metrics.
+        Uses per-metric clip floors from _METRIC_CLIP_FLOORS for tight,
+        metric-appropriate bounds.  Falls back to DELTA_CLIP_FLOOR for
+        unknown metrics.
         """
-        max_delta = max(DELTA_CLIP_MULTIPLIER * abs(pre_val), DELTA_CLIP_FLOOR)
+        floor = _METRIC_CLIP_FLOORS.get(target, DELTA_CLIP_FLOOR)
+        max_delta = max(DELTA_CLIP_MULTIPLIER * abs(pre_val), floor)
         if abs(delta) > max_delta:
             _log.warning(
                 "Clipping extreme delta for %s: %.3f → %.3f (pre_val=%.3f)",
@@ -377,7 +419,8 @@ class TransferPortalModel:
                     # Uses safe_pre which falls back to training mean if the
                     # API returned an implausibly low value (> 3σ below mean).
                     pre_val = safe_pre.get(target, 0.0)
-                    delta = self._clip_delta(float(preds[i]), pre_val, target)
+                    raw_delta = float(preds[i]) * DELTA_SHRINKAGE
+                    delta = self._clip_delta(raw_delta, pre_val, target)
                     result[target] = max(0.0, pre_val + delta)
 
         return result
@@ -445,7 +488,8 @@ class TransferPortalModel:
                         # Model predicts delta (post − pre); add pre-transfer
                         # value back to recover absolute post-transfer per-90.
                         pre_val = feature_dicts[i].get(f"player_{target}", 0.0)
-                        delta = self._clip_delta(float(preds[i, j]), pre_val, target)
+                        raw_delta = float(preds[i, j]) * DELTA_SHRINKAGE
+                        delta = self._clip_delta(raw_delta, pre_val, target)
                         results[i][target] = max(0.0, pre_val + delta)
 
         return results
@@ -602,7 +646,8 @@ class TransferPortalModel:
                 for i, target in enumerate(targets):
                     if i < len(preds):
                         pre_val = pre_per90.get(target, 0.0)
-                        delta = self._clip_delta(float(preds[i]), pre_val, target)
+                        raw_delta = float(preds[i]) * DELTA_SHRINKAGE
+                        delta = self._clip_delta(raw_delta, pre_val, target)
                         samples[target].append(max(0.0, pre_val + delta))
 
         mean_preds: Dict[str, float] = {}

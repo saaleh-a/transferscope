@@ -11,7 +11,13 @@ from unittest import mock
 import numpy as np
 
 from backend.data.sofascore_client import CORE_METRICS
-from backend.models.transfer_portal import FEATURE_DIM
+from backend.models.transfer_portal import (
+    DELTA_CLIP_MULTIPLIER,
+    DELTA_SHRINKAGE,
+    FEATURE_DIM,
+    TransferPortalModel,
+    _METRIC_CLIP_FLOORS,
+)
 
 
 class TestRunBacktest(unittest.TestCase):
@@ -110,6 +116,87 @@ class TestDirectionAccuracy(unittest.TestCase):
         direction_correct2 = (actual_change2 > 0 and pred_change2 > 0) or \
                              (actual_change2 < 0 and pred_change2 < 0)
         self.assertFalse(direction_correct2)
+
+
+# ── Per-metric clip floors ──────────────────────────────────────────────────
+
+
+class TestMetricClipFloors(unittest.TestCase):
+    """Test per-metric delta clipping with metric-specific floors."""
+
+    def test_all_core_metrics_have_clip_floors(self):
+        """Every metric in CORE_METRICS has a per-metric clip floor."""
+        for m in CORE_METRICS:
+            self.assertIn(m, _METRIC_CLIP_FLOORS,
+                          f"Missing clip floor for metric: {m}")
+
+    def test_xg_floor_is_tight(self):
+        """xG clip floor should be much smaller than the old universal 1.0."""
+        self.assertLessEqual(_METRIC_CLIP_FLOORS["expected_goals"], 0.20)
+
+    def test_xa_floor_is_tight(self):
+        """xA clip floor should be small to prevent extreme predictions."""
+        self.assertLessEqual(_METRIC_CLIP_FLOORS["expected_assists"], 0.15)
+
+    def test_passes_floor_is_large(self):
+        """successful_passes has large range, floor should be generous."""
+        self.assertGreaterEqual(_METRIC_CLIP_FLOORS["successful_passes"], 5.0)
+
+    def test_clip_delta_uses_metric_floor_for_small_pre_val(self):
+        """When pre_val is near zero, floor from _METRIC_CLIP_FLOORS is used."""
+        model = TransferPortalModel()
+        # xG pre_val = 0.07, delta = 2.8 (the exact clipping case from the bug)
+        clipped = model._clip_delta(2.8, 0.07, "touches_in_opposition_box")
+        floor = _METRIC_CLIP_FLOORS["touches_in_opposition_box"]
+        expected_max = max(DELTA_CLIP_MULTIPLIER * 0.07, floor)
+        self.assertAlmostEqual(abs(clipped), expected_max, places=5)
+
+    def test_clip_delta_uses_multiplier_for_large_pre_val(self):
+        """When pre_val is large, DELTA_CLIP_MULTIPLIER × pre_val dominates."""
+        model = TransferPortalModel()
+        # successful_passes pre_val = 50.0 → max_delta = 2.0 × 50 = 100
+        delta = 120.0
+        clipped = model._clip_delta(delta, 50.0, "successful_passes")
+        self.assertAlmostEqual(clipped, DELTA_CLIP_MULTIPLIER * 50.0, places=5)
+
+    def test_clip_delta_negative(self):
+        """Negative deltas are clipped symmetrically."""
+        model = TransferPortalModel()
+        clipped = model._clip_delta(-5.0, 0.1, "expected_goals")
+        floor = _METRIC_CLIP_FLOORS["expected_goals"]
+        expected_max = max(DELTA_CLIP_MULTIPLIER * 0.1, floor)
+        self.assertAlmostEqual(clipped, -expected_max, places=5)
+
+    def test_clip_delta_passthrough_when_within_bounds(self):
+        """Delta within bounds is returned unchanged."""
+        model = TransferPortalModel()
+        clipped = model._clip_delta(0.05, 0.20, "expected_goals")
+        self.assertAlmostEqual(clipped, 0.05, places=5)
+
+    def test_clip_delta_unknown_metric_uses_fallback_floor(self):
+        """Unknown metric uses the global DELTA_CLIP_FLOOR fallback."""
+        from backend.models.transfer_portal import DELTA_CLIP_FLOOR
+        model = TransferPortalModel()
+        clipped = model._clip_delta(5.0, 0.01, "unknown_metric")
+        self.assertAlmostEqual(abs(clipped), DELTA_CLIP_FLOOR, places=5)
+
+
+# ── Delta shrinkage ─────────────────────────────────────────────────────────
+
+
+class TestDeltaShrinkage(unittest.TestCase):
+    """Test that DELTA_SHRINKAGE is configured and within reasonable range."""
+
+    def test_shrinkage_is_positive(self):
+        self.assertGreater(DELTA_SHRINKAGE, 0.0)
+
+    def test_shrinkage_less_than_one(self):
+        """Shrinkage factor < 1 pulls predictions toward naive baseline."""
+        self.assertLess(DELTA_SHRINKAGE, 1.0)
+
+    def test_shrinkage_not_too_aggressive(self):
+        """Shrinkage shouldn't zero out predictions entirely."""
+        self.assertGreater(DELTA_SHRINKAGE, 0.3)
 
 
 if __name__ == "__main__":
