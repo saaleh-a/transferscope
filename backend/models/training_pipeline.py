@@ -1254,8 +1254,15 @@ def inject_team_pos_averages(
     """
     team_pos_lookup = compute_team_position_averages(train_metadata)
 
+    # Layout: [0:13] player, [13:17] abilities, [17:30] pos_current,
+    #          [30:43] pos_target, [43:46] interactions.
     _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4   # 17
     _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 30
+    assert _POS_CURRENT_OFFSET == 17, f"Expected 17, got {_POS_CURRENT_OFFSET}"
+    assert _POS_TARGET_OFFSET == 30, f"Expected 30, got {_POS_TARGET_OFFSET}"
+    assert _POS_TARGET_OFFSET + len(CORE_METRICS) <= FEATURE_DIM, (
+        f"team_pos slots exceed FEATURE_DIM ({FEATURE_DIM})"
+    )
 
     for i, m_dict in enumerate(metadata):
         src_key = (m_dict.get("source_club_id"), m_dict.get("position"))
@@ -1704,11 +1711,16 @@ def train_neural_network(
             [m.get("confidence", 1.0) for m in meta_train], dtype=np.float32,
         )
         mean_w = raw_weights.mean()
-        sample_weights = raw_weights / mean_w if mean_w > 0 else raw_weights
-        _log.info(
-            "Sample weights: min=%.3f, max=%.3f, mean=%.3f",
-            sample_weights.min(), sample_weights.max(), sample_weights.mean(),
-        )
+        if mean_w > 0:
+            sample_weights = raw_weights / mean_w
+            _log.info(
+                "Sample weights: min=%.3f, max=%.3f, mean=%.3f",
+                sample_weights.min(), sample_weights.max(), sample_weights.mean(),
+            )
+        else:
+            # All-zero confidence → fall back to uniform weighting
+            _log.warning("All confidence values are zero — using uniform sample weights")
+            sample_weights = None
 
     for group_name, targets in MODEL_GROUPS.items():
         # Get target columns
