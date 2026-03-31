@@ -4,8 +4,8 @@ Uses the `withqwerty/reep` open-data register to map identifiers across
 data providers (Sofascore, ClubElo, Transfermarkt, FBref, etc.).
 
 Data files:
-    - teams.csv  (~45 000 clubs, keyed by Wikidata QID)
-    - people.csv (~430 000 players/coaches, keyed by Wikidata QID)
+    - teams.csv  (~45,000 clubs, keyed by Wikidata QID)
+    - people.csv (~430,000 players/coaches, keyed by Wikidata QID)
 
 Both files are downloaded once from GitHub and cached locally via
 *diskcache* with a 7-day TTL.  Subsequent imports reuse the cache.

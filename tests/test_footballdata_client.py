@@ -95,8 +95,8 @@ class TestComputeLeagueStyleProfile:
         assert profile != {}
         assert "goals" in profile
         assert "shots" in profile
-        # 8 teams, each plays 1 game. Total goals = 2+1+1+1+4+1+0+1 = 11
-        # 8 teams, mean goals/game = 11/8 = 1.375
+        # 4 matches → 8 team-game appearances (home+away per match).
+        # Total goals = 2+1+1+1+4+1+0+1 = 11, mean = 11/8 = 1.375
         assert abs(profile["goals"] - 1.375) < 0.01
 
     def test_returns_empty_for_missing_data(self, _patch_cache):

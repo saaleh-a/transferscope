@@ -894,7 +894,7 @@ def _check_has_style_data(
 _CALIBRATION_DATA_WEIGHT = 0.6   # blend: data-driven portion
 _CALIBRATION_PRIOR_WEIGHT = 0.4  # blend: original defaults portion
 _OPP_BASE_WEIGHT = 0.7           # opposition sensitivity: base portion
-_OPP_SCALE_WEIGHT = 0.3          # opposition sensitivity: CV-scaled portion
+_OPP_SCALE_WEIGHT = 0.3          # opposition sensitivity: coefficient-of-variation scaled portion
 
 
 def calibrate_style_coefficients(

@@ -103,7 +103,8 @@ def render_pizza(
         return None
 
     # Order metrics by group for visual coherence
-    ordered_metrics = [m for m in CORE_METRICS if m in per90 or m in (comparison_per90 or {})]
+    # Only include metrics present in the primary dict (and optionally in comparison)
+    ordered_metrics = [m for m in CORE_METRICS if m in per90]
     if not ordered_metrics:
         return None
 
