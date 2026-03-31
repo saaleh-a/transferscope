@@ -638,6 +638,118 @@ def _get_clubelo_sofascore_map() -> Dict[str, str]:
     return merged
 
 
+# ── Dynamic alias generation from REEP ───────────────────────────────────────
+
+_dynamic_aliases_cache: Optional[Dict[str, List[str]]] = None
+
+
+def _build_dynamic_aliases() -> Dict[str, List[str]]:
+    """Build fuzzy alias table dynamically from REEP teams.csv.
+
+    For every team row in REEP that has multiple name columns
+    (``name``, ``key_clubelo``, ``key_fbref``, ``key_transfermarkt``),
+    we normalize each variant and create bidirectional alias links.
+
+    This supplements the hardcoded ``_EXTREME_ABBREVS`` so we don't
+    have to manually maintain aliases for thousands of clubs.  The REEP
+    register covers ~45,000 teams globally.
+
+    Results are cached in-process after first successful build.
+    Returns empty dict on any failure (no network in tests, graceful degradation).
+    """
+    global _dynamic_aliases_cache
+    if _dynamic_aliases_cache is not None:
+        return _dynamic_aliases_cache
+
+    try:
+        from backend.data.reep_registry import get_teams_df
+
+        df = get_teams_df()
+        if df is None:
+            # Don't cache failure — retry next time (e.g. network was down)
+            return {}
+    except Exception as exc:
+        _log.debug("REEP teams unavailable for alias building: %s", exc)
+        return {}
+
+    # Columns that may contain team names across providers
+    name_columns = [
+        c for c in ["name", "key_clubelo", "key_fbref", "key_transfermarkt"]
+        if c in df.columns
+    ]
+    if not name_columns:
+        return {}
+
+    aliases: Dict[str, List[str]] = {}
+
+    for _, row in df.iterrows():
+        # Collect all non-null name variants for this team
+        variants: List[str] = []
+        for col in name_columns:
+            val = row.get(col)
+            if pd.notna(val):
+                s = str(val).strip()
+                if s:
+                    variants.append(s)
+
+        if len(variants) < 2:
+            continue  # nothing to cross-link
+
+        # Normalize all variants
+        normed = []
+        for v in variants:
+            n = _normalize_team_name(v)
+            if n and len(n) >= 3:  # skip trivially short
+                normed.append(n)
+
+        # Remove duplicates but preserve order
+        normed = list(dict.fromkeys(normed))
+        if len(normed) < 2:
+            continue
+
+        # Create bidirectional links between all pairs
+        for i, norm_a in enumerate(normed):
+            for j, norm_b in enumerate(normed):
+                if i != j:
+                    aliases.setdefault(norm_a, [])
+                    if norm_b not in aliases[norm_a]:
+                        aliases[norm_a].append(norm_b)
+
+    _log.info(
+        "Built %d dynamic aliases from REEP teams (%d bidirectional links)",
+        len(aliases),
+        sum(len(v) for v in aliases.values()),
+    )
+    _dynamic_aliases_cache = aliases
+    return aliases
+
+
+def _get_merged_aliases() -> Dict[str, List[str]]:
+    """Merge hardcoded ``_EXTREME_ABBREVS`` with dynamic REEP aliases.
+
+    Hardcoded entries take priority (they are curated for edge cases
+    like PSG, ManCity, BVB that REEP may not handle perfectly).
+    Dynamic aliases fill in the gaps for the thousands of teams that
+    aren't manually maintained.
+    """
+    dynamic = _build_dynamic_aliases()
+    if not dynamic:
+        return _EXTREME_ABBREVS
+
+    # Start with dynamic, then overlay hardcoded
+    merged = dict(dynamic)
+    for key, val_list in _EXTREME_ABBREVS.items():
+        existing = merged.get(key, [])
+        # Merge: keep hardcoded entries + any dynamic extras
+        combined = list(val_list)
+        for v in existing:
+            if v not in combined:
+                combined.append(v)
+        merged[key] = combined
+
+    return merged
+
+
 @dataclass
 class LeagueSnapshot:
     """Per-league statistics for a single day."""
@@ -1623,13 +1735,15 @@ def _fuzzy_find_team(
 
     # 2. Extreme abbreviation lookup — must come before substring to prevent
     #    false positives like "Paris FC" beating "PSG" for "Paris Saint-Germain"
-    q_aliases = _EXTREME_ABBREVS.get(q, [])
+    #    Uses merged aliases: hardcoded _EXTREME_ABBREVS + dynamic REEP aliases.
+    merged_aliases = _get_merged_aliases()
+    q_aliases = merged_aliases.get(q, [])
     for alias in q_aliases:
         if alias in candidates:
             return candidates[alias]
     # Reverse: check if any candidate has an alias matching q
     for norm, orig in candidates.items():
-        for alias in _EXTREME_ABBREVS.get(norm, []):
+        for alias in merged_aliases.get(norm, []):
             if alias == q:
                 return orig
 
