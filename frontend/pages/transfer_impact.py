@@ -631,3 +631,64 @@ def render():
             teammate_per90s=teammate_per90s,
             league_per90s=league_per90s,
         )
+
+    # ── (e) Spatial visualizations (StatsBomb data when available) ────────
+    try:
+        from backend.data import statsbomb_client
+        from frontend.components import pitch_viz
+
+        shots = statsbomb_client.get_player_shots(player_name)
+        passes = statsbomb_client.get_player_passes(player_name)
+        heatmap_locs = statsbomb_client.get_player_heatmap_data(player_name)
+
+        has_spatial = bool(shots or passes or heatmap_locs)
+        if has_spatial:
+            section_header(
+                "Spatial Profile",
+                "Event-level data from StatsBomb open data (where available)",
+            )
+            viz_cols = st.columns(3)
+            with viz_cols[0]:
+                if shots:
+                    pitch_viz.show_shot_map(shots, player_name=player_name)
+                else:
+                    st.caption("No shot data available")
+            with viz_cols[1]:
+                if passes:
+                    pitch_viz.show_pass_network(passes, player_name=player_name)
+                else:
+                    st.caption("No pass data available")
+            with viz_cols[2]:
+                if heatmap_locs:
+                    pitch_viz.show_heatmap(heatmap_locs, player_name=player_name)
+                else:
+                    st.caption("No heatmap data available")
+
+            # Spatial feature summary
+            spatial = statsbomb_client.compute_spatial_features(player_name)
+            if spatial:
+                st.markdown(
+                    '<div style="display:flex; gap:1rem; margin:0.8rem 0; flex-wrap:wrap;">',
+                    unsafe_allow_html=True,
+                )
+                _spatial_labels = {
+                    "avg_shot_distance": ("Avg Shot Dist", "m"),
+                    "shots_inside_box_pct": ("Shots in Box", "%"),
+                    "progressive_pass_pct": ("Prog. Passes", "%"),
+                    "touches_left_pct": ("Left Third", "%"),
+                    "touches_center_pct": ("Center", "%"),
+                    "touches_right_pct": ("Right Third", "%"),
+                }
+                cards = []
+                for sk, (label, unit) in _spatial_labels.items():
+                    val = spatial.get(sk)
+                    if val is not None:
+                        fmt = f"{val:.1f}{unit}" if unit == "m" else f"{val:.0f}{unit}"
+                        cards.append(
+                            f'<div class="ts-stat-card" style="flex:1; min-width:120px;">'
+                            f'<span class="ts-stat-label">{label}</span>'
+                            f'<span class="ts-stat-value">{fmt}</span></div>'
+                        )
+                st.markdown("".join(cards) + "</div>", unsafe_allow_html=True)
+    except Exception as exc:
+        _log.debug("Spatial viz unavailable: %s", exc)
