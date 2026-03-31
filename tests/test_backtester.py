@@ -145,11 +145,11 @@ class TestMetricClipFloors(unittest.TestCase):
     def test_clip_delta_uses_metric_floor_for_small_pre_val(self):
         """When pre_val is near zero, floor from _METRIC_CLIP_FLOORS is used."""
         model = TransferPortalModel()
-        # xG pre_val = 0.07, delta = 2.8 (the exact clipping case from the bug)
-        clipped = model._clip_delta(2.8, 0.07, "touches_in_opposition_box")
+        # touches_in_opposition_box: pre_val = 0.001, raw delta = 5.0
+        # max_delta = max(2.0 × 0.001, 1.0) = 1.0 (floor dominates)
+        clipped = model._clip_delta(5.0, 0.001, "touches_in_opposition_box")
         floor = _METRIC_CLIP_FLOORS["touches_in_opposition_box"]
-        expected_max = max(DELTA_CLIP_MULTIPLIER * 0.07, floor)
-        self.assertAlmostEqual(abs(clipped), expected_max, places=5)
+        self.assertAlmostEqual(clipped, floor, places=5)
 
     def test_clip_delta_uses_multiplier_for_large_pre_val(self):
         """When pre_val is large, DELTA_CLIP_MULTIPLIER × pre_val dominates."""
@@ -162,10 +162,10 @@ class TestMetricClipFloors(unittest.TestCase):
     def test_clip_delta_negative(self):
         """Negative deltas are clipped symmetrically."""
         model = TransferPortalModel()
-        clipped = model._clip_delta(-5.0, 0.1, "expected_goals")
+        # pre_val = 0.001 → max_delta = max(2.0 × 0.001, 0.15) = 0.15
+        clipped = model._clip_delta(-5.0, 0.001, "expected_goals")
         floor = _METRIC_CLIP_FLOORS["expected_goals"]
-        expected_max = max(DELTA_CLIP_MULTIPLIER * 0.1, floor)
-        self.assertAlmostEqual(clipped, -expected_max, places=5)
+        self.assertAlmostEqual(clipped, -floor, places=5)
 
     def test_clip_delta_passthrough_when_within_bounds(self):
         """Delta within bounds is returned unchanged."""
@@ -177,8 +177,9 @@ class TestMetricClipFloors(unittest.TestCase):
         """Unknown metric uses the global DELTA_CLIP_FLOOR fallback."""
         from backend.models.transfer_portal import DELTA_CLIP_FLOOR
         model = TransferPortalModel()
-        clipped = model._clip_delta(5.0, 0.01, "unknown_metric")
-        self.assertAlmostEqual(abs(clipped), DELTA_CLIP_FLOOR, places=5)
+        # pre_val = 0.001 → max_delta = max(2.0 × 0.001, 0.5) = 0.5
+        clipped = model._clip_delta(5.0, 0.001, "unknown_metric")
+        self.assertAlmostEqual(clipped, DELTA_CLIP_FLOOR, places=5)
 
 
 # ── Delta shrinkage ─────────────────────────────────────────────────────────

@@ -31,9 +31,10 @@ _log = logging.getLogger(__name__)
 # plausible per-metric maximum delta.  Prevents runaway TF model predictions.
 DELTA_CLIP_MULTIPLIER = 2.0
 
-# Per-metric clip floors — calibrated to each metric's typical per-90 range.
-# For metrics with small absolute values (xG, xA), tight floors prevent the
-# model from making absurdly large predictions when pre_val is near zero.
+# Per-metric clip floors — calibrated to ~40% of each metric's typical per-90
+# upper bound.  This represents the maximum plausible single-transfer change
+# for a player.  For metrics with small absolute values (xG, xA), tight floors
+# prevent the model from making absurdly large predictions when pre_val ≈ 0.
 _METRIC_CLIP_FLOORS: Dict[str, float] = {
     "expected_goals": 0.15,              # typical range: 0.05–0.40
     "expected_assists": 0.10,            # typical range: 0.03–0.25
@@ -49,11 +50,16 @@ _METRIC_CLIP_FLOORS: Dict[str, float] = {
     "interceptions": 0.40,               # typical range: 0.2–2.0
     "possession_won_final_3rd": 0.40,    # typical range: 0.2–2.0
 }
-DELTA_CLIP_FLOOR = 0.5  # fallback floor for unknown metrics
+# Conservative fallback for metrics not in _METRIC_CLIP_FLOORS.
+# Set to the median of documented floors (~0.5) to avoid overly tight
+# or overly loose clipping on unknown metrics.
+DELTA_CLIP_FLOOR = 0.5
 
 # ── Delta shrinkage ──────────────────────────────────────────────────────────
 # Multiply predicted deltas by this factor to pull toward naive baseline
 # (zero delta).  Prevents systematic overshoot when the model is uncertain.
+# Applied *before* clipping so that the shrunken delta is what gets compared
+# against the clip threshold — the two guards compose naturally.
 DELTA_SHRINKAGE = 0.6
 
 # ── Target group definitions ─────────────────────────────────────────────────
