@@ -200,5 +200,114 @@ class TestDeltaShrinkage(unittest.TestCase):
         self.assertGreater(DELTA_SHRINKAGE, 0.3)
 
 
+# ── Backtester feature keys ────────────────────────────────────────────────
+
+
+class TestFeatureKeysConsistency(unittest.TestCase):
+    """Verify backtester feature keys match transfer_portal._feature_keys()."""
+
+    def test_feature_keys_list_matches_transfer_portal(self):
+        """_feature_keys_list() must match _feature_keys() exactly."""
+        from backend.models.backtester import _feature_keys_list
+        from backend.models.transfer_portal import _feature_keys
+
+        bt_keys = _feature_keys_list()
+        tp_keys = _feature_keys()
+        self.assertEqual(bt_keys, tp_keys)
+
+    def test_feature_keys_list_includes_interaction_features(self):
+        """_feature_keys_list() must include the 3 interaction features."""
+        from backend.models.backtester import _feature_keys_list
+
+        keys = _feature_keys_list()
+        self.assertIn("interaction_ability_gap", keys)
+        self.assertIn("interaction_gap_squared", keys)
+        self.assertIn("interaction_league_gap", keys)
+
+    def test_feature_keys_list_length_matches_feature_dim(self):
+        """_feature_keys_list() length must equal FEATURE_DIM (46)."""
+        from backend.models.backtester import _feature_keys_list
+
+        self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
+
+
+# ── Team-position leakage fix ──────────────────────────────────────────────
+
+
+class TestInjectTeamPosAverages(unittest.TestCase):
+    """Test inject_team_pos_averages uses only training data."""
+
+    def test_injects_from_train_only(self):
+        """Val/test team-pos averages should come from training data only."""
+        from backend.models.training_pipeline import inject_team_pos_averages
+
+        _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4  # 17
+
+        # Train metadata: club_id=1, position=Forward, xG=0.5 per90
+        train_meta = [
+            {
+                "source_club_id": 1,
+                "target_club_id": 2,
+                "position": "Forward",
+                "pre_per90": {"expected_goals": 0.5, "shots": 2.0},
+            },
+            {
+                "source_club_id": 1,
+                "target_club_id": 2,
+                "position": "Forward",
+                "pre_per90": {"expected_goals": 0.3, "shots": 1.0},
+            },
+        ]
+        # Test metadata: same club but different per90 (should NOT be used)
+        test_meta = [
+            {
+                "source_club_id": 1,
+                "target_club_id": 2,
+                "position": "Forward",
+                "pre_per90": {"expected_goals": 9.9, "shots": 99.0},
+            },
+        ]
+
+        X_test = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+
+        inject_team_pos_averages(X_test, test_meta, train_meta)
+
+        # team_pos_current for xG should be mean(0.5, 0.3) = 0.4, not 9.9
+        xg_idx = list(CORE_METRICS).index("expected_goals")
+        injected_xg = X_test[0, _POS_CURRENT_OFFSET + xg_idx]
+        self.assertAlmostEqual(injected_xg, 0.4, places=5)
+
+    def test_missing_club_defaults_to_zero(self):
+        """Unknown club/position combo should leave zeros."""
+        from backend.models.training_pipeline import inject_team_pos_averages
+
+        _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4
+
+        train_meta = [
+            {
+                "source_club_id": 1,
+                "target_club_id": 2,
+                "position": "Forward",
+                "pre_per90": {"expected_goals": 0.5},
+            },
+        ]
+        # Test has club_id=999, not in training
+        test_meta = [
+            {
+                "source_club_id": 999,
+                "target_club_id": 888,
+                "position": "Defender",
+                "pre_per90": {},
+            },
+        ]
+
+        X_test = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+        inject_team_pos_averages(X_test, test_meta, train_meta)
+
+        # All team_pos slots should remain 0.0
+        for j in range(len(CORE_METRICS)):
+            self.assertAlmostEqual(X_test[0, _POS_CURRENT_OFFSET + j], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -30,7 +30,12 @@ _MODELS_DIR = os.path.join(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 43-feature vector."""
+    """Return the ordered list of feature keys matching the 46-feature vector.
+
+    Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
+    includes the 3 interaction features (ability_gap, gap², league_gap)
+    appended after the base 43 features.
+    """
     keys = []
     for m in CORE_METRICS:
         keys.append(f"player_{m}")
@@ -42,6 +47,10 @@ def _feature_keys_list() -> List[str]:
         keys.append(f"team_pos_current_{m}")
     for m in CORE_METRICS:
         keys.append(f"team_pos_target_{m}")
+    # Interaction features (must match transfer_portal._feature_keys())
+    keys.append("interaction_ability_gap")
+    keys.append("interaction_gap_squared")
+    keys.append("interaction_league_gap")
     return keys
 
 
@@ -58,7 +67,7 @@ def run_backtest(
 
     Parameters
     ----------
-    X_test : ndarray, shape (N, 43)
+    X_test : ndarray, shape (N, 46)
     y_test : ndarray, shape (N, 13)
     meta_test : list[dict]
     meta_train : list[dict], optional
