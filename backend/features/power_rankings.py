@@ -208,7 +208,6 @@ _CLUBELO_TO_SOFASCORE: Dict[str, str] = {
     "Lamia": "PAS Lamia 1964",
     # Czech Republic
     "SpartaPrague": "Sparta Prague",
-    "Sparta": "Sparta Prague",
     "SlaviaPrague": "Slavia Prague",
     "Slavia": "Slavia Prague",
     "PlzenViktoria": "Viktoria Plzeň",
@@ -249,7 +248,6 @@ _CLUBELO_TO_SOFASCORE: Dict[str, str] = {
     "AalborgBK": "AaB",
     # Croatia
     "DinamoZagreb": "GNK Dinamo Zagreb",
-    "Dinamo": "GNK Dinamo Zagreb",
     "HajdukSplit": "HNK Hajduk Split",
     "Hajduk": "HNK Hajduk Split",
     "Rijeka": "HNK Rijeka",
@@ -335,14 +333,12 @@ _CLUBELO_TO_SOFASCORE: Dict[str, str] = {
     "UCraiova": "Universitatea Craiova",
     "Craiova": "Universitatea Craiova",
     "RapidBucharest": "Rapid București",
-    "Dinamo": "Dinamo București",
     "DinamoBucharest": "Dinamo București",
     "Sepsi": "Sepsi OSK",
     # Ukraine
     "ShakhtarDonetsk": "Shakhtar Donetsk",
     "Shakhtar": "Shakhtar Donetsk",
     "DynamoKyiv": "Dynamo Kyiv",
-    "Dynamo": "Dynamo Kyiv",
     "Dnipro1": "SC Dnipro-1",
     "Vorskla": "Vorskla Poltava",
     "Zorya": "Zorya Luhansk",
@@ -441,7 +437,6 @@ _CLUBELO_TO_SOFASCORE: Dict[str, str] = {
     "BoraczBanjaluka": "FK Borac Banja Luka",
     "Borac": "FK Borac Banja Luka",
     "TuzlaCity": "FK Tuzla City",
-    "Velez": "FK Velež Mostar",
     "VelezMostar": "FK Velež Mostar",
     # Israel
     "MaccabiTelAviv": "Maccabi Tel Aviv FC",
@@ -558,7 +553,6 @@ _CLUBELO_TO_SOFASCORE: Dict[str, str] = {
     "Groningen": "FC Groningen",
     "NEC": "NEC Nijmegen",
     "NECNijmegen": "NEC Nijmegen",
-    "Sparta": "Sparta Rotterdam",
     "SpartaRotterdam": "Sparta Rotterdam",
     "GoAheadEagles": "Go Ahead Eagles",
     "Fortuna": "Fortuna Sittard",
@@ -1357,7 +1351,7 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "heerenveen": ["scheerenveen"],
     "necnijmegen": ["nec"],
     "nec": ["necnijmegen"],
-    "spartarotterdam": ["sparta"],
+    "spartarotterdam": ["spartardam"],
     "fortunasittard": ["fortuna"],
     "fortuna": ["fortunasittard"],
     "heraclesalmelo": ["heracles"],
@@ -1420,7 +1414,7 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "aristhessalonikifc": ["aris", "aristhessaloniki"],
     "aris": ["aristhessalonikifc"],
     # Czech Republic
-    "spartaprague": ["sparta"],
+    "spartaprague": ["spartaprag"],
     "slaviaprague": ["slavia"],
     "slavia": ["slaviaprague"],
     "viktoriaplzen": ["plzen", "viktoria"],
@@ -1444,7 +1438,7 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "agf": ["aarhusgf"],
     "aarhus": ["aarhusgf"],
     # Croatia
-    "gnkdinamozagreb": ["dinamo", "dinamozagreb"],
+    "gnkdinamozagreb": ["dinamozagreb"],
     "dinamozagreb": ["gnkdinamozagreb"],
     "hnkhajduksplit": ["hajduk", "hajduksplit"],
     "hajduk": ["hnkhajduksplit"],
@@ -1528,7 +1522,7 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     # Ukraine
     "shakhtardonetsk": ["shakhtar"],
     "shakhtar": ["shakhtardonetsk"],
-    "dynamokyiv": ["dynamo", "dynamokiev"],
+    "dynamokyiv": ["dynamokiev"],
     "dynamokiev": ["dynamokyiv"],
     "zoryaluhansk": ["zorya"],
     "zorya": ["zoryaluhansk"],
@@ -1599,8 +1593,8 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "sarajevo": ["fksarajevo"],
     "hskzrinjskimostar": ["zrinjski", "zrinjskimostar"],
     "zrinjski": ["hskzrinjskimostar"],
-    "fkvelezmostar": ["velez", "velezmostar"],
-    "velez": ["fkvelezmostar"],
+    "fkvelezmostar": ["velezmostar"],
+    "velezmostar": ["fkvelezmostar"],
     # Israel
     "maccabitelavivfc": ["maccabitelaviv", "maccabita"],
     "maccabitelaviv": ["maccabitelavivfc"],
@@ -1654,7 +1648,7 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "connahsquaynomadsfc": ["connah", "connahsquay"],
     "connah": ["connahsquaynomadsfc"],
     # Georgia
-    "fcdinamotbilisi": ["dinamotbilisi", "dinamo"],
+    "fcdinamotbilisi": ["dinamotbilisi"],
     "dinamotbilisi": ["fcdinamotbilisi"],
     "fctorpedokutaisi": ["torpedo", "torpedokutaisi"],
     "torpedokutaisi": ["fctorpedokutaisi"],
