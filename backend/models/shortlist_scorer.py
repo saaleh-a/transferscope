@@ -46,6 +46,8 @@ class Candidate:
     team: str
     position: str
     age: Optional[int] = None
+    nationality: Optional[str] = None
+    height_cm: Optional[int] = None
     market_value: Optional[float] = None
     minutes_played: Optional[int] = None
     league: Optional[str] = None
