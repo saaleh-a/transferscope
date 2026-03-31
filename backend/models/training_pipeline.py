@@ -510,7 +510,7 @@ def build_training_sample(
 
     Returns
     -------
-    dict with keys: features (43,), labels (13,), player_id, transfer_date,
+    dict with keys: features (46,), labels (13,), player_id, transfer_date,
     confidence, from_club, to_club — or None if data is insufficient.
     """
     # Block 1 — Player pre-transfer per-90 (13 values)
@@ -1284,7 +1284,7 @@ def build_full_dataset(
     Returns
     -------
     (X, y, metadata)
-        X: shape (N, 43) features
+        X: shape (N, 46) features
         y: shape (N, 13) labels
         metadata: list of dicts with player_id, transfer_date, from_club, to_club, etc.
     """
@@ -1910,7 +1910,12 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 43-feature vector."""
+    """Return the ordered list of feature keys matching the 46-feature vector.
+
+    Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
+    includes the 3 interaction features (ability_gap, gap², league_gap)
+    appended after the base 43 features.
+    """
     keys = []
     for m in CORE_METRICS:
         keys.append(f"player_{m}")
@@ -1922,6 +1927,10 @@ def _feature_keys_list() -> List[str]:
         keys.append(f"team_pos_current_{m}")
     for m in CORE_METRICS:
         keys.append(f"team_pos_target_{m}")
+    # Interaction features (must match transfer_portal._feature_keys())
+    keys.append("interaction_ability_gap")
+    keys.append("interaction_gap_squared")
+    keys.append("interaction_league_gap")
     return keys
 
 

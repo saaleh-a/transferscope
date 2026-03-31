@@ -829,7 +829,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_team_name="Target FC",
         )
 
-        # Should have all 43 keys
+        # Should have all 46 keys (FEATURE_DIM)
         self.assertEqual(len(result), FEATURE_DIM)
 
         # Player metrics should reflect match log rolling values (1.5), not season agg (0.3)
@@ -867,7 +867,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_team_name="Target FC",
         )
 
-        # Should have all 43 keys
+        # Should have all 46 keys (FEATURE_DIM)
         self.assertEqual(len(result), FEATURE_DIM)
 
         # Player metrics should reflect season agg (0.8)
@@ -1156,3 +1156,31 @@ class TestNonTransferExcludesTransferPlayers(unittest.TestCase):
         result = discover_non_transfers(["ENG1"], seasons_back=2)
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].player_id, 1001)
+
+
+class TestFeatureKeysListConsistency(unittest.TestCase):
+    """Verify training_pipeline._feature_keys_list() matches transfer_portal._feature_keys()."""
+
+    def test_matches_transfer_portal_feature_keys(self):
+        """_feature_keys_list() must match _feature_keys() exactly."""
+        from backend.models.training_pipeline import _feature_keys_list
+        from backend.models.transfer_portal import _feature_keys
+
+        tp_keys = _feature_keys_list()
+        ref_keys = _feature_keys()
+        self.assertEqual(tp_keys, ref_keys)
+
+    def test_length_matches_feature_dim(self):
+        """_feature_keys_list() length must equal FEATURE_DIM (46)."""
+        from backend.models.training_pipeline import _feature_keys_list
+
+        self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
+
+    def test_includes_interaction_features(self):
+        """_feature_keys_list() must include the 3 interaction features."""
+        from backend.models.training_pipeline import _feature_keys_list
+
+        keys = _feature_keys_list()
+        self.assertIn("interaction_ability_gap", keys)
+        self.assertIn("interaction_gap_squared", keys)
+        self.assertIn("interaction_league_gap", keys)
