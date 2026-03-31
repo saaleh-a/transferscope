@@ -4,7 +4,7 @@
 
 Built on the methodology from *Dinsdale & Gallagher (2022) — "The Transfer Portal"*. Designed for Arsenal scouting, but works for any player, any club, any league — including South America, MLS, and Asia.
 
-> **In plain English:** You type in a player's name and the club you want to send them to. TransferScope tells you how their stats will change — will they score more? Create fewer chances? Defend better? It also finds replacement players across 37+ leagues and gives you a quick "hot or not" verdict on transfer rumours. Think of it like a football version of a "what if?" simulator, powered by maths instead of guesswork.
+> **In plain English:** You type in a player's name and the club you want to send them to. TransferScope tells you how their stats will change — will they score more? Create fewer chances? Defend better? It also finds replacement players across 51 leagues and gives you a quick "hot or not" verdict on transfer rumours. Think of it like a football version of a "what if?" simulator, powered by maths instead of guesswork.
 
 ---
 
@@ -18,6 +18,8 @@ TransferScope answers three questions every sporting director asks:
 | **Shortlist Generator** | "Who are the best replacements for this player across all leagues?" |
 | **Hot or Not** | "Is this transfer rumour actually a good move?" |
 | **About & Methodology** | "How does this work? What leagues are covered?" |
+| **Backtest Validator** | "How accurate are the predictions vs actual outcomes?" |
+| **Diagnostics** | "Is everything working? What's the cache and data source status?" |
 
 ### Transfer Impact
 
@@ -27,7 +29,7 @@ Enter a player and a target club. TransferScope predicts how each of 13 core per
 
 ### Shortlist Generator
 
-Select a player to replace and weight the metrics that matter. TransferScope scans players across 37+ leagues (defaulting to the Big 5 European leagues for reliability — scanning too many leagues triggers Sofascore rate-limiting), clusters candidates by playing style using k-means, scores them by weighted Euclidean distance to the reference player (with a 15% same-cluster bonus), and returns a ranked shortlist with filters for age, position, league, minutes played, and club power ranking. The player's own league is always scanned first. A 1.5-second delay between league API calls prevents rate-limiting (403/429 errors) that previously caused 0 results.
+Select a player to replace and weight the metrics that matter. TransferScope scans players across 51 leagues (defaulting to the Big 5 European leagues for reliability — scanning too many leagues triggers Sofascore rate-limiting), clusters candidates by playing style using k-means, scores them by weighted Euclidean distance to the reference player (with a 15% same-cluster bonus), and returns a ranked shortlist with filters for age, position, league, minutes played, and club power ranking. The player's own league is always scanned first. A 1.5-second delay between league API calls prevents rate-limiting (403/429 errors) that previously caused 0 results.
 
 > **In plain English:** Say Saka gets injured and you need a replacement right winger. You tell TransferScope which stats matter most to you (e.g. "I care a lot about chance creation and dribbling, less about defensive work"). It then searches through thousands of players across major leagues worldwide, groups them by playing style (using machine learning clustering), and ranks them by how closely they match what you need — with a bonus for players who play a similar style to the reference. You can filter by age, league, how much they've played, etc. The search starts with the player's own league (most reliable) and adds the Big 5 by default — you can expand to more leagues manually.
 
@@ -42,7 +44,7 @@ Paste a transfer rumour. Get an instant HOT / TEPID / NOT verdict backed by pred
 ## How It Works (The Short Version)
 
 ```
-1. COLLECT DATA         →  Player stats from Sofascore, club strength ratings from Elo systems
+1. COLLECT DATA         →  Player stats from Sofascore, club strength ratings from Elo systems, spatial data from StatsBomb
 2. CRUNCH NUMBERS        →  Rolling averages, league quality scores, team strength comparisons
 3. PREDICT              →  Neural network + adjustment models predict stats at the new club
 4. SHOW RESULTS         →  Charts, tables, and verdicts in a dark-themed web app
@@ -73,7 +75,7 @@ Paste a transfer rumour. Get an instant HOT / TEPID / NOT verdict backed by pred
 │                           │                                  │
 │  ┌────────────────────────▼───────────────────────────────┐  │
 │  │         TensorFlow Neural Network (the brain)           │  │
-│  │   4 model groups · 43 input features · 13 predictions   │  │
+│  │   4 model groups · 46 input features · 13 predictions   │  │
 │  └────────────────────────┬───────────────────────────────┘  │
 │                           │                                  │
 │  ┌────────────────────────▼───────────────────────────────┐  │
@@ -90,6 +92,7 @@ Paste a transfer rumour. Get an instant HOT / TEPID / NOT verdict backed by pred
 │  ┌────────────────────────▼───────────────────────────────┐  │
 │  │         Data Sources (the raw ingredients)              │  │
 │  │   Sofascore · ClubElo · WorldFootballElo                │  │
+│  │   REEP · StatsBomb · football-data.co.uk                │  │
 │  │   All calls cached locally to avoid hammering APIs      │  │
 │  └────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
@@ -104,10 +107,13 @@ transferscope/
 ├── app.py                              # Streamlit entry point
 ├── backend/
 │   ├── data/                           # Talks to external data sources
-│   │   ├── sofascore_client.py         # Player stats, search, transfers, seasons, match logs, team-position averages
+│   │   ├── sofascore_client.py         # Player stats, search, transfers, seasons, match logs
 │   │   ├── clubelo_client.py           # European club Elo ratings
 │   │   ├── worldfootballelo_client.py  # Global club Elo ratings (non-Europe)
 │   │   ├── elo_router.py              # Picks the right Elo source for each club
+│   │   ├── reep_registry.py           # REEP open data — ~45K team aliases for fuzzy matching
+│   │   ├── statsbomb_client.py        # StatsBomb spatial data — shots, passes, heatmaps
+│   │   ├── footballdata_client.py     # football-data.co.uk match CSVs for calibration
 │   │   └── cache.py                    # Stores API results locally so we don't re-fetch
 │   ├── features/                       # Turns raw data into model-ready numbers
 │   │   ├── rolling_windows.py          # Recent-form averages (last ~11 games)
@@ -119,25 +125,33 @@ transferscope/
 │   │   ├── training_pipeline.py        # End-to-end training: transfer discovery → sklearn + TF fit
 │   │   └── backtester.py              # Compares predictions against actual post-transfer stats
 │   └── utils/
-│       └── league_registry.py          # Master list of all 37+ leagues and their IDs
+│       └── league_registry.py          # Master list of all 51 leagues and their IDs
 ├── frontend/
-│   ├── pages/                          # The four main screens
+│   ├── pages/                          # The six main screens
 │   │   ├── transfer_impact.py          # "What happens if this player moves here?"
 │   │   ├── shortlist_generator.py      # "Find me a replacement across all leagues"
 │   │   ├── hot_or_not.py              # "Is this rumour any good?"
+│   │   ├── backtest_validator.py       # "How accurate were past predictions?"
+│   │   ├── diagnostics.py             # System health, data sources, cache status
 │   │   └── about.py                   # Methodology, league coverage, and limitations
 │   ├── components/                     # Reusable chart widgets
 │   │   ├── swarm_plot.py              # Shows where a player ranks in their league
 │   │   ├── power_ranking_chart.py      # Before/after club strength timeline
-│   │   └── metric_bar.py              # Bar chart of predicted stat changes
+│   │   ├── metric_bar.py              # Bar chart of predicted stat changes
+│   │   ├── pitch_viz.py               # Shot maps, pass networks, heatmaps (mplsoccer)
+│   │   └── player_pizza.py            # Player pizza/radar chart
+│   ├── constants.py                    # Shared metric display labels
 │   └── theme.py                        # The dark "Tactical Noir" visual design
-├── tests/                              # 208 automated tests (no internet needed)
+├── tests/                              # 488 automated tests (no internet needed)
+├── scripts/
+│   └── check_training_ready.py         # Training readiness verification
 ├── data/
 │   ├── cache/                          # Saved API responses (not in git)
 │   └── models/                         # Saved model weights (not in git)
-├── CLAUDE.md                           # AI development context
+├── ARCHITECTURE.md                     # Full architecture reference (design decisions, metrics, models)
 ├── WHITEPAPER.md                       # Project white paper
 ├── METHODOLOGY.md                      # Technical methodology
+├── ONBOARDING.md                       # Developer onboarding guide
 └── requirements.txt                    # Python package list
 ```
 
@@ -176,7 +190,7 @@ The app opens at `http://localhost:8501`. No API keys required — all data sour
 python -m pytest tests/ -v
 ```
 
-All 208 tests use mocked API responses, so they run offline with no network calls.
+All 488 tests use mocked API responses, so they run offline with no network calls.
 
 ---
 
@@ -187,8 +201,11 @@ All 208 tests use mocked API responses, so they run offline with no network call
 | **Sofascore** | Player stats, team rosters, transfer history, seasons, match logs | "How many goals/assists/passes did this player make?" |
 | **ClubElo** | Elo ratings for ~600 European clubs | "How strong is this European club right now?" |
 | **WorldFootballElo** | Elo ratings for clubs worldwide | "How strong is this Brazilian/MLS/Saudi club?" |
+| **REEP Register** | Team alias mappings (~45K clubs worldwide) | "What other names does this club go by?" |
+| **StatsBomb** | Spatial data — shot locations, pass networks, heatmaps | "Where on the pitch does this player operate?" |
+| **football-data.co.uk** | Match-level CSVs for coefficient calibration | "How do league playing styles compare?" |
 
-All API calls are routed through a local cache (`backend/data/cache.py`). Player stats cache for 1 day, search results for 7 days, Elo ratings for 1 day. This means the app stays fast and doesn't repeatedly hit external servers.
+All API calls are routed through a local cache (`backend/data/cache.py`). Player stats cache for 1 day, search results for 7 days, Elo ratings for 1 day. This means the app stays fast and doesn't repeatedly hit external servers. REEP team aliases cache for 7 days.
 
 > **In plain English:** Elo ratings are like a score for how good a team is — the same system chess uses to rank players. A team gains points when they win and loses points when they lose. We use two different Elo providers because no single one covers the entire world.
 
@@ -222,12 +239,13 @@ Plus 10 additional metrics: xGOT, npxG, dispossessed, duels won %, aerial duels 
 
 ## League Coverage
 
-**37+ leagues across 4 continents:**
+**51 leagues across 5 continents:**
 
-- **Europe (30+):** Premier League, Championship, La Liga, La Liga 2, Bundesliga, 2. Bundesliga, Serie A, Serie B, Ligue 1, Ligue 2, Eredivisie, Primeira Liga, Belgian Pro League, Süper Lig, Scottish Premiership, Austrian Bundesliga, Swiss Super League, Greek Super League, Czech First League, Danish Superliga, Croatian 1. HNL, Serbian Super Liga, Norwegian Eliteserien, Swedish Allsvenskan, Polish Ekstraklasa, Romanian Liga I, Ukrainian Premier League, Russian Premier League, Bulgarian/Hungarian/Cypriot/Finnish leagues
+- **Europe (39):** Premier League, Championship, La Liga, La Liga 2, Bundesliga, 2. Bundesliga, Serie A, Serie B, Ligue 1, Ligue 2, Eredivisie, Primeira Liga, Belgian Pro League, Süper Lig, Scottish Premiership, Austrian Bundesliga, Swiss Super League, Greek Super League, Czech First League, Danish Superliga, Croatian 1. HNL, Serbian Super Liga, Norwegian Eliteserien, Swedish Allsvenskan, Polish Ekstraklasa, Romanian Liga I, Ukrainian Premier League, Russian Premier League, Slovak Super Liga, Slovenian PrvaLiga, Bosnian Premier Liga, Israeli Premier League, Kazakhstan Premier League, Icelandic Úrvalsdeild, League of Ireland Premier Division, Welsh Premier League, Georgian Erovnuli Liga, Bulgarian/Hungarian/Cypriot/Finnish leagues
 - **South America (7):** Brasileirão Série A & B, Argentine Primera, Colombian Primera A, Chilean Primera, Uruguayan Primera, Ecuadorian Serie A
 - **North America (1):** MLS
 - **Asia (2):** Saudi Pro League, J-League
+- **Africa (2):** Egyptian Premier League, South African Premier Division
 
 Any league available on Sofascore can be added by extending the league registry.
 
@@ -248,10 +266,13 @@ Any league available on Sofascore can be added by extending the league registry.
 | K-means shortlist scoring | Cluster candidates by playing style, 15% same-cluster bonus, weighted Euclidean distance | Finds replacements with similar playing profiles, not just similar raw numbers |
 | Shortlist rate-limit protection | 1.5s inter-league delay, Big 5 default, player's own league first | Prevents Sofascore 403/429 errors that caused 0 results when scanning too many leagues |
 | None-passthrough filters | Candidates with unknown age/minutes pass through filters instead of being excluded | Sparse API data shouldn't silently drop valid candidates |
-| Per-group feature subsets | Shooting 16, Passing 25, Dribbling 7, Defending 13 features | Each model group only sees relevant features, reducing noise |
-| 3-step team name matching | Exact → accent-normalized → fuzzy (180+ abbreviation aliases) | Reliably matches team names across ClubElo, WorldFootballElo, and Sofascore |
+| Per-group feature subsets | Shooting 19, Passing 28, Dribbling 10, Defending 16 features (46 total including 3 interaction features) | Each model group only sees relevant features, reducing noise |
+| 3-step team name matching | Exact → accent-normalized → fuzzy (502 abbreviation aliases + 531 ClubElo mappings + dynamic REEP aliases) | Reliably matches team names across ClubElo, WorldFootballElo, and Sofascore |
 | Streamlit | Fast to build; sufficient for a personal tool | Web app framework that gets us a UI without a separate frontend team |
 | diskcache | Local tool, SQLite is enough | Simple on-disk cache, no need for a database server |
+| Dynamic REEP alias resolution | At runtime, cross-links ~45K clubs from REEP teams.csv for fuzzy matching | Never goes stale — augments hardcoded aliases automatically |
+| StatsBomb spatial data | Shot maps, pass networks, heatmaps in Transfer Impact | Visual context beyond raw statistics |
+| Coefficient calibration | football-data.co.uk match CSVs refine style coefficients | Data-driven coefficient tuning, not just defaults |
 | All stats per-90 | Consistent, comparable, position-agnostic | Fair comparisons regardless of minutes played |
 
 ---
@@ -262,6 +283,9 @@ Any league available on Sofascore can be added by extending the league registry.
 - ClubElo: [clubelo.com](http://clubelo.com)
 - WorldFootballElo: [eloratings.net](http://eloratings.net)
 - Sofascore: [sofascore.com](https://www.sofascore.com)
+- REEP Register: [github.com/transfermarkt/reep](https://github.com/transfermarkt/reep)
+- StatsBomb Open Data: [statsbomb.com/what-we-do/open-data](https://statsbomb.com/what-we-do/open-data/)
+- football-data.co.uk: [football-data.co.uk](https://www.football-data.co.uk)
 
 ---
 
