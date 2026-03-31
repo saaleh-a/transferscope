@@ -91,7 +91,7 @@ LEAGUES: Dict[str, LeagueInfo] = {
     ),
     "BEL1": LeagueInfo(
         name="Belgian Pro League",
-        sofascore_tournament_id=11,
+        sofascore_tournament_id=38,
         clubelo_league="BEL-First Division A",
         worldelo_slug="Belgium",
         country="Belgium",

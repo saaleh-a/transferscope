@@ -1083,11 +1083,34 @@ def get_team_players_stats(
     players: list[dict] = []
 
     if isinstance(raw, dict):
-        for group in raw.get("players", []):
-            if not isinstance(group, dict):
+        for entry in raw.get("players", []):
+            if not isinstance(entry, dict):
                 continue
-            group_name = group.get("name") or group.get("title", "Unknown")
-            for member in group.get("players") or group.get("members") or []:
+
+            # ── Format A (current API): flat list with "player" key ──────
+            if "player" in entry and isinstance(entry["player"], dict):
+                pdata = entry["player"]
+                player_id = pdata.get("id")
+                player_name = (
+                    pdata.get("name")
+                    or pdata.get("shortName", "")
+                )
+                pos = normalize_position(
+                    _map_position(pdata.get("position", ""))
+                )
+                if player_id and player_name:
+                    players.append(
+                        {
+                            "id": player_id,
+                            "name": player_name,
+                            "position": pos,
+                        }
+                    )
+                continue
+
+            # ── Format B (legacy/grouped): groups with nested "players" ──
+            group_name = entry.get("name") or entry.get("title", "Unknown")
+            for member in entry.get("players") or entry.get("members") or []:
                 if not isinstance(member, dict):
                     continue
                 player_id = member.get("id")
