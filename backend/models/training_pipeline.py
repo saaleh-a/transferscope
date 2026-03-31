@@ -510,7 +510,7 @@ def build_training_sample(
 
     Returns
     -------
-    dict with keys: features (43,), labels (13,), player_id, transfer_date,
+    dict with keys: features (46,), labels (13,), player_id, transfer_date,
     confidence, from_club, to_club — or None if data is insufficient.
     """
     # Block 1 — Player pre-transfer per-90 (13 values)
@@ -1222,6 +1222,66 @@ def compute_team_position_averages(
     return averages
 
 
+def inject_team_pos_averages(
+    X: np.ndarray,
+    metadata: List[Dict[str, Any]],
+    train_metadata: List[Dict[str, Any]],
+) -> np.ndarray:
+    """Inject team-position per-90 averages into feature matrices.
+
+    Computes averages from *train_metadata* only (not val/test) to
+    prevent data leakage, then writes them into the team_pos_current
+    and team_pos_target slots of *X* for all splits.
+
+    Parameters
+    ----------
+    X : ndarray, shape (N, FEATURE_DIM)
+        Feature matrix to update in-place.
+    metadata : list[dict]
+        Metadata for the rows in *X* (needs source_club_id, target_club_id,
+        position).
+    train_metadata : list[dict]
+        Metadata for training rows only — used to compute averages.
+
+    Returns
+    -------
+    ndarray — updated *X* (modified in-place and also returned).
+
+    Side Effects
+    ------------
+    *metadata* dicts are also updated in-place with 'from_pos_avg' and
+    'to_pos_avg' keys for downstream consumers (e.g. adjustment models).
+    """
+    team_pos_lookup = compute_team_position_averages(train_metadata)
+
+    # Layout: [0:13] player, [13:17] abilities, [17:30] pos_current,
+    #          [30:43] pos_target, [43:46] interactions.
+    _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4   # 17
+    _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 30
+    assert _POS_CURRENT_OFFSET == 17, f"Expected 17, got {_POS_CURRENT_OFFSET}"
+    assert _POS_TARGET_OFFSET == 30, f"Expected 30, got {_POS_TARGET_OFFSET}"
+    assert _POS_TARGET_OFFSET + len(CORE_METRICS) <= FEATURE_DIM, (
+        f"team_pos slots exceed FEATURE_DIM ({FEATURE_DIM})"
+    )
+
+    for i, m_dict in enumerate(metadata):
+        src_key = (m_dict.get("source_club_id"), m_dict.get("position"))
+        tgt_key = (m_dict.get("target_club_id"), m_dict.get("position"))
+
+        src_avg = team_pos_lookup.get(src_key, {})
+        tgt_avg = team_pos_lookup.get(tgt_key, {})
+
+        for j, metric in enumerate(CORE_METRICS):
+            X[i, _POS_CURRENT_OFFSET + j] = src_avg.get(metric, 0.0)
+            X[i, _POS_TARGET_OFFSET + j] = tgt_avg.get(metric, 0.0)
+
+        # Also update metadata dicts for downstream consumers
+        m_dict["from_pos_avg"] = {metric: src_avg.get(metric, 0.0) for metric in CORE_METRICS}
+        m_dict["to_pos_avg"] = {metric: tgt_avg.get(metric, 0.0) for metric in CORE_METRICS}
+
+    return X
+
+
 def build_full_dataset(
     transfer_records: List[TransferRecord],
     non_transfer_records: Optional[List[NonTransferRecord]] = None,
@@ -1231,7 +1291,7 @@ def build_full_dataset(
     Returns
     -------
     (X, y, metadata)
-        X: shape (N, 43) features
+        X: shape (N, 46) features
         y: shape (N, 13) labels
         metadata: list of dicts with player_id, transfer_date, from_club, to_club, etc.
     """
@@ -1297,32 +1357,11 @@ def build_full_dataset(
         _log.error("No valid training samples built!")
         return np.empty((0, FEATURE_DIM)), np.empty((0, len(CORE_METRICS))), []
 
-    # ── Inject team-position averages from the training data itself ───────
-    # The batch Sofascore endpoint returns 404, so team_pos_current_* and
-    # team_pos_target_* features are all zeros.  Recompute them from the
-    # collected samples' pre_per90 grouped by (club_id, position).
-    team_pos_lookup = compute_team_position_averages(samples)
-
-    for s in samples:
-        src_key = (s.get("source_club_id"), s.get("position"))
-        tgt_key = (s.get("target_club_id"), s.get("position"))
-
-        src_avg = team_pos_lookup.get(src_key, {})
-        tgt_avg = team_pos_lookup.get(tgt_key, {})
-
-        # Overwrite team_pos slots in the feature vector
-        # Layout: [0:13] player, [13:17] abilities, [17:30] pos_current, [30:43] pos_target
-        _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4   # 17
-        _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 30
-        features = s["features"]
-        for i, m in enumerate(CORE_METRICS):
-            features[_POS_CURRENT_OFFSET + i] = src_avg.get(m, 0.0)
-            features[_POS_TARGET_OFFSET + i] = tgt_avg.get(m, 0.0)
-
-        # Also update the metadata dicts so downstream consumers see
-        # correct values (e.g. adjustment model training).
-        s["from_pos_avg"] = {m: src_avg.get(m, 0.0) for m in CORE_METRICS}
-        s["to_pos_avg"] = {m: tgt_avg.get(m, 0.0) for m in CORE_METRICS}
+    # ── Team-position averages — leave as zeros here ─────────────────────
+    # Previously computed from ALL samples (including future test data),
+    # causing mild data leakage.  Now deferred to inject_team_pos_averages()
+    # which is called AFTER the temporal split using training data only.
+    # The placeholder zeros are overwritten before training begins.
 
     X = np.stack([s["features"] for s in samples])
     y = np.stack([s["labels"] for s in samples])
@@ -1609,8 +1648,15 @@ def train_neural_network(
     y_train: np.ndarray,
     X_val: np.ndarray,
     y_val: np.ndarray,
+    meta_train: Optional[List[Dict[str, Any]]] = None,
 ) -> TransferPortalModel:
     """Train the 4-group TransferPortalModel neural network.
+
+    Parameters
+    ----------
+    meta_train : list[dict], optional
+        If provided, 'confidence' values are used as sample weights so
+        high-quality samples (more pre-transfer minutes) contribute more.
 
     Returns the fitted model (already saved to data/models/).
     """
@@ -1655,6 +1701,26 @@ def train_neural_network(
     # X[:, :len(CORE_METRICS)] are the unscaled pre-transfer per-90 stats.
     y_train_delta = y_train - X_train[:, :len(CORE_METRICS)]
     y_val_delta = y_val - X_val[:, :len(CORE_METRICS)]
+
+    # Sample weights: prioritise high-confidence samples (more pre-transfer
+    # minutes → more reliable features/labels).  Confidence ∈ [0, 1] from
+    # blend_weight().  Rescale so mean weight ≈ 1.0 to keep loss scale stable.
+    sample_weights = None
+    if meta_train:
+        raw_weights = np.array(
+            [m.get("confidence", 1.0) for m in meta_train], dtype=np.float32,
+        )
+        mean_w = raw_weights.mean()
+        if mean_w > 0:
+            sample_weights = raw_weights / mean_w
+            _log.info(
+                "Sample weights: min=%.3f, max=%.3f, mean=%.3f",
+                sample_weights.min(), sample_weights.max(), sample_weights.mean(),
+            )
+        else:
+            # All-zero confidence → fall back to uniform weighting
+            _log.warning("All confidence values are zero — using uniform sample weights")
+            sample_weights = None
 
     for group_name, targets in MODEL_GROUPS.items():
         # Get target columns
@@ -1705,6 +1771,7 @@ def train_neural_network(
         history = model.models[group_name].fit(
             X_group_train,
             y_group_train,
+            sample_weight=sample_weights,
             epochs=150,
             batch_size=32,
             validation_data=(X_group_val, y_group_val),
@@ -1855,7 +1922,12 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 43-feature vector."""
+    """Return the ordered list of feature keys matching the 46-feature vector.
+
+    Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
+    includes the 3 interaction features (ability_gap, gap², league_gap)
+    appended after the base 43 features.
+    """
     keys = []
     for m in CORE_METRICS:
         keys.append(f"player_{m}")
@@ -1867,6 +1939,10 @@ def _feature_keys_list() -> List[str]:
         keys.append(f"team_pos_current_{m}")
     for m in CORE_METRICS:
         keys.append(f"team_pos_target_{m}")
+    # Interaction features (must match transfer_portal._feature_keys())
+    keys.append("interaction_ability_gap")
+    keys.append("interaction_gap_squared")
+    keys.append("interaction_league_gap")
     return keys
 
 
@@ -2002,6 +2078,13 @@ def run_pipeline(
         meta_train, meta_val, meta_test,
     ) = split_dataset(X, y, metadata, val_ratio, test_ratio)
 
+    # Step 4b: Inject team-position averages from TRAINING data only
+    # (avoids data leakage — test/val team-pos comes from train distribution)
+    _report("Injecting team-position averages", "From training data only (no leakage)")
+    inject_team_pos_averages(X_train, meta_train, meta_train)
+    inject_team_pos_averages(X_val, meta_val, meta_train)
+    inject_team_pos_averages(X_test, meta_test, meta_train)
+
     if not skip_training:
         # Step 5: Train adjustment models
         _report("Training adjustment models", "sklearn LinearRegression × 13 metrics")
@@ -2009,7 +2092,7 @@ def run_pipeline(
 
         # Step 6: Train neural network
         _report("Training neural network", "4-group multi-head TensorFlow model")
-        train_neural_network(X_train, y_train, X_val, y_val)
+        train_neural_network(X_train, y_train, X_val, y_val, meta_train=meta_train)
     else:
         _report("Skipping training", "—skip-training flag set")
 

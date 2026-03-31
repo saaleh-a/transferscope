@@ -212,19 +212,22 @@ Architecture per group:
 ```
 Input (group-specific feature subset)
   -> Dense(128, relu)
+  -> BatchNormalization
   -> Dropout(0.3)
   -> Dense(64, relu)
+  -> BatchNormalization
   -> Dropout(0.3)
   -> [Linear output head per target]
 ```
 
 Per-group feature subsets (GROUP_FEATURE_SUBSETS):
-- Shooting: 16 features (relevant player metrics + ability + relevant team-pos metrics)
-- Passing: 25 features
-- Dribbling: 7 features (minimal — dribbling is near-irreducible)
-- Defending: 13 features
+- Shooting: 19 features (relevant player metrics + ability + relevant team-pos metrics + 3 interaction)
+- Passing: 28 features
+- Dribbling: 10 features (minimal — dribbling is near-irreducible + interaction)
+- Defending: 16 features
 
-Total input feature dict: 43 keys (player per-90 + team/league ability + team-pos per-90).
+Total input feature dict: 46 keys (13 player per-90 + 4 team/league ability
++ 26 team-pos per-90 + 3 interaction: ability_gap, gap², league_gap).
 Each group slices internally — external API unchanged.
 
 Auto-loads trained weights from `data/models/` when available (`is_trained()` checks
@@ -374,7 +377,7 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Position-aware Hot or Not verdict: offensive metrics 1.5× for forwards, defensive 1.5× for defenders; ±3% thresholds; UNKNOWN when no data
 - Position normalization to 4 categories (Forward, Midfielder, Defender, Goalkeeper) via `normalize_position()` — including Sofascore single-letter codes (F/M/D/G)
 - K-means clustering for shortlist scoring: weighted Euclidean distance + 15% same-cluster bonus vs simple z-score
-- Per-group feature subsets for TF model: shooting=16, passing=25, dribbling=7, defending=13 (not 43 for all groups)
+- Per-group feature subsets for TF model: shooting=19, passing=28, dribbling=10, defending=16 (not 46 for all groups)
 - 3-step team name resolution: exact → accent-normalized → fuzzy (5-priority cascade with 180+ extreme abbreviations covering Europe, MLS, Saudi, J-League)
 - `_CLUBELO_TO_SOFASCORE` mapping (116 entries): canonicalize ClubElo names at load time
 - Polynomial normalization: `change_ra / 50.0` in PlayerAdjustmentModel (mapping -50..+50 to -1..+1)

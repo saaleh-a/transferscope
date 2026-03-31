@@ -7,7 +7,8 @@ Group 3 - Dribbling: Take-ons (1 head)
 Group 4 - Defending: Def own third, Def mid third, Def att third (3 heads)
 
 Architecture per group:
-  Input -> Dense(128, relu) -> Dropout(0.3) -> Dense(64, relu) -> Dropout(0.3)
+  Input -> Dense(128, relu) -> BatchNormalization -> Dropout(0.3)
+  -> Dense(64, relu) -> BatchNormalization -> Dropout(0.3)
   -> [Linear output head per target]
 """
 
@@ -60,7 +61,7 @@ DELTA_CLIP_FLOOR = 0.5
 # (zero delta).  Prevents systematic overshoot when the model is uncertain.
 # Applied *before* clipping so that the shrunken delta is what gets compared
 # against the clip threshold — the two guards compose naturally.
-DELTA_SHRINKAGE = 0.6
+DELTA_SHRINKAGE = 0.75
 
 # ── Target group definitions ─────────────────────────────────────────────────
 
@@ -177,8 +178,8 @@ _MODELS_DIR = os.path.join(
 def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.keras.Model:
     """Build a multi-head model for one target group.
 
-    Uses L2 regularization on Dense layers and Huber loss for robustness
-    to outlier deltas in training data.
+    Uses BatchNormalization + L2 regularization on Dense layers and Huber
+    loss for robustness to outlier deltas in training data.
     """
     l2_reg = tf.keras.regularizers.l2(1e-3)
 
@@ -187,11 +188,13 @@ def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.
         128, activation="relu", kernel_regularizer=l2_reg,
         name=f"{group_name}_dense1",
     )(inp)
+    x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn1")(x)
     x = tf.keras.layers.Dropout(0.3, name=f"{group_name}_drop1")(x)
     x = tf.keras.layers.Dense(
         64, activation="relu", kernel_regularizer=l2_reg,
         name=f"{group_name}_dense2",
     )(x)
+    x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn2")(x)
     x = tf.keras.layers.Dropout(0.3, name=f"{group_name}_drop2")(x)
 
     outputs = []
