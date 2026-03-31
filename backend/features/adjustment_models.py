@@ -984,7 +984,7 @@ def calibrate_style_coefficients(
     # Opposition quality sensitivity: proportional to goals CV
     # (leagues with more goal variance = more opposition impact)
     goals_cv = cvs.get("goals", 0.0)
-    if goals_cv > 0:
+    if goals_cv > 1e-6:
         opp_scale = goals_cv / max_cv  # 0..1
         for m in calibrated_opp:
             # Scale opposition sensitivity by relative league variability.

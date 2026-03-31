@@ -77,8 +77,8 @@ def _season_url(league_code: str, season: str) -> Optional[str]:
     mapping = _LEAGUE_URL_MAP.get(league_code)
     if mapping is None:
         return None
-    country, _div = mapping
-    return f"https://www.football-data.co.uk/mmz4281/{season}/{_div}.csv"
+    _country, div_code = mapping
+    return f"https://www.football-data.co.uk/mmz4281/{season}/{div_code}.csv"
 
 
 def fetch_season(

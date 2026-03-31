@@ -45,7 +45,7 @@ _PEOPLE_CSV = (
     "key_understat,key_whoscored,key_fbref_verified,key_sportmonks,"
     "key_api_football,key_fotmob\n"
     # Haaland: sofascore=839956 (col 12)
-    # 0       1      2               3                       4          5      6       7   8      9  10         11 12     13-40 (28 empties)
+    # Cols 0-12 populated, cols 13-40 empty (28 trailing commas)
     "Q67890,player,Erling Haaland,Erling Braut Haaland,2000-07-21,Norway,forward,195,418560,,1f44ac21,,839956"
     ",,,,,,,,,,,,,,,,,,,,,,,,,,,,\n"
 )
