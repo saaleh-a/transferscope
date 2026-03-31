@@ -891,6 +891,12 @@ def _check_has_style_data(
 
 # ── Data-driven coefficient calibration ──────────────────────────────────────
 
+_CALIBRATION_DATA_WEIGHT = 0.6   # blend: data-driven portion
+_CALIBRATION_PRIOR_WEIGHT = 0.4  # blend: original defaults portion
+_OPP_BASE_WEIGHT = 0.7           # opposition sensitivity: base portion
+_OPP_SCALE_WEIGHT = 0.3          # opposition sensitivity: CV-scaled portion
+
+
 def calibrate_style_coefficients(
     profiles: Optional[Dict[str, Dict[str, float]]] = None,
 ) -> Dict[str, Dict[str, float]]:
@@ -976,9 +982,9 @@ def calibrate_style_coefficients(
         scaled = 0.02 + (cv / max_cv) * 0.48
         for m in metrics:
             if m in calibrated_style:
-                # Blend: 60% data-driven, 40% original (smooth transition)
                 calibrated_style[m] = round(
-                    0.6 * scaled + 0.4 * calibrated_style[m], 3
+                    _CALIBRATION_DATA_WEIGHT * scaled
+                    + _CALIBRATION_PRIOR_WEIGHT * calibrated_style[m], 3
                 )
 
     # Opposition quality sensitivity: proportional to goals CV
@@ -992,7 +998,7 @@ def calibrate_style_coefficients(
             sign = 1.0 if calibrated_opp[m] >= 0 else -1.0
             base_mag = abs(calibrated_opp[m])
             calibrated_opp[m] = round(
-                sign * (0.7 * base_mag + 0.3 * base_mag * opp_scale), 3
+                sign * (_OPP_BASE_WEIGHT * base_mag + _OPP_SCALE_WEIGHT * base_mag * opp_scale), 3
             )
 
     return {

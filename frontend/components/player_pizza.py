@@ -26,6 +26,8 @@ from backend.data.sofascore_client import CORE_METRICS
 
 _log = logging.getLogger(__name__)
 
+_MIN_SCALE_THRESHOLD = 1e-6  # Near-zero guard for normalization
+
 # ── Metric grouping (paper Table 1) ─────────────────────────────────────────
 
 _GROUP_COLORS = {
@@ -118,7 +120,7 @@ def render_pizza(
         comp_values = None
 
     max_val = max(all_vals) if all_vals else 1.0
-    if max_val < 1e-6:
+    if max_val < _MIN_SCALE_THRESHOLD:
         max_val = 1.0
 
     normalized = [min(100, (v / max_val) * 100) for v in values]
