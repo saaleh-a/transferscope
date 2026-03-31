@@ -86,7 +86,25 @@ Also provides `normalize_elo(raw, global_min, global_max)` which converts any ra
 
 > **In plain English:** When we need to know how strong a club is, the router figures out which database to ask. For Arsenal, it asks ClubElo. For Flamengo, it asks WorldFootballElo. It's like a receptionist directing your call to the right department.
 
-### 2.5 Caching
+### 2.5 REEP Register — Dynamic Team Aliases
+
+**Technical:** `backend/data/reep_registry.py` downloads the REEP open football data register's `teams.csv` (~45,000 clubs worldwide) and `people.csv` (~430,000 players). Functions include `get_teams_df()`, `build_clubelo_sofascore_map()`, `clubelo_to_sofascore_name()`, and `sofascore_team_aliases()`. Used by `power_rankings._build_dynamic_aliases()` to cross-link provider name columns (`name`, `key_clubelo`, `key_fbref`, `key_transfermarkt`) into bidirectional aliases at runtime. Cached for 7 days. Graceful degradation — if unavailable, falls back to hardcoded `_EXTREME_ABBREVS` (502 entries) and `_CLUBELO_TO_SOFASCORE` (531 entries).
+
+> **In plain English:** Instead of manually maintaining a list of every team name variant (there are thousands worldwide), the system downloads a comprehensive open-source register of ~45,000 clubs and automatically links up all their different names across different data providers. If this download fails, the system falls back to the ~1,000 hand-curated name mappings that are built into the code.
+
+### 2.6 StatsBomb Open Data
+
+**Technical:** `backend/data/statsbomb_client.py` accesses StatsBomb's free open-data repository via the `statsbombpy` package. Functions: `get_player_shots()`, `get_player_passes()`, `get_player_heatmap_data()`, `compute_spatial_features()`. Rendered by `frontend/components/pitch_viz.py` using the `mplsoccer` library. Integrated into the Transfer Impact page for spatial visualization.
+
+> **In plain English:** StatsBomb provides detailed spatial data — where on the pitch shots were taken from, where passes went, where the player spent most of their time. This is shown as shot maps, pass networks, and heatmaps on the Transfer Impact page, giving scouts visual context beyond raw numbers.
+
+### 2.7 football-data.co.uk — Coefficient Calibration
+
+**Technical:** `backend/data/footballdata_client.py` fetches match-level CSV data from football-data.co.uk for multiple leagues. Used by `adjustment_models.calibrate_style_coefficients()` to empirically refine `_LEAGUE_STYLE_COEFF` and `_OPP_QUALITY_SENS` coefficients via cross-league CV analysis, producing a 60/40 blend of data-derived and default values.
+
+> **In plain English:** Instead of just guessing how much each league's playing style differs, the system can download real match data and statistically measure those differences. This calibration step produces more accurate coefficients for predicting how stats change when a player moves between leagues with different playing styles.
+
+### 2.8 Caching
 
 **Technical:** `backend/data/cache.py` wraps `diskcache` (SQLite-backed). All external API calls go through `cache.get(key, max_age)` / `cache.set(key, value)`. Namespaced by data source (e.g. `sofascore_search`, `clubelo`, `worldelo`). TTLs range from 1 day (stats) to 7 days (search results).
 
@@ -263,14 +281,16 @@ Matching team names across ClubElo, WorldFootballElo, and Sofascore is non-trivi
 2. **Accent-normalized exact match** via `_strip_accents()` (NFKD Unicode decomposition — ü→u, é→e, etc.)
 3. **Fuzzy match** via `_fuzzy_find_team()` with a 5-priority cascade:
    - Exact normalized match (lowercase + stripped)
-   - `_EXTREME_ABBREVS` alias lookup (180+ bidirectional entries covering Europe, MLS, Saudi Pro League, J-League, and South America — e.g. PSG↔Paris Saint-Germain, LAFC↔Los Angeles FC, Orlando City↔Orlando City SC)
+   - `_EXTREME_ABBREVS` alias lookup (502 bidirectional entries covering 51 leagues across Europe, South America, MLS, Saudi Pro League, J-League, and more — e.g. PSG↔Paris Saint-Germain, LAFC↔Los Angeles FC, Orlando City↔Orlando City SC)
    - Substring containment (≥6 chars, ≥45% overlap ratio)
    - Word-level matching (shared words ≥4 chars)
    - `SequenceMatcher` ratio ≥0.70 (raised from 0.65 to prevent false positives like "Orlando City SC"→"Man City" where the shared suffix "city" inflates similarity)
 
-Additionally, `_CLUBELO_TO_SOFASCORE` (116 entries) canonicalizes ClubElo's abbreviated team names to Sofascore full display names at data-load time, covering the top leagues in England, France, Germany, Spain, Italy, Portugal, Netherlands, Turkey, Scotland, Belgium, and Austria.
+Additionally, `_CLUBELO_TO_SOFASCORE` (531 entries) canonicalizes ClubElo's abbreviated team names to Sofascore full display names at data-load time, covering the top leagues in England, France, Germany, Spain, Italy, Portugal, Netherlands, Turkey, Scotland, Belgium, and Austria.
 
-> **In plain English:** Team names are a surprisingly hard problem. "PSG" and "Paris Saint-Germain" are the same team, but a computer doesn't know that unless you tell it. We maintain a large dictionary of abbreviations (180+ entries including MLS, Saudi, and Japanese clubs) plus a smart fuzzy-matching system that handles accents, substrings, and similar-sounding names. Importantly, "Orlando City SC" does NOT accidentally match "Manchester City" — the similarity threshold is calibrated to reject false positives from shared suffixes like "City" or "United." This means a user can type "Bayern" or "Bayern Munich" or "FC Bayern München" and they all resolve to the same team, while MLS clubs like "Inter Miami CF" resolve correctly without confusing them with Inter Milan.
+Additionally, `_build_dynamic_aliases()` in `power_rankings.py` augments the hardcoded mappings at runtime by downloading the REEP register's `teams.csv` (~45,000 clubs) and cross-linking all provider name columns into bidirectional aliases via `_get_merged_aliases()`. This means new clubs and name variants are automatically discovered without code changes. Graceful degradation ensures the system falls back to hardcoded mappings if the REEP download fails.
+
+> **In plain English:** Team names are a surprisingly hard problem. "PSG" and "Paris Saint-Germain" are the same team, but a computer doesn't know that unless you tell it. We maintain a large dictionary of abbreviations (502 entries covering 51 leagues across Europe, South America, MLS, Saudi Pro League, J-League, and more) plus a smart fuzzy-matching system that handles accents, substrings, and similar-sounding names. Importantly, "Orlando City SC" does NOT accidentally match "Manchester City" — the similarity threshold is calibrated to reject false positives from shared suffixes like "City" or "United." This means a user can type "Bayern" or "Bayern Munich" or "FC Bayern München" and they all resolve to the same team, while MLS clubs like "Inter Miami CF" resolve correctly without confusing them with Inter Milan.
 
 ---
 
@@ -436,44 +456,45 @@ Implemented in `backend/models/transfer_portal.py`. A 4-group multi-head neural 
 
 **Per-group architecture:**
 
-Each group receives only the features relevant to its metric type (GROUP_FEATURE_SUBSETS), not the full 43-feature vector. This reduces noise — dribbling doesn't need to see passing team-position averages.
+Each group receives only the features relevant to its metric type (GROUP_FEATURE_SUBSETS), not the full 46-feature vector. This reduces noise — dribbling doesn't need to see passing team-position averages.
 
 ```
 Input (group-specific feature subset)
   → Dense layer (128 neurons, ReLU activation)
-  → Dropout (30%)
+  → BatchNormalization → Dropout(0.3)
   → Dense layer (64 neurons, ReLU activation)
-  → Dropout (30%)
+  → BatchNormalization → Dropout(0.3)
   → Linear output head(s) (1 per target metric)
 ```
 
 | Group | Input features | Hidden | Output | What it predicts |
 |---|---|---|---|---|
-| Shooting | 16 | 128 → 64 | 2 | xG, Shots |
-| Passing | 25 | 128 → 64 | 7 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area |
-| Dribbling | 7 | 128 → 64 | 1 | Take-ons |
-| Defending | 13 | 128 → 64 | 3 | Clearances, Interceptions, Possession Won |
+| Shooting | 19 | 128 → 64 | 2 | xG, Shots |
+| Passing | 28 | 128 → 64 | 7 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area |
+| Dribbling | 10 | 128 → 64 | 1 | Take-ons |
+| Defending | 16 | 128 → 64 | 3 | Clearances, Interceptions, Possession Won |
 
 > **In plain English:**
-> - Each specialist brain only sees the information relevant to its job (ranging from 7 to 25 features per group) — e.g., the Dribbling group excludes passing and defending team-position metrics, while the Shooting group excludes defensive metrics.
+> - Each specialist brain only sees the information relevant to its job (ranging from 10 to 28 features per group) — e.g., the Dribbling group excludes passing and defending team-position metrics, while the Shooting group excludes defensive metrics.
 > - **Dense layer** = a layer of artificial neurons. 128 neurons in the first layer, 64 in the second. Each neuron looks at the group's inputs and learns to focus on certain patterns.
 > - **ReLU activation** = "if the answer is negative, just output zero; otherwise output the answer." This helps the network learn non-linear patterns (like "moving up 30 power ranking points affects stats differently than moving up 5").
-> - **Dropout 30%** = during training, randomly turn off 30% of neurons. This is like studying by covering up parts of your notes — it forces the model to not rely too heavily on any single piece of information and makes it better at generalizing.
+> - **Dropout 30%** = during training, randomly turn off 30% of neurons (preceded by BatchNormalization to stabilize each layer's inputs). This is like studying by covering up parts of your notes — it forces the model to not rely too heavily on any single piece of information and makes it better at generalizing.
 > - **Linear output** = the final prediction is just a number (the predicted per-90 value), with no cap or floor.
 
-### 8.2 Input Features (43-key feature dict, per-group slicing)
+### 8.2 Input Features (46-key feature dict, per-group slicing)
 
-`build_feature_dict()` assembles a 43-key dictionary from components. Each model group then slices only its relevant features internally via GROUP_FEATURE_SUBSETS — e.g., the Dribbling group (7 features) only sees player dribbles, the 4 ability scores, and source/target team-position dribbles, excluding all passing and defending metrics.
+`build_feature_dict()` assembles a 46-key dictionary from components. Each model group then slices only its relevant features internally via GROUP_FEATURE_SUBSETS — e.g., the Dribbling group (10 features) only sees player dribbles, the 4 ability scores, and source/target team-position dribbles, excluding all passing and defending metrics.
 
 ```
-Full feature dict (43 keys):
+Full feature dict (46 keys):
 [ player per-90 (13) | team_ability_current | team_ability_target |
   league_ability_current | league_ability_target |
-  team_pos_current per-90 (13) | team_pos_target per-90 (13) ]
+  team_pos_current per-90 (13) | team_pos_target per-90 (13) |
+  ability_gap | gap_squared | league_gap ]
 
 Group slicing examples:
-  Shooting (16): player xG/shots + all 4 ability scores + target-pos xG/shots + ...
-  Dribbling (7):  player dribbles + all 4 ability scores + source/target-pos dribbles
+  Shooting (19): player xG/shots + all 4 ability scores + target-pos xG/shots + ...
+  Dribbling (10):  player dribbles + all 4 ability scores + source/target-pos dribbles
 ```
 
 | Block | Count | Description |
@@ -485,29 +506,34 @@ Group slicing examples:
 | League ability (target) | 1 | Mean normalized Power Ranking of the target league |
 | Team-position per-90 (current) | 13 | Average per-90 for the player's position at their current club |
 | Team-position per-90 (target) | 13 | Average per-90 for the player's position at the target club |
+| Interaction features | 3 | ability_gap (team target − team current), gap_squared, league_gap (league target − league current) |
 
-> **In plain English:** We're telling the neural network 43 things about the transfer:
+> **In plain English:** We're telling the neural network 46 things about the transfer:
 > - "This player currently produces these 13 stats per 90 minutes"
 > - "Their current team is this strong, and the target team is this strong"
 > - "Their current league is this competitive, and the target league is this competitive"
 > - "Players in this position at the current team typically produce these 13 stats"
 > - "Players in this position at the target team typically produce these 13 stats"
+> - "What's the gap in team ability and league ability between source and target?"
 >
 > From all of that, the network learns to predict: "Here's what this specific player will produce at the new club."
 
 ### 8.3 Training
 
 `TransferPortalModel.fit()` trains all 4 groups simultaneously with:
-- **Optimizer:** Adam (adaptive learning rate)
-- **Loss:** Mean Squared Error (MSE) — penalizes large prediction errors more than small ones
+- **Optimizer:** Trained with Adam optimizer (LR=5e-4) and Huber loss (delta=1.0) with L2 regularization (1e-3). ReduceLROnPlateau (factor=0.5, patience=5). EarlyStopping (patience=15). Max 150 epochs, batch size 32.
 - **Validation split:** 15% of data held out to monitor overfitting
-- **Epochs:** 50 passes through the training data
+- **Epochs:** up to 150 passes (with early stopping)
+
+Predicted deltas are multiplied by `DELTA_SHRINKAGE=0.75` to pull toward naive baseline, then clipped per-metric via `_METRIC_CLIP_FLOORS`.
 
 ### 8.4 Prediction
 
 `TransferPortalModel.predict(feature_dict)` runs the feature dict through all 4 groups (each slicing its relevant subset) and returns a dictionary of 13 predicted per-90 values.
 
 **Auto-loading:** `predict()` auto-loads trained weights from `data/models/` when available. `is_trained()` checks for both `.keras` model files and `feature_scaler.pkl`. When no trained model exists, falls back to `paper_heuristic_predict()` with a warning log.
+
+`predict_with_confidence()` provides Monte Carlo dropout uncertainty estimates by running multiple forward passes with dropout enabled.
 
 ---
 
@@ -521,11 +547,11 @@ The shortlist generator needs to rank hundreds of players by "how well do they m
 
 Sofascore applies aggressive rate-limiting (HTTP 403/429) after 2-3 rapid sequential requests. Without protection, scanning multiple leagues in quick succession results in all subsequent leagues failing silently — producing 0 candidates.
 
-**Solution:** A configurable `_INTER_LEAGUE_DELAY` (default 1.5 seconds) is inserted between league API calls. The default scan is limited to the **Big 5 European leagues** (ENG1, ESP1, GER1, ITA1, FRA1) instead of all 37+ leagues. The **player's own league is always scanned first** (most likely to succeed since season resolution is already cached from the player search). Users can explicitly select additional leagues via the UI.
+**Solution:** A configurable `_INTER_LEAGUE_DELAY` (default 1.5 seconds) is inserted between league API calls. The default scan is limited to the **Big 5 European leagues** (ENG1, ESP1, GER1, ITA1, FRA1) instead of all 51 leagues. The **player's own league is always scanned first** (most likely to succeed since season resolution is already cached from the player search). Users can explicitly select additional leagues via the UI.
 
 A per-league diagnostic panel shows which leagues returned data and how many candidates were found from each, making it easy to diagnose API issues.
 
-> **In plain English:** Sofascore blocks you if you ask for too much data too quickly. We solve this by: (1) adding a brief pause between league requests, (2) only searching the top 5 leagues by default instead of all 37+, and (3) always starting with the player's own league since it's most likely to already have cached data. A diagnostic panel shows exactly which leagues succeeded and which didn't.
+> **In plain English:** Sofascore blocks you if you ask for too much data too quickly. We solve this by: (1) adding a brief pause between league requests, (2) only searching the top 5 leagues by default instead of all 51, and (3) always starting with the player's own league since it's most likely to already have cached data. A diagnostic panel shows exactly which leagues succeeded and which didn't.
 
 ### 9.3 Filter Design — None-Passthrough
 
@@ -640,7 +666,7 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
 
 ### 11.1 Unit Tests
 
-208 tests across 13 test files, all using `unittest` with `mock.patch` for external API calls:
+488 tests across 24 test files, all using `unittest` with `mock.patch` for external API calls:
 
 | Test File | What It Tests | Count |
 |---|---|---|
@@ -657,10 +683,19 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
 | `test_backtester.py` | Backtester predictions vs actuals, hold-out evaluation | 3 |
 | `test_shortlist_scorer.py` | Filter None-passthrough, score_candidates with clustering, compute_percentage_changes edge cases | 15 |
 | `test_new_features.py` | Team search, transfer history, league stats, seasons, season-specific stats | 5 |
+| `test_reep_registry.py` | REEP data download, CSV parsing, mapping generation, graceful degradation | |
+| `test_statsbomb_client.py` | StatsBomb spatial data retrieval, shot/pass/heatmap parsing | |
+| `test_footballdata_client.py` | football-data.co.uk CSV fetching, league profile parsing | |
+| `test_pitch_viz.py` | Pitch visualization rendering (shot maps, pass networks, heatmaps) | |
+| `test_player_pizza.py` | Player pizza/radar chart generation | |
+| `test_diagnostics.py` | Diagnostics page rendering, data source status checks | |
+| `test_backtest_validator.py` | Backtest validator page, prediction vs actual comparison | |
+| `test_model_improvements.py` | Model improvements — BatchNorm, feature subsets, sample weighting | |
+| `test_app_no_training.py` | App startup without trained model, heuristic fallback | |
 
 All tests use mocked HTTP responses — no network access required. Temporary cache directories are created per test module and cleaned up in `tearDownModule()`.
 
-> **In plain English:** We have 208 automated checks that verify the system works correctly. They use fake data (so they don't need the internet), and they cover everything from "does the search work?" to "is the per-90 math right?" to "does the cache actually cache things?" to "does fuzzy team name matching handle accents and abbreviations?" to "do the shortlist filters correctly handle missing data?" If anyone changes the code and breaks something, these tests catch it immediately.
+> **In plain English:** We have 488 automated checks that verify the system works correctly. They use fake data (so they don't need the internet), and they cover everything from "does the search work?" to "is the per-90 math right?" to "does the cache actually cache things?" to "does fuzzy team name matching handle accents and abbreviations?" to "do the shortlist filters correctly handle missing data?" If anyone changes the code and breaks something, these tests catch it immediately.
 
 ### 11.2 Run Tests
 
