@@ -167,6 +167,26 @@ _CLUBELO_TO_SOFASCORE: Dict[str, str] = {
 _SOFASCORE_TO_CLUBELO: Dict[str, str] = {v: k for k, v in _CLUBELO_TO_SOFASCORE.items()}
 
 
+def _get_clubelo_sofascore_map() -> Dict[str, str]:
+    """Return ClubElo→Sofascore name mapping, augmented by REEP register.
+
+    The hardcoded ``_CLUBELO_TO_SOFASCORE`` is always included as a
+    fallback.  When the REEP teams.csv is available, its
+    ``key_clubelo → name`` mapping is merged in (REEP entries can
+    override hardcoded ones since REEP names are more authoritative).
+    """
+    merged = dict(_CLUBELO_TO_SOFASCORE)  # start with hardcoded fallback
+    try:
+        from backend.data.reep_registry import build_clubelo_sofascore_map
+
+        reep_map = build_clubelo_sofascore_map()
+        if reep_map:
+            merged.update(reep_map)
+    except Exception as exc:
+        _log.debug("REEP augmentation unavailable: %s", exc)
+    return merged
+
+
 @dataclass
 class LeagueSnapshot:
     """Per-league statistics for a single day."""
@@ -220,6 +240,9 @@ def compute_daily_rankings(
     # Step 1 — Collect all team Elo scores
     all_teams: Dict[str, Tuple[float, str]] = {}  # team -> (elo, league_code)
 
+    # Build the ClubElo→Sofascore name map (hardcoded + REEP augmentation).
+    clubelo_name_map = _get_clubelo_sofascore_map()
+
     # European clubs from ClubElo
     try:
         ce_df = clubelo_client.get_all_by_date(query_date)
@@ -239,7 +262,7 @@ def compute_daily_rankings(
                 if league_code:
                     # Canonicalize ClubElo abbreviated name → Sofascore
                     # full name so that dropdown selections match directly.
-                    canonical = _CLUBELO_TO_SOFASCORE.get(str(raw_name), str(raw_name))
+                    canonical = clubelo_name_map.get(str(raw_name), str(raw_name))
                     all_teams[canonical] = (elo_val, league_code)
             _log.info("ClubElo loaded %d teams", len([t for t in all_teams]))
         else:

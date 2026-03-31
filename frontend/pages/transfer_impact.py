@@ -36,7 +36,7 @@ from backend.models.transfer_portal import (
 )
 from backend.utils.league_registry import LEAGUES
 from frontend.components import metric_bar, power_ranking_chart, swarm_plot
-from frontend.theme import section_header, confidence_badge, player_info_card
+from frontend.theme import section_header, confidence_badge, player_info_card, COLORS
 
 _log = logging.getLogger(__name__)
 
@@ -364,6 +364,16 @@ def render():
             reanchored[_m] = max(0.0, _actual + _delta)
         predicted_target = reanchored
 
+    # ── Compute prediction confidence (Monte Carlo dropout) ──────────────
+    prediction_confidence: Dict[str, float] = {}
+    try:
+        if model.fitted and fd_target:  # type: ignore[possibly-undefined]
+            _, std_devs = model.predict_with_confidence(fd_target, current_per90_clean)
+            if std_devs:
+                prediction_confidence = std_devs
+    except (NameError, AttributeError, Exception):
+        pass  # confidence estimation is non-critical
+
     # ── (a) Metric bars ──────────────────────────────────────────────────
     # Percentage changes are computed relative to the player's ACTUAL per-90
     # stats — the model delta has been re-anchored to actual above.
@@ -395,6 +405,34 @@ def render():
     metric_bar.show(current_per90_clean, predicted_target, pct_changes,
                     title=f"Predicted Changes: {player_name} → {target_club_display}")
 
+    # ── Prediction confidence indicator ──────────────────────────────────
+    if prediction_confidence:
+        avg_std = (
+            sum(prediction_confidence.values()) / len(prediction_confidence)
+            if prediction_confidence
+            else 0
+        )
+        confidence_level = (
+            "green" if avg_std < 0.05
+            else ("amber" if avg_std < 0.15 else "red")
+        )
+        _conf_color = {
+            "green": COLORS["accent_green"],
+            "amber": COLORS["accent_amber"],
+            "red": COLORS["accent_crimson"],
+        }.get(confidence_level, COLORS["text_muted"])
+        _conf_label = confidence_level.upper()
+        st.markdown(
+            f'<div class="ts-confidence-badge">'
+            f'<span class="ts-confidence-dot" style="background:{_conf_color};'
+            f' box-shadow:0 0 8px {_conf_color}40;"></span>'
+            f'<span class="ts-confidence-text">'
+            f'<strong style="color:{_conf_color};">MODEL CONFIDENCE: {_conf_label}</strong>'
+            f' — Avg uncertainty: ±{avg_std:.3f} per 90'
+            f'</span></div>',
+            unsafe_allow_html=True,
+        )
+
     # ── Summary table — right after metric bars for easy comparison ──────
     _LABELS = {
         "expected_goals": "xG", "expected_assists": "xA", "shots": "Shots",
@@ -423,15 +461,17 @@ def render():
     rows = []
     for m in CORE_METRICS:
         change = pct_changes.get(m, 0)
-        rows.append({
+        row = {
             "Group": _GROUPS.get(m, ""),
             "Metric": _LABELS.get(m, m),
             "Actual (per 90)": round(current_per90_clean.get(m, 0), 3),
             "Simulated Current": round(baseline.get(m, 0), 3),
             "Predicted (per 90)": round(predicted_target.get(m, 0), 3),
+            "± Std": round(prediction_confidence[m], 3) if prediction_confidence.get(m) is not None else "—",
             "Change %": round(change, 1),
             "Direction": "📈" if change > 2 else ("📉" if change < -2 else "➡️"),
-        })
+        }
+        rows.append(row)
     df_table = pd.DataFrame(rows)
     try:
         styled = df_table.style.map(
@@ -631,3 +671,64 @@ def render():
             teammate_per90s=teammate_per90s,
             league_per90s=league_per90s,
         )
+
+    # ── (e) Spatial visualizations (StatsBomb data when available) ────────
+    try:
+        from backend.data import statsbomb_client
+        from frontend.components import pitch_viz
+
+        shots = statsbomb_client.get_player_shots(player_name)
+        passes = statsbomb_client.get_player_passes(player_name)
+        heatmap_locs = statsbomb_client.get_player_heatmap_data(player_name)
+
+        has_spatial = bool(shots or passes or heatmap_locs)
+        if has_spatial:
+            section_header(
+                "Spatial Profile",
+                "Event-level data from StatsBomb open data (where available)",
+            )
+            viz_cols = st.columns(3)
+            with viz_cols[0]:
+                if shots:
+                    pitch_viz.show_shot_map(shots, player_name=player_name)
+                else:
+                    st.caption("No shot data available")
+            with viz_cols[1]:
+                if passes:
+                    pitch_viz.show_pass_network(passes, player_name=player_name)
+                else:
+                    st.caption("No pass data available")
+            with viz_cols[2]:
+                if heatmap_locs:
+                    pitch_viz.show_heatmap(heatmap_locs, player_name=player_name)
+                else:
+                    st.caption("No heatmap data available")
+
+            # Spatial feature summary
+            spatial = statsbomb_client.compute_spatial_features(player_name)
+            if spatial:
+                st.markdown(
+                    '<div style="display:flex; gap:1rem; margin:0.8rem 0; flex-wrap:wrap;">',
+                    unsafe_allow_html=True,
+                )
+                _spatial_labels = {
+                    "avg_shot_distance": ("Avg Shot Dist", "m"),
+                    "shots_inside_box_pct": ("Shots in Box", "%"),
+                    "progressive_pass_pct": ("Prog. Passes", "%"),
+                    "touches_left_pct": ("Left Third", "%"),
+                    "touches_center_pct": ("Center", "%"),
+                    "touches_right_pct": ("Right Third", "%"),
+                }
+                cards = []
+                for sk, (label, unit) in _spatial_labels.items():
+                    val = spatial.get(sk)
+                    if val is not None:
+                        fmt = f"{val:.1f}{unit}" if unit == "m" else f"{val:.0f}{unit}"
+                        cards.append(
+                            f'<div class="ts-stat-card" style="flex:1; min-width:120px;">'
+                            f'<span class="ts-stat-label">{label}</span>'
+                            f'<span class="ts-stat-value">{fmt}</span></div>'
+                        )
+                st.markdown("".join(cards) + "</div>", unsafe_allow_html=True)
+    except Exception as exc:
+        _log.debug("Spatial viz unavailable: %s", exc)

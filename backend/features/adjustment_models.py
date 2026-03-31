@@ -887,3 +887,121 @@ def _check_has_style_data(
 
     # Need at least 2 metrics with different averages to count as real data
     return diffs >= 2
+
+
+# ── Data-driven coefficient calibration ──────────────────────────────────────
+
+_CALIBRATION_DATA_WEIGHT = 0.6   # blend: data-driven portion
+_CALIBRATION_PRIOR_WEIGHT = 0.4  # blend: original defaults portion
+_OPP_BASE_WEIGHT = 0.7           # opposition sensitivity: base portion
+_OPP_SCALE_WEIGHT = 0.3          # opposition sensitivity: coefficient-of-variation scaled portion
+
+
+def calibrate_style_coefficients(
+    profiles: Optional[Dict[str, Dict[str, float]]] = None,
+) -> Dict[str, Dict[str, float]]:
+    """Calibrate heuristic coefficients from football-data.co.uk league profiles.
+
+    Uses empirical league-wide match statistics (goals/game, shots/game,
+    corners/game, fouls/game) to derive relative league style differences.
+    These differences are used to refine ``_LEAGUE_STYLE_COEFF`` and
+    ``_OPP_QUALITY_SENS`` so they reflect real-world data rather than
+    hand-tuned guesses.
+
+    Parameters
+    ----------
+    profiles : dict, optional
+        ``{league_code: {goals, shots, shots_on_target, fouls, corners}}``
+        as returned by ``footballdata_client.compute_multi_season_profiles()``.
+        If None, attempts to fetch from football-data.co.uk (requires network).
+
+    Returns
+    -------
+    dict with keys ``"league_style_coeff"`` and ``"opp_quality_sens"``,
+    each mapping metric → calibrated float.  Returns current defaults
+    if calibration data is unavailable.
+    """
+    if profiles is None:
+        try:
+            from backend.data.footballdata_client import compute_multi_season_profiles
+            profiles = compute_multi_season_profiles()
+        except Exception as exc:
+            _log.warning("Cannot fetch calibration data: %s", exc)
+            return {
+                "league_style_coeff": dict(_LEAGUE_STYLE_COEFF),
+                "opp_quality_sens": dict(_OPP_QUALITY_SENS),
+            }
+
+    if not profiles or len(profiles) < 2:
+        return {
+            "league_style_coeff": dict(_LEAGUE_STYLE_COEFF),
+            "opp_quality_sens": dict(_OPP_QUALITY_SENS),
+        }
+
+    # Compute cross-league variability for each stat.
+    # Higher variability = metrics that differ more across leagues =
+    # higher league_style influence.
+    stats_keys = ["goals", "shots", "shots_on_target", "fouls", "corners"]
+    league_values: Dict[str, List[float]] = {k: [] for k in stats_keys}
+    for _lc, profile in profiles.items():
+        for k in stats_keys:
+            if k in profile:
+                league_values[k].append(profile[k])
+
+    # Coefficient of variation (CV) per stat
+    cvs: Dict[str, float] = {}
+    for k, vals in league_values.items():
+        if len(vals) >= 2:
+            mean_v = sum(vals) / len(vals)
+            std_v = (sum((v - mean_v) ** 2 for v in vals) / len(vals)) ** 0.5
+            cvs[k] = std_v / mean_v if mean_v > 0 else 0.0
+        else:
+            cvs[k] = 0.0
+
+    # Map football-data stats to our core metrics.
+    # Higher CV → higher league style coefficient.
+    _STAT_TO_METRICS = {
+        "goals": ["expected_goals"],
+        "shots": ["shots", "touches_in_opposition_box"],
+        "shots_on_target": ["expected_assists", "chances_created"],
+        "fouls": ["possession_won_final_3rd"],
+        "corners": ["successful_crosses", "accurate_long_balls"],
+    }
+
+    # Scale CVs to coefficient range [0.02, 0.50].
+    max_cv = max(cvs.values()) if cvs else 1.0
+    if max_cv < 1e-6:
+        max_cv = 1.0
+
+    calibrated_style: Dict[str, float] = dict(_LEAGUE_STYLE_COEFF)
+    calibrated_opp: Dict[str, float] = dict(_OPP_QUALITY_SENS)
+
+    for stat_key, metrics in _STAT_TO_METRICS.items():
+        cv = cvs.get(stat_key, 0.0)
+        # Normalized CV → coefficient in [0.02, 0.50]
+        scaled = 0.02 + (cv / max_cv) * 0.48
+        for m in metrics:
+            if m in calibrated_style:
+                calibrated_style[m] = round(
+                    _CALIBRATION_DATA_WEIGHT * scaled
+                    + _CALIBRATION_PRIOR_WEIGHT * calibrated_style[m], 3
+                )
+
+    # Opposition quality sensitivity: proportional to goals CV
+    # (leagues with more goal variance = more opposition impact)
+    goals_cv = cvs.get("goals", 0.0)
+    if goals_cv > 1e-6:
+        opp_scale = goals_cv / max_cv  # 0..1
+        for m in calibrated_opp:
+            # Scale opposition sensitivity by relative league variability.
+            # Offensive metrics scale up; defensive scale down (more negative).
+            sign = 1.0 if calibrated_opp[m] >= 0 else -1.0
+            base_mag = abs(calibrated_opp[m])
+            calibrated_opp[m] = round(
+                sign * (_OPP_BASE_WEIGHT * base_mag + _OPP_SCALE_WEIGHT * base_mag * opp_scale), 3
+            )
+
+    return {
+        "league_style_coeff": calibrated_style,
+        "opp_quality_sens": calibrated_opp,
+    }

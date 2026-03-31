@@ -477,6 +477,20 @@ def render():
         )
         return
 
+    # ── Enrich candidates with REEP metadata ─────────────────────────────
+    try:
+        from backend.data.reep_registry import enrich_player as _reep_enrich
+
+        for c in candidates:
+            meta = _reep_enrich(c.player_id)
+            if meta:
+                if c.nationality is None and meta.get("nationality"):
+                    c.nationality = meta["nationality"]
+                if c.height_cm is None and meta.get("height_cm"):
+                    c.height_cm = meta["height_cm"]
+    except Exception:
+        pass  # REEP unavailable — no enrichment, not critical
+
     # Build reference per90 for the player being replaced (clean None → 0.0)
     reference_per90 = {
         m: (current_per90.get(m) if current_per90.get(m) is not None else 0.0)
@@ -551,6 +565,8 @@ def render():
             "League": c.league or "",
             "Position": c.position,
             "Age": c.age if c.age is not None else "—",
+            "Nat.": c.nationality or "—",
+            "Height": f"{c.height_cm} cm" if c.height_cm else "—",
             "Rating": f"{c.rating:.2f}" if c.rating is not None else "—",
             "Similarity": f"{c.score:.1%}",
             "Confidence": confidence,
@@ -577,3 +593,23 @@ def render():
                 detail.current_per90, detail.predicted_per90, changes,
                 title=f"Predicted Changes: {detail.name}",
             )
+
+            # Pizza chart: predicted profile vs reference player
+            try:
+                from frontend.components import player_pizza
+                st.markdown("#### Style Profile Comparison")
+                pizza_col1, pizza_col2 = st.columns(2)
+                with pizza_col1:
+                    player_pizza.show(
+                        detail.predicted_per90,
+                        player_name=detail.name,
+                        comparison_per90=reference_per90,
+                        comparison_name=player_name,
+                    )
+                with pizza_col2:
+                    player_pizza.show(
+                        reference_per90,
+                        player_name=f"{player_name} (Reference)",
+                    )
+            except Exception as exc:
+                _log.debug("Pizza chart unavailable: %s", exc)
