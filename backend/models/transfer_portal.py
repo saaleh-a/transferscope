@@ -71,6 +71,9 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "team_pos_target_shots",
         "team_pos_target_touches_in_opposition_box",
         "team_pos_target_chances_created",
+        "interaction_ability_gap",
+        "interaction_gap_squared",
+        "interaction_league_gap",
     ],
     "passing": [
         "player_expected_assists",
@@ -98,6 +101,9 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "team_pos_target_accurate_long_balls",
         "team_pos_target_chances_created",
         "team_pos_target_touches_in_opposition_box",
+        "interaction_ability_gap",
+        "interaction_gap_squared",
+        "interaction_league_gap",
     ],
     "dribbling": [
         "player_successful_dribbles",
@@ -107,6 +113,9 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "league_ability_target",
         "team_pos_current_successful_dribbles",
         "team_pos_target_successful_dribbles",
+        "interaction_ability_gap",
+        "interaction_gap_squared",
+        "interaction_league_gap",
     ],
     "defending": [
         "player_clearances",
@@ -122,6 +131,9 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "team_pos_target_clearances",
         "team_pos_target_interceptions",
         "team_pos_target_possession_won_final_3rd",
+        "interaction_ability_gap",
+        "interaction_gap_squared",
+        "interaction_league_gap",
     ],
 }
 
@@ -205,7 +217,8 @@ class TransferPortalModel:
         - League ability target: 1 value
         - Team-position per-90 current: 13 values
         - Team-position per-90 target: 13 values
-        Total: 43 features
+        - Interaction features: 3 values (ability_gap, gap², league_gap)
+        Total: 46 features
         """
         keys = _feature_keys()
         vec = [feature_dict.get(k, 0.0) for k in keys]
@@ -480,6 +493,130 @@ class TransferPortalModel:
         if not self._target_scalers and os.path.exists(target_scaler_path):
             self._target_scalers = joblib.load(target_scaler_path)
 
+    def compute_feature_importance(
+        self, feature_dict: Dict[str, float],
+    ) -> Dict[str, Dict[str, float]]:
+        """Compute per-group feature importance via gradient-based sensitivity.
+
+        For each model group, computes the absolute gradient of each output
+        with respect to each input feature. Higher gradient = more important.
+
+        Returns: {group_name: {feature_name: importance_score}}
+        Returns empty dict if model is not trained.
+        """
+        if not self.models:
+            return {}
+
+        all_keys = _feature_keys()
+        key_to_idx = {k: i for i, k in enumerate(all_keys)}
+
+        full_X = self._prepare_features(feature_dict)
+        if self._scaler is not None:
+            full_X = self._scaler.transform(full_X.reshape(1, -1)).flatten()
+
+        result: Dict[str, Dict[str, float]] = {}
+
+        for group_name, targets in MODEL_GROUPS.items():
+            if group_name not in self.models:
+                continue
+
+            group_keys = GROUP_FEATURE_SUBSETS[group_name]
+            group_indices = [key_to_idx[k] for k in group_keys]
+            x_np = full_X[group_indices].astype(np.float32)
+            x_tensor = tf.Variable(x_np.reshape(1, -1))
+
+            with tf.GradientTape() as tape:
+                preds = self.models[group_name](x_tensor, training=False)
+                # Sum all output heads to get a scalar for gradient computation
+                total = tf.reduce_sum(preds)
+
+            grads = tape.gradient(total, x_tensor)
+            if grads is None:
+                result[group_name] = {k: 0.0 for k in group_keys}
+                continue
+
+            abs_grads = np.abs(grads.numpy().flatten())
+            grad_sum = abs_grads.sum()
+            if grad_sum > 0:
+                normalized = abs_grads / grad_sum
+            else:
+                normalized = np.zeros_like(abs_grads)
+
+            result[group_name] = {
+                k: float(normalized[i]) for i, k in enumerate(group_keys)
+            }
+
+        return result
+
+    def predict_with_confidence(
+        self,
+        feature_dict: Dict[str, float],
+        pre_per90: Dict[str, float],
+        n_samples: int = 20,
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """Predict with confidence intervals via Monte Carlo dropout.
+
+        Runs the model multiple times with dropout enabled (training=True)
+        to get a distribution of predictions. Returns (prediction, std_dev).
+
+        The prediction is the mean across samples.
+        The std_dev indicates model uncertainty — higher = less confident.
+
+        Falls back to regular predict() with zero std if model isn't trained.
+        """
+        if not self.models:
+            preds = self.predict(feature_dict)
+            std_devs = {k: 0.0 for k in preds}
+            return preds, std_devs
+
+        all_keys = _feature_keys()
+        key_to_idx = {k: i for i, k in enumerate(all_keys)}
+
+        full_X = self._prepare_features(feature_dict).reshape(1, -1)
+        if self._scaler is not None:
+            full_X = self._scaler.transform(full_X)
+
+        # Collect per-metric samples across Monte Carlo passes
+        samples: Dict[str, List[float]] = {
+            t: [] for targets in MODEL_GROUPS.values() for t in targets
+        }
+
+        for _ in range(n_samples):
+            for group_name, targets in MODEL_GROUPS.items():
+                if group_name not in self.models:
+                    continue
+
+                group_indices = [
+                    key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]
+                ]
+                X_group = full_X[:, group_indices]
+
+                # training=True keeps dropout active for MC sampling
+                preds = self.models[group_name](X_group, training=True).numpy()
+
+                target_scaler = self._target_scalers.get(group_name)
+                if target_scaler is not None:
+                    preds = target_scaler.inverse_transform(preds)
+
+                preds = preds.flatten()
+                for i, target in enumerate(targets):
+                    if i < len(preds):
+                        pre_val = pre_per90.get(target, 0.0)
+                        delta = self._clip_delta(float(preds[i]), pre_val, target)
+                        samples[target].append(max(0.0, pre_val + delta))
+
+        mean_preds: Dict[str, float] = {}
+        std_preds: Dict[str, float] = {}
+        for metric, vals in samples.items():
+            if vals:
+                mean_preds[metric] = float(np.mean(vals))
+                std_preds[metric] = float(np.std(vals))
+            else:
+                mean_preds[metric] = 0.0
+                std_preds[metric] = 0.0
+
+        return mean_preds, std_preds
+
 
 def _feature_keys() -> List[str]:
     """Return ordered list of feature keys for the input vector."""
@@ -498,6 +635,10 @@ def _feature_keys() -> List[str]:
     # Team-position per-90 (target)
     for m in CORE_METRICS:
         keys.append(f"team_pos_target_{m}")
+    # Interaction features (Phase 4)
+    keys.append("interaction_ability_gap")
+    keys.append("interaction_gap_squared")
+    keys.append("interaction_league_gap")
     return keys
 
 
@@ -533,10 +674,16 @@ def build_feature_dict(
         v = team_pos_target.get(m)
         fd[f"team_pos_target_{m}"] = float(v) if v is not None else 0.0
 
+    # Interaction features (Phase 4)
+    ability_gap = team_ability_target - team_ability_current
+    fd["interaction_ability_gap"] = ability_gap
+    fd["interaction_gap_squared"] = ability_gap ** 2
+    fd["interaction_league_gap"] = league_ability_target - league_ability_current
+
     return fd
 
 
-FEATURE_DIM = len(_feature_keys())  # 43
+FEATURE_DIM = len(_feature_keys())  # 46 (43 base + 3 interaction)
 
 
 # ── Improvement 9: Inference-time feature builder ────────────────────────────

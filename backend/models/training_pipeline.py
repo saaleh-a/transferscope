@@ -613,13 +613,16 @@ def build_training_sample(
     team_pos_current = [0.0] * len(CORE_METRICS)
     team_pos_target = [0.0] * len(CORE_METRICS)
 
-    # Assemble the 43-feature vector
+    # Assemble the 46-feature vector (43 base + 3 interaction)
+    ability_gap = team_ability_target - team_ability_current
     features = np.array(
         player_metrics
         + [team_ability_current, team_ability_target,
            league_ability_current, league_ability_target]
         + team_pos_current
-        + team_pos_target,
+        + team_pos_target
+        + [ability_gap, ability_gap ** 2,
+           league_ability_target - league_ability_current],
         dtype=np.float32,
     )
 
@@ -1073,11 +1076,13 @@ def build_non_transfer_sample(
     team_pos = [0.0] * len(CORE_METRICS)
 
     # Same team → current == target for all ability and position features
+    # Interaction features are all zero (no gap when staying at same club)
     features = np.array(
         player_metrics
         + [team_ability, team_ability, league_ability, league_ability]
         + team_pos
-        + team_pos,  # team_pos_target == team_pos_current
+        + team_pos  # team_pos_target == team_pos_current
+        + [0.0, 0.0, 0.0],  # interaction: gap=0, gap²=0, league_gap=0
         dtype=np.float32,
     )
 
