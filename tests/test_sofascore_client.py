@@ -99,6 +99,35 @@ MOCK_SEASONS_RESPONSE = {
 MOCK_TEAM_RESPONSE = {
     "players": [
         {
+            "player": {
+                "id": 961995,
+                "name": "Bukayo Saka",
+                "shortName": "B. Saka",
+                "position": "F",
+            },
+        },
+        {
+            "player": {
+                "id": 111111,
+                "name": "Gabriel Jesus",
+                "shortName": "G. Jesus",
+                "position": "F",
+            },
+        },
+        {
+            "player": {
+                "id": 222222,
+                "name": "Martin Odegaard",
+                "shortName": "M. Odegaard",
+                "position": "M",
+            },
+        },
+    ]
+}
+
+MOCK_TEAM_RESPONSE_GROUPED = {
+    "players": [
+        {
             "name": "Forwards",
             "players": [
                 {"id": 961995, "name": "Bukayo Saka"},
@@ -244,9 +273,22 @@ class TestSofascoreClient(unittest.TestCase):
 
     @patch.object(sofascore_client, "_get")
     def test_get_team_players_stats(self, mock_get):
+        """Current Sofascore API format: flat list with 'player' key."""
         mock_get.return_value = MOCK_TEAM_RESPONSE
 
         players = sofascore_client.get_team_players_stats(789)
+        self.assertEqual(len(players), 3)
+        self.assertEqual(players[0]["name"], "Bukayo Saka")
+        self.assertEqual(players[0]["position"], "Forward")
+        self.assertEqual(players[2]["name"], "Martin Odegaard")
+        self.assertEqual(players[2]["position"], "Midfielder")
+
+    @patch.object(sofascore_client, "_get")
+    def test_get_team_players_stats_grouped_format(self, mock_get):
+        """Legacy grouped format: groups with nested 'players' list."""
+        mock_get.return_value = MOCK_TEAM_RESPONSE_GROUPED
+
+        players = sofascore_client.get_team_players_stats(790)
         self.assertEqual(len(players), 3)
         self.assertEqual(players[0]["name"], "Bukayo Saka")
         self.assertEqual(players[0]["position"], "Forwards")
