@@ -23,51 +23,65 @@ TransferScope is a football transfer intelligence platform that predicts how a p
 | diskcache | ≥5.6.0 | SQLite-backed caching layer for all external API calls |
 | requests | ≥2.31.0 | HTTP client fallback for Sofascore and WorldFootballElo |
 | python-dotenv | ≥1.0.0 | Environment variable loading |
+| statsbombpy | ≥0.6.0 | StatsBomb open data — spatial features (shots, passes, heatmaps) |
+| mplsoccer | ≥1.4.0 | Pitch visualization rendering for StatsBomb data |
+| curl-cffi | ≥0.7.1 | HTTP client with Cloudflare bypass for Sofascore |
+| joblib | ≥1.3.0 | Parallel processing and model serialization |
 
 ### Directory Structure
 
 ```
 transferscope/
 ├── app.py                              # Streamlit entry point — page routing, cache warmup, model status
-├── requirements.txt                    # All Python dependencies (10 packages)
+├── requirements.txt                    # All Python dependencies (13 packages)
 ├── .python-version                     # Pins Python 3.12 for Streamlit Cloud
-├── CLAUDE.md                           # AI instructions — authoritative source of truth for architecture
+├── ARCHITECTURE.md                     # Architecture reference (design decisions, metrics, models)
 ├── METHODOLOGY.md                      # Plain-English methodology explanation
 ├── WHITEPAPER.md                       # Full paper reference
+├── ONBOARDING.md                       # This file
 ├── backend/
 │   ├── data/
-│   │   ├── sofascore_client.py         # (1355 lines) Sofascore REST API — player search, stats, transfers, match logs
+│   │   ├── sofascore_client.py         # (1567 lines) Sofascore REST API — player search, stats, transfers, match logs
 │   │   ├── clubelo_client.py           # (308 lines) ClubElo wrapper — European club Elo (soccerdata + HTTP fallback)
 │   │   ├── worldfootballelo_client.py  # (149 lines) eloratings.net scraper — non-European Elo
 │   │   ├── elo_router.py              # (77 lines) Routes team to best Elo source, 0-100 normalization
+│   │   ├── reep_registry.py           # (190 lines) REEP register — ~45K team aliases for fuzzy matching
+│   │   ├── statsbomb_client.py        # (490 lines) StatsBomb spatial data — shots, passes, heatmaps
+│   │   ├── footballdata_client.py     # (279 lines) football-data.co.uk match CSVs for calibration
 │   │   └── cache.py                   # (87 lines) diskcache wrapper — namespace-based key-value store
 │   ├── features/
 │   │   ├── rolling_windows.py          # (188 lines) 1000-min player / 3000-min team rolling per-90 averages
-│   │   ├── power_rankings.py           # (863 lines) Daily Elo aggregation, 0-100 normalization, fuzzy team matching
-│   │   └── adjustment_models.py        # (877 lines) sklearn Ridge models + paper_heuristic_predict fallback
+│   │   ├── power_rankings.py           # (1801 lines) Daily Elo aggregation, 0-100 normalization, fuzzy team matching
+│   │   └── adjustment_models.py        # (1007 lines) sklearn Ridge models + paper_heuristic_predict fallback
 │   ├── models/
-│   │   ├── transfer_portal.py          # (612 lines) TensorFlow 4-group NN — build, fit, predict, save/load
-│   │   ├── shortlist_scorer.py         # (332 lines) KMeans + weighted Euclidean distance candidate ranking
-│   │   ├── training_pipeline.py        # (2010 lines) End-to-end: discover transfers → build features → train
-│   │   └── backtester.py              # (276 lines) Post-hoc validation against actual post-transfer per-90
+│   │   ├── transfer_portal.py          # (861 lines) TensorFlow 4-group NN — build, fit, predict, save/load
+│   │   ├── shortlist_scorer.py         # (388 lines) KMeans + weighted Euclidean distance candidate ranking
+│   │   ├── training_pipeline.py        # (2193 lines) End-to-end: discover transfers → build features → train
+│   │   └── backtester.py              # (293 lines) Post-hoc validation against actual post-transfer per-90
 │   └── utils/
-│       └── league_registry.py          # (411 lines) Central league ID mappings (Sofascore, ClubElo, WorldElo)
+│       └── league_registry.py          # (483 lines) Central league ID mappings (Sofascore, ClubElo, WorldElo)
 ├── frontend/
-│   ├── theme.py                        # (700 lines) "Tactical Noir" dark theme — CSS, colors, components
+│   ├── theme.py                        # (699 lines) "Tactical Noir" dark theme — CSS, colors, components
+│   ├── constants.py                    # (17 lines) Shared metric display labels
 │   ├── pages/
 │   │   ├── transfer_impact.py          # Transfer Impact dashboard (paper Fig 1)
 │   │   ├── shortlist_generator.py      # Replacement shortlist (paper Fig 2)
 │   │   ├── hot_or_not.py              # Quick rumour validator (paper Section 5)
+│   │   ├── backtest_validator.py       # Backtest predictions vs actual post-transfer stats
+│   │   ├── diagnostics.py             # System diagnostics — data source status, cache info
 │   │   └── about.py                   # Methodology explanation page
 │   └── components/
-│       ├── swarm_plot.py              # (143 lines) Player-vs-league strip plots
-│       ├── power_ranking_chart.py     # (109 lines) Before/after Elo timeline
-│       └── metric_bar.py             # (194 lines) Diverging horizontal bar chart
-├── tests/                              # 255 tests across 15 files (all mocked, no network)
+│       ├── swarm_plot.py              # (142 lines) Player-vs-league strip plots
+│       ├── power_ranking_chart.py     # (108 lines) Before/after Elo timeline
+│       ├── metric_bar.py             # (193 lines) Diverging horizontal bar chart
+│       ├── pitch_viz.py              # (421 lines) Shot maps, pass networks, heatmaps (mplsoccer)
+│       └── player_pizza.py           # (239 lines) Player pizza/radar chart
+├── tests/                              # 488 tests across 24 files (all mocked, no network)
+├── scripts/
+│   └── check_training_ready.py         # Training readiness verification
 ├── data/
 │   ├── cache/                          # diskcache SQLite files (gitignored)
 │   └── models/                         # Saved TF weights + scalers (gitignored)
-└── scripts/                            # Utility scripts (training readiness checks)
 ```
 
 ### Architecture & Data Flow
@@ -79,7 +93,8 @@ transferscope/
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │  FRONTEND (Streamlit Pages)                                         │
-│  transfer_impact.py / shortlist_generator.py / hot_or_not.py        │
+│  transfer_impact.py / shortlist_generator.py / hot_or_not.py /      │
+│  backtest_validator.py / diagnostics.py                             │
 │    ↓ user enters player name + target club                          │
 │    ↓ calls sofascore_client.search_player() / search_team()         │
 └──────────────────────────────┬──────────────────────────────────────┘
@@ -90,6 +105,9 @@ transferscope/
 │  clubelo_client   → soccerdata/HTTP → European Elo ratings          │
 │  worldfootballelo → HTML scrape → non-European Elo ratings          │
 │  elo_router       → pick best source → raw Elo float                │
+│  reep_registry    → CSV download → ~45K team aliases                │
+│  statsbomb        → statsbombpy → spatial features (shots, passes)  │
+│  footballdata     → CSV download → league match profiles            │
 │  cache            → all above route through diskcache               │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
@@ -113,6 +131,8 @@ transferscope/
 │  metric_bar.py       → diverging horizontal bars (% change/metric)  │
 │  swarm_plot.py       → player vs league context strip plots         │
 │  power_ranking_chart → dual-line Elo timeline                       │
+│  pitch_viz.py        → shot maps, pass networks, heatmaps           │
+│  player_pizza.py     → player pizza/radar chart                     │
 │  theme.py            → CSS, stat cards, confidence badges           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -123,19 +143,20 @@ transferscope/
 3. `sofascore_client.get_player_stats(player_id)` → per-90 dict, minutes, position
 4. `power_rankings.get_team_ranking("Arsenal")` and `get_team_ranking("Real Madrid")` → normalized scores, relative abilities
 5. `sofascore_client.get_team_position_averages(team_id, position)` for both clubs → tactical style data
-6. `transfer_portal.build_feature_dict(...)` assembles 43-key feature dict
+6. `transfer_portal.build_feature_dict(...)` assembles 46-key feature dict
 7. `TransferPortalModel.predict(feature_dict)` → if trained: TF neural net; else: `paper_heuristic_predict()`
 8. Same prediction at current club (dual simulation) → compute % changes
+8b. StatsBomb spatial data (if available) → shot maps, pass networks, heatmaps
 9. Frontend renders: metric bars, confidence badge, swarm plots, power ranking chart
 
 ### Files to Read First
 
-1. **`CLAUDE.md`** — The single source of truth. Contains the entire architecture, all design decisions, metric mappings, and model specs. Read this before any code.
+1. **`ARCHITECTURE.md`** — The single source of truth. Contains the entire architecture, all design decisions, metric mappings, and model specs. Read this before any code.
 2. **`app.py`** — Entry point. Shows page routing, cache warmup, and model status check. 98 lines, fully readable.
 3. **`backend/data/sofascore_client.py`** — The data backbone. Every prediction starts with data from here. Focus on `CORE_METRICS` (line 39), `get_player_stats()`, and `_parse_stats()`.
 4. **`backend/features/adjustment_models.py`** — The prediction brain. Start at `paper_heuristic_predict()` (line 644) — this is the default prediction path. Then read `_TEAM_INFLUENCE`, `_ABILITY_SENSITIVITY`, `_OPP_QUALITY_SENS` dicts above it.
 5. **`backend/features/power_rankings.py`** — The context engine. `compute_daily_rankings()` (line 201) aggregates all Elo data and normalizes globally. `get_team_ranking()` (line 320) resolves team names with fuzzy matching.
-6. **`backend/models/transfer_portal.py`** — The ML model. `build_feature_dict()` shows all 43 feature keys. `predict()` (line 271) shows the TF → heuristic fallback chain.
+6. **`backend/models/transfer_portal.py`** — The ML model. `build_feature_dict()` shows all 46 feature keys. `predict()` (line 271) shows the TF → heuristic fallback chain.
 7. **`frontend/pages/transfer_impact.py`** — The main UI page. `render()` shows the full user-facing flow from input to chart output.
 
 ---
@@ -325,7 +346,7 @@ relative_ability = normalized_score - league_mean_normalized
 def _fuzzy_find_team(query, teams_dict):
     # Priority cascade:
     # 1. Exact normalized match (strip accents, lowercase)
-    # 2. _EXTREME_ABBREVS lookup (180+ aliases: "PSG" ↔ "Paris Saint-Germain")
+    # 2. _EXTREME_ABBREVS lookup (502 entries, augmented by ~45K dynamic REEP aliases at runtime)
     # 3. Substring containment (≥6 chars, ≥45% overlap)
     # 4. Word-level matching (shared words ≥4 chars)
     # 5. SequenceMatcher ratio ≥ 0.70
@@ -425,7 +446,7 @@ if not self.models:                    # no models loaded yet
 
 2. **Prepare feature vector:**
 ```python
-full_X = self._prepare_features(feature_dict).reshape(1, -1)  # shape: (1, 43)
+full_X = self._prepare_features(feature_dict).reshape(1, -1)  # shape: (1, 46)
 if self._scaler is not None:
     full_X = self._scaler.transform(full_X)  # StandardScaler normalization
 ```
@@ -434,7 +455,7 @@ if self._scaler is not None:
 ```python
 for group_name, targets in MODEL_GROUPS.items():   # "shooting", "passing", ...
     group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
-    X_group = full_X[:, group_indices]             # slice to 7-25 features
+    X_group = full_X[:, group_indices]             # slice to 10-28 features
     preds = self.models[group_name].predict(X_group)  # TF inference
     # Inverse-transform back to original scale
     if target_scaler is not None:
@@ -449,8 +470,8 @@ result[target] = max(0.0, float(preds[i]))  # per-90 can't be negative
 
 #### Glossary
 - **Model groups**: Shooting (2 outputs), Passing (7 outputs), Dribbling (1 output), Defending (3 outputs) = 13 total.
-- **Feature subsets**: Each group only uses relevant features (shooting uses 16 of 43, dribbling uses 7).
-- **`build_feature_dict()`**: Assembles the 43-key input dictionary from player stats, team rankings, and position averages.
+- **Feature subsets**: Each group only uses relevant features (shooting uses 16 of 46, dribbling uses 7). 3 additional interaction features are shared across groups.
+- **`build_feature_dict()`**: Assembles the 46-key input dictionary from player stats, team rankings, and position averages.
 
 ---
 
@@ -503,8 +524,8 @@ confidence = "red" if weight < 0.3 else "amber" if weight <= 0.7 else "green"
 
 - **Framework**: `unittest` (Python standard library), run via `pytest`
 - **Command**: `python -m pytest tests/ -v`
-- **Total tests**: 255 (223 original + 32 added in this PR)
-- **Test files**: 15
+- **Total tests**: 488
+- **Test files**: 24
 
 ### Coverage Table
 
@@ -515,6 +536,9 @@ confidence = "red" if weight < 0.3 else "amber" if weight <= 0.7 else "green"
 | `backend/data/worldfootballelo_client.py` | 3 public | 3 | 0 | ~100% |
 | `backend/data/elo_router.py` | 4 public | 4 | 0 | ~100% |
 | `backend/data/cache.py` | 7 public | 7 | 0 | ~100% |
+| `backend/data/reep_registry.py` | 6+ public | 6+ | 0 | ~100% |
+| `backend/data/statsbomb_client.py` | 4+ public | 4+ | 0 | ~100% |
+| `backend/data/footballdata_client.py` | 3+ public | 3+ | 0 | ~100% |
 | `backend/features/rolling_windows.py` | 7 public | 1 | 6 | **14%** |
 | `backend/features/power_rankings.py` | 7 public | 3 | 4 | 43% |
 | `backend/features/adjustment_models.py` | 14 public | 9 | 5 | **64%** (was 50%, now includes `paper_heuristic_predict`) |
@@ -552,7 +576,7 @@ confidence = "red" if weight < 0.3 else "amber" if weight <= 0.7 else "green"
 1. **`paper_heuristic_predict()`** — The default prediction engine every user sees. Wrong coefficients = wrong predictions for every transfer query. ✅ **NOW TESTED (32 tests added in this PR)**
 2. **`rolling_windows.blend_features()`** — Prior blending for low-data players. Bugs here silently corrupt feature inputs to every prediction.
 3. **`power_rankings.get_change_in_relative_ability()`** — Computes the key input (change_relative_ability) that drives 60%+ of prediction magnitude. A sign error here flips all predictions.
-4. **`transfer_portal.build_feature_dict()`** — Assembles the 43-key feature dict that feeds the TF model. Wrong key mapping = wrong model input = wrong prediction, silently.
+4. **`transfer_portal.build_feature_dict()`** — Assembles the 46-key feature dict that feeds the TF model. Wrong key mapping = wrong model input = wrong prediction, silently.
 5. **`rolling_windows.compute_confidence()`** — Controls the RAG badge shown to users. Wrong thresholds = misleading confidence indicators.
 
 ### Test Implementation
@@ -621,7 +645,7 @@ The #1 highest-risk untested function (`paper_heuristic_predict`) now has compre
 
 2. **There are two prediction paths, and most users see the heuristic.** `TransferPortalModel.predict()` checks `is_trained()` first. If no `.keras` files exist in `data/models/` (which is the default — training requires running the full pipeline with live Sofascore data), it silently falls back to `paper_heuristic_predict()`. The heuristic is not a placeholder — it faithfully implements the paper's methodology with calibrated coefficients. Any change to prediction logic must consider both paths.
 
-3. **Team name resolution is a 5-priority fuzzy cascade.** Data comes from 3 sources (Sofascore, ClubElo, WorldFootballElo) that all use different team names. "ManCity" (ClubElo) must match "Manchester City" (Sofascore). The resolution in `power_rankings.py` uses: exact match → accent-normalized → extreme abbreviation lookup (180+ entries) → substring containment → SequenceMatcher ratio. False positive prevention (e.g., "Orlando City SC" must NOT match "Man City") is enforced by minimum overlap ratios. If you add a new data source, you must add team name mappings.
+3. **Team name resolution is a 5-priority fuzzy cascade.** Data comes from 3 sources (Sofascore, ClubElo, WorldFootballElo) that all use different team names. "ManCity" (ClubElo) must match "Manchester City" (Sofascore). The resolution in `power_rankings.py` uses: exact match → accent-normalized → extreme abbreviation lookup (502 entries covering 51 leagues) → substring containment → SequenceMatcher ratio. False positive prevention (e.g., "Orlando City SC" must NOT match "Man City") is enforced by minimum overlap ratios. 531 ClubElo entries are mapped. If you add a new data source, you may need to add team name mappings — though REEP dynamic aliases provide ~45K automatic mappings at runtime.
 
 ### Where Bugs Are Most Likely to Occur and Why
 
@@ -663,6 +687,6 @@ This is safe because:
 
 1. **Does this change work in BOTH prediction paths?** If you modified anything in the feature pipeline or prediction logic, verify the behavior with the TF model AND the heuristic fallback. Most users will see the heuristic.
 
-2. **Did I break team name resolution?** If you changed any data source, team mapping, or fuzzy matching logic, run `test_fuzzy_matching.py` (69 tests) and check that false positive tests still pass (Orlando City ≠ Man City, Inter Miami ≠ Inter Milan).
+2. **Did I break team name resolution?** If you changed any data source, team mapping, or fuzzy matching logic, run `test_fuzzy_matching.py` (79 tests) and check that false positive tests still pass (Orlando City ≠ Man City, Inter Miami ≠ Inter Milan).
 
 3. **Am I caching something that could be empty?** If you added or modified a cache call, ensure you're not caching empty/error results from transient API failures. Check for the `if cached:` pattern (not `if cached is not None:`), and verify that empty results are NOT stored.
