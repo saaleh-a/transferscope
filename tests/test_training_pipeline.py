@@ -14,6 +14,28 @@ import numpy as np
 from backend.data.sofascore_client import CORE_METRICS
 from backend.models.transfer_portal import FEATURE_DIM
 
+
+# Auto-patch REEP and StatsBomb to avoid real network calls in tests.
+# These data sources are optional enrichments; tests should not depend
+# on external network availability.
+_reep_patcher = mock.patch(
+    "backend.data.reep_registry.enrich_player", return_value={}
+)
+_sb_patcher = mock.patch(
+    "backend.data.statsbomb_client.compute_spatial_features", return_value={}
+)
+
+
+def setUpModule():
+    _reep_patcher.start()
+    _sb_patcher.start()
+
+
+def tearDownModule():
+    _reep_patcher.stop()
+    _sb_patcher.stop()
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -567,9 +589,12 @@ class TestErrorHandling(unittest.TestCase):
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
-        # Team-position features should be zeros (indices 17-42)
+        # Team-position features should be zeros (indices 26-52 in new layout)
+        # Layout: [0:13] player, [13:17] abilities, [17:19] raw_elo,
+        #          [19:21] reep, [21:26] spatial, [26:39] pos_current,
+        #          [39:52] pos_target, [52:55] interactions.
         features = result["features"]
-        team_pos_slice = features[17:43]
+        team_pos_slice = features[26:52]
         np.testing.assert_array_equal(team_pos_slice, 0.0)
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")

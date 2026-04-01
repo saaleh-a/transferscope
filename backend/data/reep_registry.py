@@ -152,8 +152,8 @@ def enrich_player(sofascore_player_id: int) -> Dict[str, Any]:
     """Return metadata from REEP people.csv for a Sofascore player ID.
 
     Returns a dict with keys ``nationality``, ``height_cm``,
-    ``date_of_birth``, ``position`` (any may be *None*).
-    Returns an empty dict on miss or download failure.
+    ``date_of_birth``, ``position``, ``whoscored_id`` (any may be
+    *None*).  Returns an empty dict on miss or download failure.
     """
     df = get_people_df()
     if df is None:
@@ -178,6 +178,10 @@ def enrich_player(sofascore_player_id: int) -> Dict[str, Any]:
             result[key] = val if col != "height_cm" else _safe_int(val)
         else:
             result[key] = None
+
+    # WhoScored ID for cross-provider lookup (Phase 3 bridge).
+    ws_val = row.get("key_whoscored")
+    result["whoscored_id"] = _safe_int(ws_val) if pd.notna(ws_val) else None
 
     return result
 

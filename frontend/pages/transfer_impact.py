@@ -704,8 +704,17 @@ def render():
                 else:
                     st.caption("No heatmap data available")
 
-            # Spatial feature summary
+            # Spatial feature summary (StatsBomb first, WhoScored fallback)
             spatial = statsbomb_client.compute_spatial_features(player_name)
+            if not spatial:
+                try:
+                    from backend.data import reep_registry, whoscored_client
+                    reep_data = reep_registry.enrich_player(player_id)
+                    ws_id = reep_data.get("whoscored_id")
+                    if ws_id:
+                        spatial = whoscored_client.compute_spatial_features(ws_id)
+                except Exception:
+                    pass
             if spatial:
                 st.markdown(
                     '<div style="display:flex; gap:1rem; margin:0.8rem 0; flex-wrap:wrap;">',
