@@ -1,4 +1,4 @@
-# TransferScope — CLAUDE.md
+# TransferScope — Architecture Reference
 
 ## What this project is
 A football transfer intelligence platform that predicts player performance
@@ -19,6 +19,9 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 | Adjustment models | sklearn LinearRegression + paper-aligned heuristic (`paper_heuristic_predict`) |
 | Prediction model | TensorFlow multi-head neural network (4 model groups) — heuristic fallback when untrained |
 | UI | Streamlit |
+| Spatial data | StatsBomb open data via `statsbombpy` + `mplsoccer` pitch rendering |
+| Coefficient calibration | football-data.co.uk match CSVs via `backend/data/footballdata_client.py` |
+| Team alias augmentation | REEP register (~45K clubs) via `backend/data/reep_registry.py` |
 | Caching | diskcache (SQLite-backed) |
 | Python | 3.12 |
 
@@ -28,10 +31,11 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 
 ```
 transferscope/
-├── CLAUDE.md
+├── ARCHITECTURE.md
 ├── README.md
 ├── METHODOLOGY.md
 ├── WHITEPAPER.md
+├── ONBOARDING.md
 ├── requirements.txt
 ├── .python-version                     # Pins Python 3.12 for Streamlit Cloud
 ├── app.py                              # Streamlit entry point only
@@ -41,6 +45,9 @@ transferscope/
 │   │   ├── clubelo_client.py           # ClubElo wrapper via soccerdata (Europe)
 │   │   ├── worldfootballelo_client.py  # WorldFootballElo scraper (global fallback)
 │   │   ├── elo_router.py               # Routes club to correct Elo source, merges scores
+│   │   ├── reep_registry.py            # REEP register — dynamic team alias building (~45K clubs)
+│   │   ├── statsbomb_client.py         # StatsBomb open-data — shots, passes, heatmaps, spatial features
+│   │   ├── footballdata_client.py      # football-data.co.uk — match CSVs for coefficient calibration
 │   │   └── cache.py                    # diskcache layer — all external calls go through here
 │   ├── features/
 │   │   ├── rolling_windows.py          # 1000-min player rolling averages
@@ -58,13 +65,20 @@ transferscope/
 │   │   ├── transfer_impact.py          # Fig 1 from paper: predicted perf change dashboard
 │   │   ├── shortlist_generator.py      # Fig 2 from paper: replacement shortlist
 │   │   ├── hot_or_not.py              # Section 5: quick rumour validator
+│   │   ├── backtest_validator.py       # Backtest predictions vs actual post-transfer stats
+│   │   ├── diagnostics.py             # System diagnostics — data source status, cache info
 │   │   └── about.py                    # In-app methodology & backtest results reference
 │   ├── components/
 │   │   ├── swarm_plot.py               # Player vs league/team context strip plots
 │   │   ├── power_ranking_chart.py      # Before/after team Power Rankings timeline
-│   │   └── metric_bar.py              # Horizontal bar: predicted % change per metric
+│   │   ├── metric_bar.py              # Horizontal bar: predicted % change per metric
+│   │   ├── pitch_viz.py               # Shot maps, pass networks, heatmaps via mplsoccer
+│   │   └── player_pizza.py            # Player pizza/radar chart component
+│   ├── constants.py                    # Shared metric labels for UI display
 │   └── theme.py                        # "Tactical Noir" dark theme + shared UI components
-├── tests/                              # 303 tests across 15 files (all mocked, no network)
+├── tests/                              # 488 tests across 24 files (all mocked, no network)
+├── scripts/
+│   └── check_training_ready.py         # Utility to verify training readiness
 └── data/
     ├── cache/                          # diskcache files — gitignored
     └── models/                         # Saved TF model weights — gitignored
@@ -123,13 +137,40 @@ This is a key input feature to the adjustment models.
 2. **Accent-normalized exact match** via `_strip_accents()` (NFKD decomposition)
 3. **Fuzzy match** via `_fuzzy_find_team()` — 5-priority cascade:
    - Exact normalized match
-   - `_EXTREME_ABBREVS` alias lookup (180+ bidirectional entries covering Europe, MLS, Saudi, J-League: PSG↔Paris Saint-Germain, Orlando City↔Orlando City SC, LAFC↔Los Angeles FC, etc.)
+   - `_EXTREME_ABBREVS` alias lookup (502 bidirectional entries covering 51 leagues across Europe, South America, MLS, Saudi, J-League: PSG↔Paris Saint-Germain, Orlando City↔Orlando City SC, LAFC↔Los Angeles FC, etc.)
    - Substring containment (≥6 chars, ≥45% overlap ratio)
    - Word-level matching (shared words ≥4 chars)
    - `SequenceMatcher` ratio ≥0.70 (raised from 0.65 to reject "Orlando City SC"→"Man City" false positives)
 
-`_CLUBELO_TO_SOFASCORE` dict (116 entries) canonicalizes ClubElo abbreviated
+`_CLUBELO_TO_SOFASCORE` dict (531 entries covering 30+ countries) canonicalizes ClubElo abbreviated
 team names (ManCity, ManUtd, etc.) to Sofascore full display names at data-load time.
+
+**Dynamic alias augmentation via REEP:** `_build_dynamic_aliases()` pulls REEP's `teams.csv`
+(~45K clubs) at runtime and cross-links provider name columns into normalized bidirectional
+aliases. `_get_merged_aliases()` overlays hardcoded entries on top. Graceful degradation —
+returns `{}` without caching failure.
+
+---
+
+## Additional data sources
+
+### REEP register (`backend/data/reep_registry.py`)
+Provides access to the REEP open football data register (~45,000 clubs, ~430,000 players).
+Functions: `get_teams_df()`, `get_people_df()`, `build_clubelo_sofascore_map()`,
+`clubelo_to_sofascore_name()`, `sofascore_team_aliases()`, `enrich_player()`.
+Used by `power_rankings.py` for dynamic alias building and team name augmentation.
+Cached 7 days. Graceful degradation — if unavailable, falls back to hardcoded mappings.
+
+### StatsBomb open data (`backend/data/statsbomb_client.py`)
+Provides spatial features via the statsbombpy package.
+Functions: `get_player_shots()`, `get_player_passes()`, `get_player_heatmap_data()`,
+`compute_spatial_features()`. Rendered by `frontend/components/pitch_viz.py` using mplsoccer.
+Integrated into the Transfer Impact page for shot maps, pass networks, and heatmaps.
+
+### football-data.co.uk (`backend/data/footballdata_client.py`)
+Provides match-level CSV data from football-data.co.uk for league profiling.
+Used by `adjustment_models.calibrate_style_coefficients()` to refine `_LEAGUE_STYLE_COEFF`
+and `_OPP_QUALITY_SENS` via cross-league CV analysis. 60/40 blend (data/defaults).
 
 ---
 
@@ -181,13 +222,17 @@ All metrics stored and displayed as per-90. Never raw totals.
 
 ## Sofascore league coverage (confirmed in scope)
 
-**Europe (30+):** Premier League, Championship, Bundesliga, 2. Bundesliga,
+**Europe (39):** Premier League, Championship, Bundesliga, 2. Bundesliga,
 La Liga, La Liga 2, Serie A, Serie B, Ligue 1, Ligue 2, Eredivisie,
 Primeira Liga, Belgian Pro League, Super Lig, Scottish Premiership,
 Austrian Bundesliga, Swiss Super League, Greek Super League,
 Czech First League, Danish Superliga, Croatian 1. HNL, Serbian Super Liga,
 Norwegian Eliteserien, Swedish Allsvenskan, Polish Ekstraklasa,
-Romanian Liga I, Ukrainian/Russian Premier Leagues, Bulgarian/Hungarian/Cypriot/Finnish leagues.
+Romanian Liga I, Ukrainian/Russian Premier Leagues, Bulgarian/Hungarian/Cypriot/Finnish leagues,
+Slovak Super Liga (SVK1), Slovenian PrvaLiga (SLO1), Bosnian Premier Liga (BOS1),
+Israeli Premier League (ISR1), Kazakhstan Premier League (KAZ1),
+Icelandic Úrvalsdeild (ISL1), League of Ireland Premier Division (IRL1),
+Welsh Premier League (WAL1), Georgian Erovnuli Liga (GEO1).
 
 **South America:** Brasileirao Serie A + B, Argentine Primera División,
 Colombian Primera A, Chilean Primera División, Uruguayan Primera División,
@@ -195,7 +240,7 @@ Ecuadorian Serie A.
 
 **Other:** MLS, Saudi Pro League, J-League.
 
-If a league is on Sofascore it is in scope for TransferScope. 37+ leagues registered.
+If a league is on Sofascore it is in scope for TransferScope. 51 leagues across 34 countries registered.
 
 ---
 
@@ -378,11 +423,17 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Position normalization to 4 categories (Forward, Midfielder, Defender, Goalkeeper) via `normalize_position()` — including Sofascore single-letter codes (F/M/D/G)
 - K-means clustering for shortlist scoring: weighted Euclidean distance + 15% same-cluster bonus vs simple z-score
 - Per-group feature subsets for TF model: shooting=19, passing=28, dribbling=10, defending=16 (not 46 for all groups)
-- 3-step team name resolution: exact → accent-normalized → fuzzy (5-priority cascade with 180+ extreme abbreviations covering Europe, MLS, Saudi, J-League)
-- `_CLUBELO_TO_SOFASCORE` mapping (116 entries): canonicalize ClubElo names at load time
+- 3-step team name resolution: exact → accent-normalized → fuzzy (5-priority cascade with 502 extreme abbreviations + dynamic REEP aliases covering 51 leagues)
+- `_CLUBELO_TO_SOFASCORE` mapping (531 entries): canonicalize ClubElo names at load time
 - Polynomial normalization: `change_ra / 50.0` in PlayerAdjustmentModel (mapping -50..+50 to -1..+1)
 - Player-system-reliance scaling: style_diff scaled by player quality vs team average — prevents over-penalizing below-average players
 - Diverging butterfly metric bar chart with paper Table 1 group markers (⚡ ◈ ◎ ◆)
+- Dynamic REEP alias augmentation: _build_dynamic_aliases() cross-links ~45K clubs from REEP teams.csv at runtime, graceful degradation to hardcoded mappings
+- StatsBomb spatial data: shot maps, pass networks, heatmaps via statsbombpy + mplsoccer
+- football-data.co.uk coefficient calibration: calibrate_style_coefficients() refines per-metric style weights from cross-league match data
+- Pizza/radar charts for player profiles via player_pizza.py component
+- Backtest Validator page: validates predictions against actual post-transfer outcomes
+- Diagnostics page: system health, data source status, cache info
 
 ---
 

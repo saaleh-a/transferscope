@@ -6,9 +6,9 @@
 
 ## Abstract
 
-TransferScope is a football transfer intelligence platform that predicts how a player's statistical output will change when they move to a new club. The system implements and extends the methodology described in *Dinsdale & Gallagher (2022) — "The Transfer Portal"*, combining dynamic Elo-based Power Rankings, per-90 rolling feature windows, sklearn adjustment models, and a TensorFlow multi-head neural network to produce actionable transfer predictions across 37+ leagues worldwide. TransferScope surfaces these predictions through three tools — Transfer Impact analysis, multi-league Shortlist Generation, and a rapid rumour validator — delivered via a Streamlit interface designed for scouting workflows.
+TransferScope is a football transfer intelligence platform that predicts how a player's statistical output will change when they move to a new club. The system implements and extends the methodology described in *Dinsdale & Gallagher (2022) — "The Transfer Portal"*, combining dynamic Elo-based Power Rankings, per-90 rolling feature windows, sklearn adjustment models, and a TensorFlow multi-head neural network to produce actionable transfer predictions across 51 leagues worldwide. TransferScope surfaces these predictions through three tools — Transfer Impact analysis, multi-league Shortlist Generation, and a rapid rumour validator — delivered via a Streamlit interface designed for scouting workflows.
 
-> **In plain English:** TransferScope is a tool that answers the question: "If we sign this player, what will they actually produce at our club?" It uses a combination of club strength ratings, recent player form, and machine learning to predict how every major stat — goals, assists, passes, defensive actions — will change when a player moves from one team to another. It covers 37+ leagues worldwide and comes with a web interface where you can search players, compare clubs, and evaluate transfer rumours.
+> **In plain English:** TransferScope is a tool that answers the question: "If we sign this player, what will they actually produce at our club?" It uses a combination of club strength ratings, recent player form, and machine learning to predict how every major stat — goals, assists, passes, defensive actions — will change when a player moves from one team to another. It covers 51 leagues worldwide and comes with a web interface where you can search players, compare clubs, and evaluate transfer rumours.
 
 ---
 
@@ -55,13 +55,16 @@ Data Acquisition → Feature Engineering → Prediction Models → User Interfac
 
 ### 2.1 Data Acquisition
 
-Three external sources provide the raw data:
+Six external sources provide the raw data:
 
 | Source | What It Provides | Coverage |
 |---|---|---|
 | **Sofascore REST API** | Player stats (per-90), team rosters, transfer histories, season lists, team search | Global — any league on sofascore.com |
 | **ClubElo** (via `soccerdata`) | Daily Elo ratings for ~600 European clubs | Top 10+ European leagues |
 | **WorldFootballElo** (HTTP scrape) | Daily Elo ratings for global clubs | South America, MLS, Asia, Africa |
+| **REEP Register** (CSV download) | Team name aliases (~45K clubs worldwide) | Dynamic cross-provider name resolution |
+| **StatsBomb Open Data** (via `statsbombpy`) | Spatial data — shot locations, pass networks, heatmaps | Shot maps, pass networks, heatmaps in Transfer Impact |
+| **football-data.co.uk** (CSV download) | Match-level results for league profiling | Coefficient calibration for style/opposition weights |
 
 All API calls are routed through a `diskcache` SQLite cache layer with configurable time-to-live. Player stats expire after 1 day; Elo ratings refresh daily; search results persist for 7 days.
 
@@ -96,6 +99,8 @@ This produces a Red / Amber / Green confidence indicator: Red (< 300 minutes), A
 
 > **In plain English:** Instead of hard-coding "the Premier League is better than the Eredivisie," we calculate it fresh every day from actual results. This means if the Portuguese league has a strong year, its Power Ranking goes up automatically. Every team gets a score from 0 to 100. Then we calculate how much better or worse each team is compared to their own league average — a mid-table Premier League team and the top Argentine team might be equally strong globally, even though one dominates their league and the other doesn't.
 
+The full feature vector contains 46 features: 13 player per-90, 4 ability scores (team and league, current and target), 13 team-position per-90 (current), 13 team-position per-90 (target), and 3 interaction features (ability_gap, gap_squared, league_gap).
+
 ### 2.3 Prediction Models
 
 Two model tiers operate in sequence, plus a heuristic fallback:
@@ -117,32 +122,33 @@ This means a player at a worse team **can improve or decline** at a bigger team,
 
 > **In plain English:** Even without a trained neural network, the system makes smart per-metric predictions. A crossing winger joining a team that plays wide will see their crosses and assists go up, even if the league is harder. A dribbler will keep their dribbling numbers almost unchanged because that's an individual skill. A defender joining a dominant team will defend less. Each stat is predicted independently based on both ability and style.
 
-**Transfer Portal Neural Network (TensorFlow).** A 4-group multi-head neural network with per-group feature subsets (not all 43 features to every group) and 13 output heads:
+**Transfer Portal Neural Network (TensorFlow).** A 4-group multi-head neural network with per-group feature subsets (not all 46 features to every group) and 13 output heads:
 
 | Group | Input Features | Targets | Heads |
 |---|---|---|---|
-| Shooting | 16 | xG, Shots | 2 |
-| Passing | 25 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area Entries | 7 |
-| Dribbling | 7 | Take-ons | 1 |
-| Defending | 13 | Clearances, Interceptions, Possession Won Final 3rd | 3 |
+| Shooting | 19 | xG, Shots | 2 |
+| Passing | 28 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area Entries | 7 |
+| Dribbling | 10 | Take-ons | 1 |
+| Defending | 16 | Clearances, Interceptions, Possession Won Final 3rd | 3 |
 
-Each group has the same architecture: Input → Dense(128, ReLU) → Dropout(0.3) → Dense(64, ReLU) → Dropout(0.3) → Linear output heads. Trained with Adam optimizer and MSE loss. Auto-loads trained weights from `data/models/` when available; falls back to `paper_heuristic_predict()` when untrained.
+Each group has the same architecture: Input → Dense(128, ReLU) → BatchNormalization → Dropout(0.3) → Dense(64, ReLU) → BatchNormalization → Dropout(0.3) → Linear output heads. Trained with Adam optimizer and Huber loss (delta=1.0) with L2 regularization. `DELTA_SHRINKAGE=0.75`. Auto-loads trained weights from `data/models/` when available; falls back to `paper_heuristic_predict()` when untrained.
 
-> **In plain English:** The neural network is the "brain" of the system. A full set of 43 numbers about a player is assembled (their current stats, team strength, league strength, what position players typically do at both clubs). But each specialist group only sees the subset relevant to its job — the shooting brain gets 16 features, the passing brain 25, the dribbling brain just 7, and the defending brain 13. Each group outputs its predictions for that stat type. This focus makes each specialist better at its job.
+> **In plain English:** The neural network is the "brain" of the system. A full set of 46 numbers about a player is assembled (their current stats, team strength, league strength, what position players typically do at both clubs, plus interaction features). But each specialist group only sees the subset relevant to its job — the shooting brain gets 19 features, the passing brain 28, the dribbling brain 10, and the defending brain 16. Each group outputs its predictions for that stat type. This focus makes each specialist better at its job.
 >
 > The "Dropout(0.3)" bit means the model randomly ignores 30% of its connections during training — this is like studying by covering up parts of your notes and forcing yourself to remember. It prevents the model from memorizing specific examples and helps it generalize to new players it hasn't seen before.
 
-The full 43-feature dictionary is assembled from:
+The full 46-feature dictionary is assembled from:
 - 13 player per-90 metrics (current club)
 - 4 ability scores (team and league, current and target)
 - 13 team-position per-90 metrics (current club)
 - 13 team-position per-90 metrics (target club)
+- 3 interaction features (ability_gap, gap_squared, league_gap)
 
 Each group slices only its relevant features internally (GROUP_FEATURE_SUBSETS), reducing noise — dribbling doesn't need passing team-position averages.
 
 ### 2.4 User Interface
 
-A Streamlit application with three pages, styled with a custom "Tactical Noir" dark theme (deep charcoal, amber/gold data accents, JetBrains Mono for numbers, Outfit for headings):
+A Streamlit application with six pages, styled with a custom "Tactical Noir" dark theme (deep charcoal, amber/gold data accents, JetBrains Mono for numbers, Outfit for headings):
 
 **Transfer Impact.** The user enters a player and a target club (with Sofascore autocomplete). The system fetches stats, computes Power Rankings, builds predictions via dual simulation (player simulated at both current and target clubs, per paper Section 4), and displays:
 - Metric bars showing predicted percentage changes for all 13 metrics
@@ -155,15 +161,19 @@ A Streamlit application with three pages, styled with a custom "Tactical Noir" d
 
 **Hot or Not.** A rapid rumour validator. Enter a player and a target club; receive an instant HOT / TEPID / NOT verdict with the top 3 predicted metric changes, a summary of improving vs declining metrics, the player's transfer history, and Power Ranking context. Uses **dual simulation** (same as Transfer Impact) — compares model-predicted-at-target vs model-predicted-at-current, per paper Section 4. The verdict uses position-aware weighting: offensive metrics count 1.5× for forwards, defensive metrics count 1.5× for defenders. Thresholds are ±3% average predicted change.
 
+**Backtest Validator.** Compares model predictions against actual post-transfer per-90 statistics for validated transfers. Reports per-metric MAE, RMSE, and directional accuracy.
+
+**Diagnostics.** System health page showing data source connectivity status, cache statistics, model loading status, and league registry coverage.
+
 > **In plain English:** You read a rumour — "Osimhen to Arsenal." You type it in, press a button, and get a big verdict: HOT (good move), TEPID (meh), or NOT (bad move). The verdict is smarter for different positions — for a striker, goals and assists matter more than defensive stats. It shows you the top 3 stats that would change, a summary of what improves vs. declines, and the player's entire transfer history. If the data isn't available (e.g. the player hasn't played enough), you'll see UNKNOWN instead of a misleading verdict.
 
 ---
 
 ## 3. Multi-League Coverage
 
-TransferScope covers 37+ leagues across 4 continents:
+TransferScope covers 51 leagues across 4 continents:
 
-**Europe (30+):** Premier League, Championship, La Liga, La Liga 2, Bundesliga, 2. Bundesliga, Serie A, Serie B, Ligue 1, Ligue 2, Eredivisie, Primeira Liga, Belgian Pro League, Süper Lig, Scottish Premiership, Austrian Bundesliga, Swiss Super League, Greek Super League, Danish Superliga, and 15+ additional European leagues
+**Europe (40):** Premier League, Championship, La Liga, La Liga 2, Bundesliga, 2. Bundesliga, Serie A, Serie B, Ligue 1, Ligue 2, Eredivisie, Primeira Liga, Belgian Pro League, Süper Lig, Scottish Premiership, Austrian Bundesliga, Swiss Super League, Greek Super League, Czech First League, Danish Superliga, Croatian 1. HNL, Serbian Super Liga, Norwegian Eliteserien, Swedish Allsvenskan, Polish Ekstraklasa, Romanian Liga I, Ukrainian Premier League, Russian Premier League, Bulgarian First Professional League, Hungarian NB I, Cypriot First Division, Finnish Veikkausliiga, Slovak Super Liga, Slovenian PrvaLiga, Bosnian Premier Liga, Israeli Premier League, Kazakhstan Premier League, Icelandic Úrvalsdeild, League of Ireland Premier Division, Welsh Premier League, Georgian Erovnuli Liga
 
 **South America (7):** Brasileirão Série A, Brasileirão Série B, Argentine Primera División, Colombian Primera A, Chilean Primera División, Uruguayan Primera División, Ecuadorian Serie A
 
@@ -171,7 +181,7 @@ TransferScope covers 37+ leagues across 4 continents:
 
 **Asia (2):** Saudi Pro League, J-League
 
-> **In plain English:** The tool works across basically all the major leagues in the world — 37+ leagues total. If you want to scout a player from the Chilean league and predict how they'd do at Arsenal, it can do that. If you want to compare players across the Bundesliga, Serie A, and the Brasileirão, it can do that too.
+> **In plain English:** The tool works across basically all the major leagues in the world — 51 leagues total. If you want to scout a player from the Chilean league and predict how they'd do at Arsenal, it can do that. If you want to compare players across the Bundesliga, Serie A, and the Brasileirão, it can do that too.
 
 ---
 
@@ -180,7 +190,7 @@ TransferScope covers 37+ leagues across 4 continents:
 While TransferScope faithfully implements the Dinsdale & Gallagher methodology, it extends the original work in several ways:
 
 ### 4.1 Multi-League Shortlist Search with K-Means Clustering
-The original paper focused on predicting individual transfers. TransferScope adds the ability to scan players across all 37+ registered leagues (defaulting to Big 5 for reliability), cluster candidates by playing style using k-means (k=√(n/2), capped 3–10), and rank them by weighted Euclidean distance to a reference player with a 15% same-cluster bonus — turning the model into a **scouting tool**, not just a prediction engine. Rate-limit protection (1.5s inter-league delay, player's own league scanned first) prevents Sofascore API throttling that previously caused 0 results. Filters use a None-passthrough design so candidates with incomplete metadata (unknown age, minutes) aren't silently dropped.
+The original paper focused on predicting individual transfers. TransferScope adds the ability to scan players across all 51 registered leagues (defaulting to Big 5 for reliability), cluster candidates by playing style using k-means (k=√(n/2), capped 3–10), and rank them by weighted Euclidean distance to a reference player with a 15% same-cluster bonus — turning the model into a **scouting tool**, not just a prediction engine. Rate-limit protection (1.5s inter-league delay, player's own league scanned first) prevents Sofascore API throttling that previously caused 0 results. Filters use a None-passthrough design so candidates with incomplete metadata (unknown age, minutes) aren't silently dropped.
 
 > **In plain English:** The paper told you how to predict *one* transfer. We turned it into a tool that can search *thousands* of players, group them by playing style, and find the best fits — prioritizing players who not only have similar numbers but play a similar type of game. We also solved the rate-limiting problem that was causing 0 results by adding brief pauses between league scans and starting with the most reliable league first.
 
@@ -231,14 +241,14 @@ Extreme transfers (elite player to relegation team, or lower-league player to to
 > **In plain English:** Mbappé moving from Real Madrid to a relegation team would see massive stat drops — the model doesn't protect him just because he's elite. But the same player moving from a good team to a *slightly* better one wouldn't see unrealistically huge improvements. The model is calibrated to be realistic in both directions.
 
 ### 4.12 Per-Group Feature Subsets
-Each of the 4 TensorFlow model groups receives only the features relevant to its metric type (GROUP_FEATURE_SUBSETS), not the full 43-feature vector. Shooting uses 16 features, Passing 25, Dribbling just 7 (it's near-irreducible), and Defending 13. This reduces noise and improves generalization — the dribbling model doesn't need to see passing team-position averages.
+Each of the 4 TensorFlow model groups receives only the features relevant to its metric type (GROUP_FEATURE_SUBSETS), not the full 46-feature vector. Shooting uses 19 features, Passing 28, Dribbling 10, and Defending 16. This reduces noise and improves generalization — the dribbling model doesn't need to see passing team-position averages.
 
 > **In plain English:** Each specialist brain only looks at the data that matters for its job. The shooting expert doesn't waste time looking at long ball accuracy. This makes each model more focused and less likely to be confused by irrelevant information.
 
 ### 4.13 Robust Team Name Resolution
-Matching team names across three different data sources (ClubElo, WorldFootballElo, Sofascore) requires handling abbreviations, accents, and regional naming differences. TransferScope uses a 3-step lookup: exact match → accent-normalized match → fuzzy matching with a 5-priority cascade (including 180+ extreme abbreviation aliases covering Europe, MLS, Saudi Pro League, and J-League, plus 116 ClubElo-to-Sofascore canonicalization entries). The SequenceMatcher similarity threshold is set at 0.70 to reject false positives where short common suffixes (like "City") drive enough similarity to match unrelated teams (e.g. "Orlando City SC" must not match "Man City").
+Matching team names across three different data sources (ClubElo, WorldFootballElo, Sofascore) requires handling abbreviations, accents, and regional naming differences. TransferScope uses a 3-step lookup: exact match → accent-normalized match → fuzzy matching with a 5-priority cascade (including 502 extreme abbreviation aliases covering Europe, MLS, Saudi Pro League, and J-League, plus 531 ClubElo-to-Sofascore canonicalization entries). The SequenceMatcher similarity threshold is set at 0.70 to reject false positives where short common suffixes (like "City") drive enough similarity to match unrelated teams (e.g. "Orlando City SC" must not match "Man City"). At runtime, `_build_dynamic_aliases()` augments these with ~45,000 additional team name variants from the REEP open data register, providing near-universal coverage without manual maintenance.
 
-> **In plain English:** "PSG" and "Paris Saint-Germain" and "Paris SG" are all the same team. "Bayern München" and "Bayern Munich" are the same. The system knows 180+ abbreviation pairs (including MLS teams, Saudi, and Japanese clubs) and can fuzzy-match team names that are close but not identical. This means data from different sources always connects correctly, without false positives like "Orlando City" matching "Manchester City."
+> **In plain English:** "PSG" and "Paris Saint-Germain" and "Paris SG" are all the same team. "Bayern München" and "Bayern Munich" are the same. The system knows 502 abbreviation pairs (including MLS teams, Saudi, and Japanese clubs) and can fuzzy-match team names that are close but not identical. At runtime, it also downloads a comprehensive open-source database of ~45,000 clubs to automatically discover additional name variants. This means data from different sources always connects correctly, without false positives like "Orlando City" matching "Manchester City."
 
 ### 4.14 End-to-End Training Pipeline
 A CLI-driven training pipeline (`training_pipeline.py`) discovers historical transfers across 11+ leagues and up to 5 seasons, fetches before/after stats, builds training rows with temporal split, and fits both sklearn adjustment models and the TensorFlow neural network. A companion backtester evaluates predictions against actual post-transfer outcomes.
@@ -250,6 +260,21 @@ Per-match statistics are available via `get_player_match_logs()`, enabling true 
 
 > **In plain English:** Instead of just "season averages," we can get stats from each individual game, allowing more precise recent-form calculations.
 
+### 4.16 REEP-Based Dynamic Alias Resolution
+Team name resolution is augmented at runtime by downloading the REEP open data register's `teams.csv` (~45,000 clubs). `_build_dynamic_aliases()` cross-links all provider name columns into normalized bidirectional aliases. `_get_merged_aliases()` overlays curated hardcoded entries on top. This means new club promotions, name changes, and mergers are automatically discovered without code changes.
+
+> **In plain English:** Rather than manually adding every club name variant (there are tens of thousands worldwide), the system downloads a comprehensive open-source database and automatically figures out "these are all the same team." If that download fails, it falls back to over 1,000 hand-curated entries.
+
+### 4.17 Spatial Visualization
+Shot maps, pass networks, and heatmaps from StatsBomb open data provide spatial context in the Transfer Impact page. `pitch_viz.py` renders these using `mplsoccer` — showing where on the pitch a player operates, supplementing the numerical per-90 predictions.
+
+> **In plain English:** Numbers tell you "this player takes 3 shots per 90," but the shot map shows you *where* — from 6-yard box tap-ins or 25-yard speculative efforts. This gives scouts a spatial picture that per-90 numbers alone can't provide.
+
+### 4.18 Data-Driven Coefficient Calibration
+`calibrate_style_coefficients()` in `adjustment_models.py` uses match-level data from football-data.co.uk to empirically refine `_LEAGUE_STYLE_COEFF` and `_OPP_QUALITY_SENS` via cross-league CV analysis. The final coefficients are a 60/40 blend of data-derived and hand-tuned default values, balancing statistical fit with domain knowledge.
+
+> **In plain English:** Instead of guessing "how much does the Bundesliga's style differ from La Liga's?", the system measures it from real match data and uses that to improve its predictions. The 60/40 blend means if the data disagrees with football common sense, the defaults still have a say.
+
 ---
 
 ## 5. Technical Stack
@@ -260,12 +285,15 @@ Per-match statistics are available via `get_player_match_logs()`, enabling true 
 | European Elo ratings | ClubElo via `soccerdata` | Tells us how strong European teams are |
 | Global Elo ratings | WorldFootballElo via HTTP | Same, but for non-European teams |
 | Feature engineering | pandas, numpy | Crunches raw data into model-ready inputs |
-| Adjustment models | scikit-learn LinearRegression | Simple "rule of thumb" adjustments for league/team changes |
+| Adjustment models | scikit-learn Ridge/LinearRegression | Simple "rule of thumb" adjustments for league/team changes |
 | Neural network | TensorFlow / Keras | The main prediction brain — learns complex patterns |
 | UI | Streamlit | The web interface you interact with |
 | Caching | diskcache (SQLite-backed) | Remembers API responses so we don't re-download |
 | Visualization | Plotly | Draws the interactive charts |
-| Testing | pytest + unittest (208 tests) | Makes sure nothing is broken |
+| Spatial data | StatsBomb via `statsbombpy` + `mplsoccer` | Shot maps, pass networks, heatmaps |
+| Coefficient calibration | football-data.co.uk CSVs | Data-driven style coefficient refinement |
+| Team alias augmentation | REEP register (~45K clubs) | Dynamic team name resolution |
+| Testing | pytest + unittest (488 tests) | Makes sure nothing is broken |
 
 ---
 

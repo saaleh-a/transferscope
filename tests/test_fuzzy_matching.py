@@ -513,5 +513,90 @@ class TestExtremeAbbrevsFixes(unittest.TestCase):
         self.assertEqual(result, "FCCincinnati")
 
 
+class TestDynamicAliases(unittest.TestCase):
+    """Test the dynamic alias system powered by REEP data."""
+
+    def test_build_dynamic_aliases_returns_dict(self):
+        """_build_dynamic_aliases always returns a dict (even if REEP unavailable)."""
+        from backend.features.power_rankings import _build_dynamic_aliases
+
+        result = _build_dynamic_aliases()
+        self.assertIsInstance(result, dict)
+
+    def test_get_merged_aliases_includes_hardcoded(self):
+        """_get_merged_aliases must always include the hardcoded _EXTREME_ABBREVS."""
+        from backend.features.power_rankings import (
+            _EXTREME_ABBREVS,
+            _get_merged_aliases,
+        )
+
+        merged = _get_merged_aliases()
+        # All hardcoded keys must be present in merged
+        for key in _EXTREME_ABBREVS:
+            self.assertIn(key, merged)
+            # All hardcoded aliases must be present
+            for alias in _EXTREME_ABBREVS[key]:
+                self.assertIn(alias, merged[key])
+
+    def test_merged_aliases_psg_still_works(self):
+        """PSG alias chain must survive merging with dynamic aliases."""
+        from backend.features.power_rankings import _get_merged_aliases
+
+        merged = _get_merged_aliases()
+        self.assertIn("psg", merged)
+        self.assertIn("parissaintgermain", merged["psg"])
+
+    def test_merged_aliases_mancity_still_works(self):
+        """ManCity alias chain must survive merging."""
+        from backend.features.power_rankings import _get_merged_aliases
+
+        merged = _get_merged_aliases()
+        self.assertIn("mancity", merged)
+        self.assertIn("manchestercity", merged["mancity"])
+
+    def test_dynamic_aliases_with_mock_reep_data(self):
+        """When REEP provides team data, dynamic aliases are built correctly."""
+        import io
+        from unittest.mock import patch
+
+        import pandas as pd
+
+        from backend.features import power_rankings
+
+        # Mock REEP teams data with a few teams
+        mock_data = pd.DataFrame({
+            "name": ["Real Madrid CF", "FC Barcelona", "Olympique de Marseille"],
+            "key_clubelo": ["RealMadrid", "Barcelona", "Marseille"],
+            "key_fbref": ["Real-Madrid", "Barcelona", "Marseille"],
+            "key_transfermarkt": ["real-madrid", "fc-barcelona", "olympique-marseille"],
+        })
+
+        # Reset cache to force rebuild
+        old_cache = power_rankings._dynamic_aliases_cache
+        power_rankings._dynamic_aliases_cache = None
+
+        try:
+            with patch(
+                "backend.data.reep_registry.get_teams_df",
+                return_value=mock_data,
+            ):
+                result = power_rankings._build_dynamic_aliases()
+
+            # Should have created cross-links between normalized names
+            self.assertIsInstance(result, dict)
+            self.assertGreater(len(result), 0)
+
+            # "olympiquedemarseille" (from name) should alias to
+            # "marseille" (from key_clubelo) — these normalize differently
+            # enough to produce cross-links
+            has_any_link = any(
+                "marseille" in k or "olympique" in k or "barcelona" in k
+                for k in result
+            )
+            self.assertTrue(has_any_link, f"Expected aliases for known teams, got: {list(result.keys())[:20]}")
+        finally:
+            power_rankings._dynamic_aliases_cache = old_cache
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -701,7 +701,7 @@ def paper_heuristic_predict(
     dict[str, float] — predicted per-90 values at the target club.
     """
     # Scale to roughly [-1, 1] for typical transfers (change_ra ranges
-    # from roughly -50 to +50 for same-league moves, per CLAUDE.md polynomial
+    # from roughly -50 to +50 for same-league moves, per ARCHITECTURE.md polynomial
     # normalization which maps -50..+50 to -1..+1 using / 50.0, consistent
     # with PlayerAdjustmentModel.predict()).  Extreme cross-league jumps can
     # exceed this range (e.g. ±1.5).

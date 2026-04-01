@@ -1,4 +1,4 @@
-"""TensorFlow multi-head neural network — 4 target groups from CLAUDE.md.
+"""TensorFlow multi-head neural network — 4 target groups from ARCHITECTURE.md.
 
 Group 1 - Shooting: xG, Shots (2 heads)
 Group 2 - Passing: xA, Crosses, Total Passes, Short Passes, Long Passes,
@@ -260,7 +260,7 @@ class TransferPortalModel:
     def _prepare_features(self, feature_dict: Dict[str, float]) -> np.ndarray:
         """Flatten a feature dict into a consistent numpy vector.
 
-        Input features (from CLAUDE.md):
+        Input features (from ARCHITECTURE.md):
         - Player per-90 metrics (current club): 13 values
         - Team ability current: 1 value (normalized 0-100)
         - Team ability target: 1 value

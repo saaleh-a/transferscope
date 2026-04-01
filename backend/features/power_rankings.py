@@ -161,6 +161,451 @@ _CLUBELO_TO_SOFASCORE: Dict[str, str] = {
     # Austria
     "Salzburg": "FC Red Bull Salzburg",
     "RBSalzburg": "FC Red Bull Salzburg",
+    "RapidVienna": "SK Rapid Wien",
+    "Rapid": "SK Rapid Wien",
+    "AustriaVienna": "FK Austria Wien",
+    "Sturm": "SK Sturm Graz",
+    "SturmGraz": "SK Sturm Graz",
+    "LASK": "LASK",
+    "Wolfsberg": "Wolfsberger AC",
+    "WAC": "Wolfsberger AC",
+    "Hartberg": "TSV Hartberg",
+    "Altach": "SCR Altach",
+    "Rheindorf": "SCR Altach",
+    "Klagenfurt": "SK Austria Klagenfurt",
+    "Tirol": "WSG Tirol",
+    "WSGTirol": "WSG Tirol",
+    "Blau-Weiss": "FC Blau-Weiß Linz",
+    "BWLinz": "FC Blau-Weiß Linz",
+    # Switzerland
+    "YoungBoys": "BSC Young Boys",
+    "Basel": "FC Basel 1893",
+    "Zurich": "FC Zürich",
+    "Lugano": "FC Lugano",
+    "Servette": "Servette FC",
+    "StGallen": "FC St. Gallen 1879",
+    "Luzern": "FC Luzern",
+    "Sion": "FC Sion",
+    "Winterthur": "FC Winterthur",
+    "GCZurich": "Grasshopper Club Zürich",
+    "Grasshoppers": "Grasshopper Club Zürich",
+    "Lausanne": "FC Lausanne-Sport",
+    "Yverdon": "Yverdon Sport FC",
+    # Greece
+    "Olympiacos": "Olympiacos FC",
+    "Olympiakos": "Olympiacos FC",
+    "Panathinaikos": "Panathinaikos FC",
+    "PAOK": "PAOK FC",
+    "AEK": "AEK Athens FC",
+    "AEKAthens": "AEK Athens FC",
+    "Aris": "Aris Thessaloniki FC",
+    "ArisThessaloniki": "Aris Thessaloniki FC",
+    "OFICrete": "OFI Crete",
+    "Volos": "Volos NFC",
+    "Asteras": "Asteras Tripolis FC",
+    "Atromitos": "Atromitos FC",
+    "Panetolikos": "Panetolikos FC",
+    "Lamia": "PAS Lamia 1964",
+    # Czech Republic
+    "SpartaPrague": "Sparta Prague",
+    "SlaviaPrague": "Slavia Prague",
+    "Slavia": "Slavia Prague",
+    "PlzenViktoria": "Viktoria Plzeň",
+    "Viktoria": "Viktoria Plzeň",
+    "Plzen": "Viktoria Plzeň",
+    "BanikOstrava": "FC Baník Ostrava",
+    "Ostrava": "FC Baník Ostrava",
+    "SlovackoBrod": "1. FC Slovácko",
+    "Slovacko": "1. FC Slovácko",
+    "Jablonec": "FK Jablonec",
+    "Mlada": "FK Mladá Boleslav",
+    "MladaBoleslav": "FK Mladá Boleslav",
+    "Liberec": "FC Slovan Liberec",
+    "Hradec": "FC Hradec Králové",
+    "HradecKralove": "FC Hradec Králové",
+    "Bohemians1905": "Bohemians 1905",
+    "Bohemians": "Bohemians 1905",
+    "Teplice": "FK Teplice",
+    # Denmark
+    "Copenhagen": "FC Copenhagen",
+    "FCCopenhagen": "FC Copenhagen",
+    "Midtjylland": "FC Midtjylland",
+    "FCMidtjylland": "FC Midtjylland",
+    "Brondby": "Brøndby IF",
+    "BrondbyIF": "Brøndby IF",
+    "Nordsjaelland": "FC Nordsjælland",
+    "FCNordsjaelland": "FC Nordsjælland",
+    "AarhusBold": "Aarhus GF",
+    "AGF": "Aarhus GF",
+    "Aarhus": "Aarhus GF",
+    "Silkeborg": "Silkeborg IF",
+    "Randers": "Randers FC",
+    "Viborg": "Viborg FF",
+    "Lyngby": "Lyngby BK",
+    "OdenseBK": "Odense Boldklub",
+    "Odense": "Odense Boldklub",
+    "Aalborg": "AaB",
+    "AalborgBK": "AaB",
+    # Croatia
+    "DinamoZagreb": "GNK Dinamo Zagreb",
+    "HajdukSplit": "HNK Hajduk Split",
+    "Hajduk": "HNK Hajduk Split",
+    "Rijeka": "HNK Rijeka",
+    "Osijek": "NK Osijek",
+    "Lokomotiva": "NK Lokomotiva Zagreb",
+    "Gorica": "HNK Gorica",
+    "Varazdin": "NK Varaždin",
+    "Istra1961": "NK Istra 1961",
+    # Serbia
+    "CrvenaZvezda": "FK Crvena zvezda",
+    "RedStarBelgrade": "FK Crvena zvezda",
+    "RedStar": "FK Crvena zvezda",
+    "Partizan": "FK Partizan",
+    "PartizanBelgrade": "FK Partizan",
+    "Vojvodina": "FK Vojvodina",
+    "Cukaricki": "FK Čukarički",
+    "TSC": "FK TSC Bačka Topola",
+    "Backa": "FK TSC Bačka Topola",
+    # Norway
+    "Bodo": "FK Bodø/Glimt",
+    "BodoGlimt": "FK Bodø/Glimt",
+    "Rosenborg": "Rosenborg BK",
+    "Molde": "Molde FK",
+    "Viking": "Viking FK",
+    "Brann": "SK Brann",
+    "SKBrann": "SK Brann",
+    "Lillestrom": "Lillestrøm SK",
+    "ValerengaOslo": "Vålerenga Fotball",
+    "Valerenga": "Vålerenga Fotball",
+    "Tromso": "Tromsø IL",
+    "Stromsgodset": "Strømsgodset IF",
+    "Sarpsborg": "Sarpsborg 08 FF",
+    "HamKam": "Hamarkameratene",
+    # Sweden
+    "Malmo": "Malmö FF",
+    "MalmoFF": "Malmö FF",
+    "AIK": "AIK",
+    "Djurgarden": "Djurgårdens IF",
+    "DjurgardenIF": "Djurgårdens IF",
+    "IFElfsborg": "IF Elfsborg",
+    "Elfsborg": "IF Elfsborg",
+    "Hacken": "BK Häcken",
+    "BKHacken": "BK Häcken",
+    "Hammarby": "Hammarby IF",
+    "HammarbyIF": "Hammarby IF",
+    "IFKGoteborg": "IFK Göteborg",
+    "Goteborg": "IFK Göteborg",
+    "Norrkoping": "IFK Norrköping",
+    "IFKNorrkoping": "IFK Norrköping",
+    "Sirius": "IK Sirius",
+    "Kalmar": "Kalmar FF",
+    "Varberg": "Varbergs BoIS FC",
+    "Mjallby": "Mjällby AIF",
+    # Poland
+    "Legia": "Legia Warsaw",
+    "LegiaWarsaw": "Legia Warsaw",
+    "LechPoznan": "Lech Poznań",
+    "Lech": "Lech Poznań",
+    "Rakow": "Raków Częstochowa",
+    "RakowCzestochowa": "Raków Częstochowa",
+    "PogonSzczecin": "Pogoń Szczecin",
+    "Pogon": "Pogoń Szczecin",
+    "Jagiellonia": "Jagiellonia Białystok",
+    "JagielloniaBialystok": "Jagiellonia Białystok",
+    "Gornik": "Górnik Zabrze",
+    "GornikZabrze": "Górnik Zabrze",
+    "SlaAskWroclaw": "Śląsk Wrocław",
+    "Slask": "Śląsk Wrocław",
+    "Wisla": "Wisła Kraków",
+    "WislaKrakow": "Wisła Kraków",
+    "Piast": "Piast Gliwice",
+    "PiastGliwice": "Piast Gliwice",
+    "Cracovia": "MKS Cracovia",
+    "Warta": "Warta Poznań",
+    "WartaPoznan": "Warta Poznań",
+    "Zaglebie": "Zagłębie Lubin",
+    "ZaglebieLubin": "Zagłębie Lubin",
+    # Romania
+    "FCSB": "FCSB",
+    "SteauaBucharest": "FCSB",
+    "CFRCluj": "CFR Cluj",
+    "CRaiova": "Universitatea Craiova",
+    "UCraiova": "Universitatea Craiova",
+    "Craiova": "Universitatea Craiova",
+    "RapidBucharest": "Rapid București",
+    "DinamoBucharest": "Dinamo București",
+    "Sepsi": "Sepsi OSK",
+    # Ukraine
+    "ShakhtarDonetsk": "Shakhtar Donetsk",
+    "Shakhtar": "Shakhtar Donetsk",
+    "DynamoKyiv": "Dynamo Kyiv",
+    "Dnipro1": "SC Dnipro-1",
+    "Vorskla": "Vorskla Poltava",
+    "Zorya": "Zorya Luhansk",
+    "ZoryaLuhansk": "Zorya Luhansk",
+    "Oleksandriya": "FC Oleksandriya",
+    # Russia
+    "ZenitStPetersburg": "Zenit St. Petersburg",
+    "Zenit": "Zenit St. Petersburg",
+    "Spartak": "Spartak Moscow",
+    "SpartakMoscow": "Spartak Moscow",
+    "CSKA": "CSKA Moscow",
+    "CSKAMoscow": "CSKA Moscow",
+    "LokomotivMoscow": "Lokomotiv Moscow",
+    "Lokomotiv": "Lokomotiv Moscow",
+    "Krasnodar": "FK Krasnodar",
+    "Rostov": "FK Rostov",
+    "Rubin": "Rubin Kazan",
+    "RubinKazan": "Rubin Kazan",
+    "SochiFC": "PFC Sochi",
+    "Sochi": "PFC Sochi",
+    "Akhmat": "Akhmat Grozny",
+    # Bulgaria
+    "LudogoretsRazgrad": "Ludogorets Razgrad",
+    "Ludogorets": "Ludogorets Razgrad",
+    "LevskiSofia": "PFC Levski Sofia",
+    "Levski": "PFC Levski Sofia",
+    "CSKASofia": "CSKA Sofia",
+    "Botev": "Botev Plovdiv",
+    "BotevPlovdiv": "Botev Plovdiv",
+    "Lokomotiv1929": "Lokomotiv Plovdiv",
+    "LokomotivPlovdiv": "Lokomotiv Plovdiv",
+    # Hungary
+    "Ferencvaros": "Ferencvárosi TC",
+    "FerencvarosTC": "Ferencvárosi TC",
+    "MOLFehérvár": "Fehérvár FC",
+    "Fehervar": "Fehérvár FC",
+    "Puskas": "Puskás Akadémia FC",
+    "PuskasAkademia": "Puskás Akadémia FC",
+    "Ujpest": "Újpest FC",
+    "UjpestFC": "Újpest FC",
+    "Kecskemeti": "Kecskeméti TE",
+    "Debrecen": "Debreceni VSC",
+    "DebrecenVSC": "Debreceni VSC",
+    # Cyprus
+    "APOEL": "APOEL Nicosia",
+    "APOELNicosia": "APOEL Nicosia",
+    "Omonia": "AC Omonia",
+    "OmoniaNicosia": "AC Omonia",
+    "AnoOrthosis": "Anorthosis Famagusta",
+    "Anorthosis": "Anorthosis Famagusta",
+    "AELLimassol": "AEL Limassol",
+    "Apollon": "Apollon Limassol",
+    "ApollonLimassol": "Apollon Limassol",
+    "PaphosFC": "Pafos FC",
+    "Pafos": "Pafos FC",
+    # Finland
+    "HJK": "HJK Helsinki",
+    "HJKHelsinki": "HJK Helsinki",
+    "KuPS": "Kuopion Palloseura",
+    "KuopionPS": "Kuopion Palloseura",
+    "IlvesT": "Tampereen Ilves",
+    "Ilves": "Tampereen Ilves",
+    "SJK": "SJK Seinäjoki",
+    "SJKSeinajoki": "SJK Seinäjoki",
+    "InterTurku": "FC Inter Turku",
+    "Honka": "FC Honka",
+    "Haka": "FC Haka",
+    # Slovakia
+    "SlovanBratislava": "ŠK Slovan Bratislava",
+    "Bratislava": "ŠK Slovan Bratislava",
+    "SpartakTrnava": "FC Spartak Trnava",
+    "Trnava": "FC Spartak Trnava",
+    "DACDunajska": "FC DAC 1904 Dunajská Streda",
+    "DAC": "FC DAC 1904 Dunajská Streda",
+    "Zilina": "MŠK Žilina",
+    "MSKZilina": "MŠK Žilina",
+    "Ruzomberok": "MFK Ružomberok",
+    # Slovenia
+    "Maribor": "NK Maribor",
+    "NKMaribor": "NK Maribor",
+    "Olimpija": "NK Olimpija Ljubljana",
+    "OlimpijaLjubljana": "NK Olimpija Ljubljana",
+    "Celje": "NK Celje",
+    "Domzale": "NK Domžale",
+    "NKDomzale": "NK Domžale",
+    "Mura": "NŠ Mura",
+    "NSMura": "NŠ Mura",
+    "Koper": "FC Koper",
+    # Bosnia and Herzegovina
+    "ZeljeznicarSarajevo": "FK Željezničar Sarajevo",
+    "Zeljeznicar": "FK Željezničar Sarajevo",
+    "SarajevoFK": "FK Sarajevo",
+    "FKSarajevo": "FK Sarajevo",
+    "ZrinjskiMostar": "HŠK Zrinjski Mostar",
+    "Zrinjski": "HŠK Zrinjski Mostar",
+    "BoraczBanjaluka": "FK Borac Banja Luka",
+    "Borac": "FK Borac Banja Luka",
+    "TuzlaCity": "FK Tuzla City",
+    "VelezMostar": "FK Velež Mostar",
+    # Israel
+    "MaccabiTelAviv": "Maccabi Tel Aviv FC",
+    "MaccabiTA": "Maccabi Tel Aviv FC",
+    "MaccabiHaifa": "Maccabi Haifa FC",
+    "HapoeiBeerSheva": "Hapoel Be'er Sheva FC",
+    "HapoelBeerSheva": "Hapoel Be'er Sheva FC",
+    "BeitarJerusalem": "Beitar Jerusalem FC",
+    "Beitar": "Beitar Jerusalem FC",
+    "MaccabiNetanya": "Maccabi Netanya FC",
+    "HapoelTelAviv": "Hapoel Tel Aviv FC",
+    "HapoelTA": "Hapoel Tel Aviv FC",
+    # Kazakhstan
+    "Astana": "FC Astana",
+    "FCAstana": "FC Astana",
+    "Kairat": "FC Kairat",
+    "KairatAlmaty": "FC Kairat",
+    "Tobol": "FC Tobol",
+    "TobolKostanay": "FC Tobol",
+    "Ordabasy": "FC Ordabasy",
+    "Aktobe": "FC Aktobe",
+    # Iceland
+    "Vikingur": "Víkingur Reykjavík",
+    "VikingurReykjavik": "Víkingur Reykjavík",
+    "Valur": "Valur Reykjavík",
+    "Breidablik": "Breiðablik",
+    "FH": "FH Hafnarfjörður",
+    "FHHafnarfjordur": "FH Hafnarfjörður",
+    "KR": "KR Reykjavík",
+    "KRReykjavik": "KR Reykjavík",
+    "Stjarnan": "Stjarnan FC",
+    # Ireland
+    "ShamrockRovers": "Shamrock Rovers FC",
+    "Shamrock": "Shamrock Rovers FC",
+    "Dundalk": "Dundalk FC",
+    "DundalkFC": "Dundalk FC",
+    "Bohemian": "Bohemian FC",
+    "BohemianFC": "Bohemian FC",
+    "StPatricksAthletic": "St Patrick's Athletic FC",
+    "StPats": "St Patrick's Athletic FC",
+    "Shelbourne": "Shelbourne FC",
+    "ShelFC": "Shelbourne FC",
+    "Derry": "Derry City FC",
+    "DerryCity": "Derry City FC",
+    "Drogheda": "Drogheda United FC",
+    "Sligo": "Sligo Rovers FC",
+    "SligoRovers": "Sligo Rovers FC",
+    # Wales
+    "TNS": "The New Saints FC",
+    "NewSaints": "The New Saints FC",
+    "Connah": "Connah's Quay Nomads FC",
+    "ConnahsQuay": "Connah's Quay Nomads FC",
+    "BarryTown": "Barry Town United FC",
+    "Bala": "Bala Town FC",
+    "BalaTown": "Bala Town FC",
+    "Caernarfon": "Caernarfon Town FC",
+    "Penybont": "Penybont FC",
+    # Georgia
+    "DinamoTbilisi": "FC Dinamo Tbilisi",
+    "DinamoT": "FC Dinamo Tbilisi",
+    "TorpedoKutaisi": "FC Torpedo Kutaisi",
+    "Torpedo": "FC Torpedo Kutaisi",
+    "DinamoBatumi": "FC Dinamo Batumi",
+    "Saburtalo": "FC Saburtalo Tbilisi",
+    "Dila": "FC Dila Gori",
+    "DilaGori": "FC Dila Gori",
+    # Portugal (expansion)
+    "Porto": "FC Porto",
+    "FCPorto": "FC Porto",
+    "Benfica": "SL Benfica",
+    "SLBenfica": "SL Benfica",
+    "Braga": "SC Braga",
+    "SCBraga": "SC Braga",
+    "Vitoria": "Vitória SC",
+    "VitoriaSC": "Vitória SC",
+    "Guimaraes": "Vitória SC",
+    "Famalicao": "FC Famalicão",
+    "GilVicente": "Gil Vicente FC",
+    "Boavista": "Boavista FC",
+    "CasaPia": "Casa Pia AC",
+    "Arouca": "FC Arouca",
+    "RioAve": "Rio Ave FC",
+    "Estoril": "Estoril Praia",
+    "Moreirense": "Moreirense FC",
+    "AVS": "AVS Futebol SAD",
+    # Belgium (expansion)
+    "Genk": "KRC Genk",
+    "KRCGenk": "KRC Genk",
+    "Antwerp": "Royal Antwerp FC",
+    "RoyalAntwerp": "Royal Antwerp FC",
+    "StandardLiege": "Standard Liège",
+    "Standard": "Standard Liège",
+    "Gent": "KAA Gent",
+    "KAAGent": "KAA Gent",
+    "UnionSG": "Royale Union Saint-Gilloise",
+    "UnionStGilloise": "Royale Union Saint-Gilloise",
+    "CercleBrugge": "Cercle Brugge KSV",
+    "Mechelen": "KV Mechelen",
+    "KVMechelen": "KV Mechelen",
+    "Charleroi": "Sporting Charleroi",
+    "SportingCharleroi": "Sporting Charleroi",
+    "Westerlo": "KVC Westerlo",
+    "Kortrijk": "KV Kortrijk",
+    "OHLeuven": "OH Leuven",
+    "Eupen": "KAS Eupen",
+    # Netherlands (expansion)
+    "Ajax": "AFC Ajax",
+    "AFCAjax": "AFC Ajax",
+    "Vitesse": "Vitesse",
+    "Utrecht": "FC Utrecht",
+    "FCUtrecht": "FC Utrecht",
+    "Heerenveen": "SC Heerenveen",
+    "SCHeerenveen": "SC Heerenveen",
+    "Groningen": "FC Groningen",
+    "NEC": "NEC Nijmegen",
+    "NECNijmegen": "NEC Nijmegen",
+    "SpartaRotterdam": "Sparta Rotterdam",
+    "GoAheadEagles": "Go Ahead Eagles",
+    "Fortuna": "Fortuna Sittard",
+    "FortunaSittard": "Fortuna Sittard",
+    "Heracles": "Heracles Almelo",
+    "HeraclesAlmelo": "Heracles Almelo",
+    "Waalwijk": "RKC Waalwijk",
+    "Volendam": "FC Volendam",
+    "Almere": "Almere City FC",
+    "Excelsior": "Excelsior Rotterdam",
+    "Willem": "Willem II",
+    "WillemII": "Willem II",
+    # Scotland (expansion)
+    "AberdeenFC": "Aberdeen FC",
+    "Aberdeen": "Aberdeen FC",
+    "HeartsFC": "Heart of Midlothian FC",
+    "Hearts": "Heart of Midlothian FC",
+    "Hibernian": "Hibernian FC",
+    "HibernianFC": "Hibernian FC",
+    "Hibs": "Hibernian FC",
+    "Dundee": "Dundee FC",
+    "DundeeFC": "Dundee FC",
+    "DundeeUtd": "Dundee United FC",
+    "DundeeUnited": "Dundee United FC",
+    "StMirren": "St Mirren FC",
+    "StJohnstone": "St Johnstone FC",
+    "Kilmarnock": "Kilmarnock FC",
+    "KilmarnockFC": "Kilmarnock FC",
+    "Ross": "Ross County FC",
+    "RossCounty": "Ross County FC",
+    "Motherwell": "Motherwell FC",
+    "MotherwellFC": "Motherwell FC",
+    "Livingston": "Livingston FC",
+    # Turkey (expansion)
+    "Trabzonspor": "Trabzonspor",
+    "Basaksehir": "İstanbul Başakşehir FK",
+    "IstanbulBasaksehir": "İstanbul Başakşehir FK",
+    "Sivasspor": "Sivasspor",
+    "Antalyaspor": "Antalyaspor",
+    "Konyaspor": "Konyaspor",
+    "Kasimpasa": "Kasımpaşa SK",
+    "KasimpasaSK": "Kasımpaşa SK",
+    "Alanyaspor": "Alanyaspor",
+    "Rizespor": "Çaykur Rizespor",
+    "CaykurRizespor": "Çaykur Rizespor",
+    "Hatayspor": "Hatayspor",
+    "Kayserispor": "Kayserispor",
+    "Adana": "Adana Demirspor",
+    "AdanaDemirspor": "Adana Demirspor",
+    "Gaziantep": "Gaziantep FK",
+    "GaziantepFK": "Gaziantep FK",
+    "Eyupspor": "Eyüpspor",
+    "Pendikspor": "Pendikspor",
 }
 
 # Build reverse lookup (Sofascore → ClubElo) for history queries
@@ -184,6 +629,118 @@ def _get_clubelo_sofascore_map() -> Dict[str, str]:
             merged.update(reep_map)
     except Exception as exc:
         _log.debug("REEP augmentation unavailable: %s", exc)
+    return merged
+
+
+# ── Dynamic alias generation from REEP ───────────────────────────────────────
+
+_dynamic_aliases_cache: Optional[Dict[str, List[str]]] = None
+
+
+def _build_dynamic_aliases() -> Dict[str, List[str]]:
+    """Build fuzzy alias table dynamically from REEP teams.csv.
+
+    For every team row in REEP that has multiple name columns
+    (``name``, ``key_clubelo``, ``key_fbref``, ``key_transfermarkt``),
+    we normalize each variant and create bidirectional alias links.
+
+    This supplements the hardcoded ``_EXTREME_ABBREVS`` so we don't
+    have to manually maintain aliases for thousands of clubs.  The REEP
+    register covers ~45,000 teams globally.
+
+    Results are cached in-process after first successful build.
+    Returns empty dict on any failure (no network in tests, graceful degradation).
+    """
+    global _dynamic_aliases_cache
+    if _dynamic_aliases_cache is not None:
+        return _dynamic_aliases_cache
+
+    try:
+        from backend.data.reep_registry import get_teams_df
+
+        df = get_teams_df()
+        if df is None:
+            # Don't cache failure — retry next time (e.g. network was down)
+            return {}
+    except Exception as exc:
+        _log.debug("REEP teams unavailable for alias building: %s", exc)
+        return {}
+
+    # Columns that may contain team names across providers
+    name_columns = [
+        c for c in ["name", "key_clubelo", "key_fbref", "key_transfermarkt"]
+        if c in df.columns
+    ]
+    if not name_columns:
+        return {}
+
+    aliases: Dict[str, List[str]] = {}
+
+    for _, row in df.iterrows():
+        # Collect all non-null name variants for this team
+        variants: List[str] = []
+        for col in name_columns:
+            val = row.get(col)
+            if pd.notna(val):
+                s = str(val).strip()
+                if s:
+                    variants.append(s)
+
+        if len(variants) < 2:
+            continue  # nothing to cross-link
+
+        # Normalize all variants
+        normed = []
+        for v in variants:
+            n = _normalize_team_name(v)
+            if n and len(n) >= 3:  # skip trivially short
+                normed.append(n)
+
+        # Remove duplicates but preserve order
+        normed = list(dict.fromkeys(normed))
+        if len(normed) < 2:
+            continue
+
+        # Create bidirectional links between all pairs
+        for i, norm_a in enumerate(normed):
+            for j, norm_b in enumerate(normed):
+                if i != j:
+                    aliases.setdefault(norm_a, [])
+                    if norm_b not in aliases[norm_a]:
+                        aliases[norm_a].append(norm_b)
+
+    _log.info(
+        "Built %d dynamic aliases from REEP teams (%d bidirectional links)",
+        len(aliases),
+        sum(len(v) for v in aliases.values()),
+    )
+    _dynamic_aliases_cache = aliases
+    return aliases
+
+
+def _get_merged_aliases() -> Dict[str, List[str]]:
+    """Merge hardcoded ``_EXTREME_ABBREVS`` with dynamic REEP aliases.
+
+    Hardcoded entries take priority (they are curated for edge cases
+    like PSG, ManCity, BVB that REEP may not handle perfectly).
+    Dynamic aliases fill in the gaps for the thousands of teams that
+    aren't manually maintained.
+    """
+    dynamic = _build_dynamic_aliases()
+    if not dynamic:
+        return _EXTREME_ABBREVS
+
+    # Start with dynamic, then overlay hardcoded
+    merged = dict(dynamic)
+    for key, val_list in _EXTREME_ABBREVS.items():
+        existing = merged.get(key, [])
+        # Merge: keep hardcoded entries + any dynamic extras
+        combined = list(val_list)
+        for v in existing:
+            if v not in combined:
+                combined.append(v)
+        merged[key] = combined
+
     return merged
 
 
@@ -761,6 +1318,362 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "yokohamamarinos": ["yokohamafmarinos", "marinos"],
     "visselkobe": ["kobe", "vissel"],
     "kawasakifrontale": ["kawasaki"],
+    # Portugal
+    "fcporto": ["porto"],
+    "porto": ["fcporto"],
+    "slbenfica": ["benfica"],
+    "benfica": ["slbenfica"],
+    "scbraga": ["braga"],
+    "braga": ["scbraga"],
+    "vitoriasc": ["vitoria", "guimaraes", "vitoriaguimaraes"],
+    "vitoria": ["vitoriasc"],
+    "guimaraes": ["vitoriasc"],
+    # Belgium (expanded)
+    "krcgenk": ["genk"],
+    "genk": ["krcgenk"],
+    "royalantwerpfc": ["antwerp", "royalantwerp"],
+    "antwerp": ["royalantwerpfc"],
+    "standardliege": ["standard"],
+    "standard": ["standardliege"],
+    "kaagent": ["gent"],
+    "gent": ["kaagent"],
+    "royaleunionstgilloise": ["unionsg", "unionstgilloise"],
+    "unionsg": ["royaleunionstgilloise"],
+    "unionstgilloise": ["royaleunionstgilloise"],
+    "sportingcharleroi": ["charleroi"],
+    "charleroi": ["sportingcharleroi"],
+    # Netherlands (expanded)
+    "afcajax": ["ajax"],
+    "ajax": ["afcajax"],
+    "fcutrecht": ["utrecht"],
+    "utrecht": ["fcutrecht"],
+    "scheerenveen": ["heerenveen"],
+    "heerenveen": ["scheerenveen"],
+    "necnijmegen": ["nec"],
+    "nec": ["necnijmegen"],
+    "spartarotterdam": ["spartardam"],
+    "fortunasittard": ["fortuna"],
+    "fortuna": ["fortunasittard"],
+    "heraclesalmelo": ["heracles"],
+    "heracles": ["heraclesalmelo"],
+    # Scotland (expanded)
+    "heartofmidlothianfc": ["hearts", "heartsfc"],
+    "hearts": ["heartofmidlothianfc"],
+    "hibernianfc": ["hibs", "hibernian"],
+    "hibernian": ["hibernianfc"],
+    "hibs": ["hibernianfc"],
+    "dundeeunitedfc": ["dundeeutd", "dundeeunited"],
+    "dundeeutd": ["dundeeunitedfc"],
+    "dundeeunited": ["dundeeunitedfc"],
+    "stmirrenfc": ["stmirren"],
+    "stmirren": ["stmirrenfc"],
+    "stjohnstonefc": ["stjohnstone"],
+    "stjohnstone": ["stjohnstonefc"],
+    "kilmarnockfc": ["kilmarnock"],
+    "kilmarnock": ["kilmarnockfc"],
+    "rosscountyfc": ["rosscounty", "ross"],
+    "rosscounty": ["rosscountyfc"],
+    "motherwellfc": ["motherwell"],
+    "motherwell": ["motherwellfc"],
+    # Turkey (expanded)
+    "istanbulbasaksehirfk": ["basaksehir", "istanbulbasaksehir"],
+    "basaksehir": ["istanbulbasaksehirfk"],
+    "kasimpasask": ["kasimpasa"],
+    "kasimpasa": ["kasimpasask"],
+    "caykurrizespor": ["rizespor"],
+    "rizespor": ["caykurrizespor"],
+    "adanademirspor": ["adana"],
+    "adana": ["adanademirspor"],
+    "gaziantepfk": ["gaziantep"],
+    "gaziantep": ["gaziantepfk"],
+    # Switzerland
+    "bscyoungboys": ["youngboys"],
+    "youngboys": ["bscyoungboys"],
+    "fcbasel1893": ["basel"],
+    "basel": ["fcbasel1893"],
+    "fczurich": ["zurich"],
+    "zurich": ["fczurich"],
+    "grasshopperclubzurich": ["grasshoppers", "gczurich"],
+    "grasshoppers": ["grasshopperclubzurich"],
+    "gczurich": ["grasshopperclubzurich"],
+    "fcstgallen1879": ["stgallen"],
+    "stgallen": ["fcstgallen1879"],
+    "fclausannesport": ["lausanne"],
+    "lausanne": ["fclausannesport"],
+    # Greece
+    "olympiacosfc": ["olympiacos", "olympiakos"],
+    "olympiacos": ["olympiacosfc"],
+    "olympiakos": ["olympiacosfc"],
+    "panathinaikosfc": ["panathinaikos"],
+    "panathinaikos": ["panathinaikosfc"],
+    "paokfc": ["paok"],
+    "paok": ["paokfc"],
+    "aekathensfc": ["aek", "aekathens"],
+    "aek": ["aekathensfc"],
+    "aekathens": ["aekathensfc"],
+    "aristhessalonikifc": ["aris", "aristhessaloniki"],
+    "aris": ["aristhessalonikifc"],
+    # Czech Republic
+    "spartaprague": ["spartaprag"],
+    "slaviaprague": ["slavia"],
+    "slavia": ["slaviaprague"],
+    "viktoriaplzen": ["plzen", "viktoria"],
+    "plzen": ["viktoriaplzen"],
+    "fcbanikostravafc": ["ostrava", "banikostravafc"],
+    "ostrava": ["banikostravafc"],
+    "fkmladaboleslav": ["mlada", "mladaboleslav"],
+    "mlada": ["fkmladaboleslav"],
+    "fcslovanliberec": ["liberec"],
+    "liberec": ["fcslovanliberec"],
+    # Denmark
+    "fccopenhagen": ["copenhagen"],
+    "copenhagen": ["fccopenhagen"],
+    "fcmidtjylland": ["midtjylland"],
+    "midtjylland": ["fcmidtjylland"],
+    "brondbyif": ["brondby"],
+    "brondby": ["brondbyif"],
+    "fcnordsjaelland": ["nordsjaelland"],
+    "nordsjaelland": ["fcnordsjaelland"],
+    "aarhusgf": ["agf", "aarhus"],
+    "agf": ["aarhusgf"],
+    "aarhus": ["aarhusgf"],
+    # Croatia
+    "gnkdinamozagreb": ["dinamozagreb"],
+    "dinamozagreb": ["gnkdinamozagreb"],
+    "hnkhajduksplit": ["hajduk", "hajduksplit"],
+    "hajduk": ["hnkhajduksplit"],
+    "hajduksplit": ["hnkhajduksplit"],
+    "hnkrijeka": ["rijeka"],
+    "rijeka": ["hnkrijeka"],
+    "nkosijek": ["osijek"],
+    "osijek": ["nkosijek"],
+    # Serbia
+    "fkcrvenazvedza": ["redstarbelgrade", "redstar", "crvenazvedza"],
+    "redstarbelgrade": ["fkcrvenazvedza"],
+    "redstar": ["fkcrvenazvedza"],
+    "crvenazvedza": ["fkcrvenazvedza"],
+    "fkpartizan": ["partizan", "partizanbelgrade"],
+    "partizan": ["fkpartizan"],
+    "partizanbelgrade": ["fkpartizan"],
+    "fkvojvodina": ["vojvodina"],
+    "vojvodina": ["fkvojvodina"],
+    # Norway
+    "fkbodoglimt": ["bodo", "bodoglimt"],
+    "bodo": ["fkbodoglimt"],
+    "bodoglimt": ["fkbodoglimt"],
+    "rosenborgbk": ["rosenborg"],
+    "rosenborg": ["rosenborgbk"],
+    "moldefk": ["molde"],
+    "molde": ["moldefk"],
+    "vikingfk": ["viking"],
+    "viking": ["vikingfk"],
+    "skbrann": ["brann"],
+    "brann": ["skbrann"],
+    "lillestromsk": ["lillestrom"],
+    "lillestrom": ["lillestromsk"],
+    "valerengafotball": ["valerenga"],
+    "valerenga": ["valerengafotball"],
+    "stromsgodsetif": ["stromsgodset"],
+    "stromsgodset": ["stromsgodsetif"],
+    # Sweden
+    "malmoff": ["malmo"],
+    "malmo": ["malmoff"],
+    "djurgardensif": ["djurgarden"],
+    "djurgarden": ["djurgardensif"],
+    "ifelfsborg": ["elfsborg"],
+    "elfsborg": ["ifelfsborg"],
+    "bkhacken": ["hacken"],
+    "hacken": ["bkhacken"],
+    "hammarbyif": ["hammarby"],
+    "hammarby": ["hammarbyif"],
+    "ifkgoteborg": ["goteborg"],
+    "goteborg": ["ifkgoteborg"],
+    "ifknorrkoping": ["norrkoping"],
+    "norrkoping": ["ifknorrkoping"],
+    # Poland
+    "legiawarsaw": ["legia"],
+    "legia": ["legiawarsaw"],
+    "lechpoznan": ["lech"],
+    "lech": ["lechpoznan"],
+    "rakowczestochowa": ["rakow"],
+    "rakow": ["rakowczestochowa"],
+    "pogonszczecin": ["pogon"],
+    "pogon": ["pogonszczecin"],
+    "jagielloniabialystok": ["jagiellonia"],
+    "jagiellonia": ["jagielloniabialystok"],
+    "gornikzabrze": ["gornik"],
+    "gornik": ["gornikzabrze"],
+    "slaskwroclaw": ["slask"],
+    "slask": ["slaskwroclaw"],
+    "wislakrakow": ["wisla"],
+    "wisla": ["wislakrakow"],
+    "piastgliwice": ["piast"],
+    "piast": ["piastgliwice"],
+    "zaglebielubin": ["zaglebie"],
+    "zaglebie": ["zaglebielubin"],
+    # Romania
+    "fcsb": ["steauabucharest", "steaua"],
+    "steauabucharest": ["fcsb"],
+    "steaua": ["fcsb"],
+    "universitateacraiova": ["craiova", "ucraiova"],
+    "craiova": ["universitateacraiova"],
+    "rapidbucuresti": ["rapidbucharest"],
+    "rapidbucharest": ["rapidbucuresti"],
+    # Ukraine
+    "shakhtardonetsk": ["shakhtar"],
+    "shakhtar": ["shakhtardonetsk"],
+    "dynamokyiv": ["dynamokiev"],
+    "dynamokiev": ["dynamokyiv"],
+    "zoryaluhansk": ["zorya"],
+    "zorya": ["zoryaluhansk"],
+    # Russia
+    "zenitstpetersburg": ["zenit"],
+    "zenit": ["zenitstpetersburg"],
+    "spartakmoscow": ["spartak"],
+    "spartak": ["spartakmoscow"],
+    "cskamoscow": ["cska"],
+    "cska": ["cskamoscow"],
+    "lokomotivmoscow": ["lokomotiv"],
+    "rubinkazan": ["rubin"],
+    "rubin": ["rubinkazan"],
+    # Bulgaria
+    "ludogoretsrazgrad": ["ludogorets"],
+    "ludogorets": ["ludogoretsrazgrad"],
+    "pfclevskisofia": ["levski", "levskisofia"],
+    "levski": ["pfclevskisofia"],
+    "levskisofia": ["pfclevskisofia"],
+    "cskasofia": ["cska1948sofia"],
+    "botevplovdiv": ["botev"],
+    "botev": ["botevplovdiv"],
+    # Hungary
+    "ferencvarostc": ["ferencvaros"],
+    "ferencvaros": ["ferencvarostc"],
+    "fehervárfc": ["fehervar"],
+    "fehervar": ["fehervárfc"],
+    "puskasademiafc": ["puskas", "puskasakademia"],
+    "puskas": ["puskasademiafc"],
+    "ujpestfc": ["ujpest"],
+    "ujpest": ["ujpestfc"],
+    "debrecenivsc": ["debrecen"],
+    "debrecen": ["debrecenivsc"],
+    # Cyprus
+    "apoelnicosia": ["apoel"],
+    "apoel": ["apoelnicosia"],
+    "acomonia": ["omonia", "omonianicosia"],
+    "omonia": ["acomonia"],
+    "anorthosisfamagusta": ["anorthosis"],
+    "anorthosis": ["anorthosisfamagusta"],
+    "apollonlimassol": ["apollon"],
+    "apollon": ["apollonlimassol"],
+    # Finland
+    "hjkhelsinki": ["hjk"],
+    "hjk": ["hjkhelsinki"],
+    "kuopionpalloseura": ["kups"],
+    "kups": ["kuopionpalloseura"],
+    # Slovakia
+    "skslovanbratislava": ["slovanbratislava", "bratislava"],
+    "slovanbratislava": ["skslovanbratislava"],
+    "fcspartaktrnava": ["trnava", "spartaktrnava"],
+    "trnava": ["fcspartaktrnava"],
+    "mskzilina": ["zilina"],
+    "zilina": ["mskzilina"],
+    # Slovenia
+    "nkmaribor": ["maribor"],
+    "maribor": ["nkmaribor"],
+    "nkolimpijaljubljana": ["olimpija", "olimpijaljubljana"],
+    "olimpija": ["nkolimpijaljubljana"],
+    "nkdomzale": ["domzale"],
+    "domzale": ["nkdomzale"],
+    "nsmura": ["mura"],
+    "mura": ["nsmura"],
+    # Bosnia
+    "fkzeljeznicarsarajevo": ["zeljeznicar"],
+    "zeljeznicar": ["fkzeljeznicarsarajevo"],
+    "fksarajevo": ["sarajevo"],
+    "sarajevo": ["fksarajevo"],
+    "hskzrinjskimostar": ["zrinjski", "zrinjskimostar"],
+    "zrinjski": ["hskzrinjskimostar"],
+    "fkvelezmostar": ["velezmostar"],
+    "velezmostar": ["fkvelezmostar"],
+    # Israel
+    "maccabitelavivfc": ["maccabitelaviv", "maccabita"],
+    "maccabitelaviv": ["maccabitelavivfc"],
+    "maccabita": ["maccabitelavivfc"],
+    "maccabihaifafc": ["maccabihaifa"],
+    "maccabihaifa": ["maccabihaifafc"],
+    "hapoelbeersheva": ["hapoelbeershevafc"],
+    "hapoelbeershevafc": ["hapoelbeersheva"],
+    "beitarjerusalemfc": ["beitar", "beitarjerusalem"],
+    "beitar": ["beitarjerusalemfc"],
+    "hapoeltelavivfc": ["hapoeltelaviv", "hapoelta"],
+    "hapoeltelaviv": ["hapoeltelavivfc"],
+    "hapoelta": ["hapoeltelavivfc"],
+    # Kazakhstan
+    "fcastana": ["astana"],
+    "astana": ["fcastana"],
+    "fckairat": ["kairat", "kairatalmaty"],
+    "kairat": ["fckairat"],
+    "kairatalmaty": ["fckairat"],
+    "fctobol": ["tobol"],
+    "tobol": ["fctobol"],
+    # Iceland
+    "vikingurreykjavik": ["vikingur"],
+    "vikingur": ["vikingurreykjavik"],
+    "valurreykjavik": ["valur"],
+    "valur": ["valurreykjavik"],
+    "breidablik": ["breidablikubr"],
+    "fhhafnarfjordur": ["fh"],
+    "fh": ["fhhafnarfjordur"],
+    "krreykjavik": ["kr"],
+    "kr": ["krreykjavik"],
+    # Ireland
+    "shamrockroversfc": ["shamrock", "shamrockrovers"],
+    "shamrock": ["shamrockroversfc"],
+    "shamrockrovers": ["shamrockroversfc"],
+    "dundalkfc": ["dundalk"],
+    "dundalk": ["dundalkfc"],
+    "bohemianfc": ["bohemian"],
+    "stpatricksathleticfc": ["stpats", "stpatricksathletic"],
+    "stpats": ["stpatricksathleticfc"],
+    "shelbournefc": ["shelbourne"],
+    "shelbourne": ["shelbournefc"],
+    "derrycityfc": ["derry", "derrycity"],
+    "derry": ["derrycityfc"],
+    "sligoroversfc": ["sligo", "sligorovers"],
+    "sligo": ["sligoroversfc"],
+    # Wales
+    "thenewsaintsfc": ["tns", "newsaints"],
+    "tns": ["thenewsaintsfc"],
+    "newsaints": ["thenewsaintsfc"],
+    "connahsquaynomadsfc": ["connah", "connahsquay"],
+    "connah": ["connahsquaynomadsfc"],
+    # Georgia
+    "fcdinamotbilisi": ["dinamotbilisi"],
+    "dinamotbilisi": ["fcdinamotbilisi"],
+    "fctorpedokutaisi": ["torpedo", "torpedokutaisi"],
+    "torpedokutaisi": ["fctorpedokutaisi"],
+    "fcdinamobatumi": ["dinamobatumi"],
+    "dinamobatumi": ["fcdinamobatumi"],
+    # South America (expanded)
+    "gremio": ["gremiofbpa", "gremioporealegrense"],
+    "internacional": ["scinternacional", "internacionalpoa"],
+    "santosfc": ["santos"],
+    "santos": ["santosfc"],
+    "fluminense": ["fluminensefc"],
+    "fluminensefc": ["fluminense"],
+    "vascoda": ["vascodagama", "crvascodagama"],
+    "vascodagama": ["vascoda"],
+    "botafogo": ["botafogofr"],
+    "botafogofr": ["botafogo"],
+    "independiente": ["caindependiente"],
+    "caindependiente": ["independiente"],
+    "racingclub": ["racingclubavellaneda"],
+    "sanlorenzo": ["casanlorenzo"],
+    "casanlorenzo": ["sanlorenzo"],
+    "velez": ["velezsarsfield"],
+    "velezsarsfield": ["velez"],
+    "estudiantes": ["estudiantesdelaplata"],
+    "estudiantesdelaplata": ["estudiantes"],
 }
 
 
@@ -816,13 +1729,15 @@ def _fuzzy_find_team(
 
     # 2. Extreme abbreviation lookup — must come before substring to prevent
     #    false positives like "Paris FC" beating "PSG" for "Paris Saint-Germain"
-    q_aliases = _EXTREME_ABBREVS.get(q, [])
+    #    Uses merged aliases: hardcoded _EXTREME_ABBREVS + dynamic REEP aliases.
+    merged_aliases = _get_merged_aliases()
+    q_aliases = merged_aliases.get(q, [])
     for alias in q_aliases:
         if alias in candidates:
             return candidates[alias]
     # Reverse: check if any candidate has an alias matching q
     for norm, orig in candidates.items():
-        for alias in _EXTREME_ABBREVS.get(norm, []):
+        for alias in merged_aliases.get(norm, []):
             if alias == q:
                 return orig
 
