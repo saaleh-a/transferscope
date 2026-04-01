@@ -178,10 +178,10 @@ _HEADERS: dict[str, str] = {
 
 _REQUEST_TIMEOUT = int(os.environ.get("SOFASCORE_REQUEST_TIMEOUT", "10"))
 _MAX_RETRIES = int(os.environ.get("SOFASCORE_MAX_RETRIES", "3"))
-_RETRY_BASE_DELAY = float(os.environ.get("SOFASCORE_RETRY_BASE_DELAY", "0.5"))
+_RETRY_BASE_DELAY = float(os.environ.get("SOFASCORE_RETRY_BASE_DELAY", "0"))
 _RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
 _DEFAULT_INTER_REQUEST_DELAY = float(
-    os.environ.get("SOFASCORE_INTER_REQUEST_DELAY", "0.1")
+    os.environ.get("SOFASCORE_INTER_REQUEST_DELAY", "0")
 )
 
 # ── Adaptive rate-limiting state ─────────────────────────────────────────────
@@ -203,7 +203,7 @@ def set_inter_request_delay(seconds: float) -> None:
     Also resets the adaptive delay so callers can start fresh.
     """
     global _adaptive_delay, _adaptive_delay_floor, _has_made_request
-    _adaptive_delay_floor = max(seconds, 0.1)
+    _adaptive_delay_floor = max(seconds, 0.0)
     _adaptive_delay = _adaptive_delay_floor
     _has_made_request = False
 
