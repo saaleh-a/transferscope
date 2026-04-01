@@ -130,7 +130,7 @@ def search_player(name: str) -> List[Dict[str, Any]]:
         })
 
     cache.set(key, results)
-    _log.info("WhoScored search '%s' → %d results", name, len(results))
+    _log.info("WhoScored search '%s' -> %d results", name, len(results))
     return results
 
 
@@ -216,7 +216,7 @@ def get_player_match_history(
         })
 
     cache.set(key, results)
-    _log.info("WhoScored match history for %d → %d matches", player_id, len(results))
+    _log.info("WhoScored match history for %d -> %d matches", player_id, len(results))
     return results
 
 

@@ -937,7 +937,7 @@ def get_team_ranking(
     # 3. Build normalized lookup and try fuzzy match
     match = _fuzzy_find_team(team_name, teams)
     if match is not None:
-        _log.info("Fuzzy matched '%s' → '%s'", team_name, match)
+        _log.info("Fuzzy matched '%s' -> '%s'", team_name, match)
         ranking = teams[match]
         ranking.match_type = "fuzzy"
         return ranking
