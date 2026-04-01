@@ -273,7 +273,7 @@ class TransferPortalModel:
         max_delta = max(DELTA_CLIP_MULTIPLIER * abs(pre_val), floor)
         if abs(delta) > max_delta:
             _log.warning(
-                "Clipping extreme delta for %s: %.3f → %.3f (pre_val=%.3f)",
+                "Clipping extreme delta for %s: %.3f -> %.3f (pre_val=%.3f)",
                 target, delta,
                 max_delta if delta > 0 else -max_delta,
                 pre_val,

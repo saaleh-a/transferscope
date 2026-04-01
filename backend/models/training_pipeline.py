@@ -1432,7 +1432,7 @@ def build_full_dataset(
     nan_count_X = int(np.isnan(X).sum())
     nan_count_y = int(np.isnan(y).sum())
     if nan_count_X > 0 or nan_count_y > 0:
-        _log.warning("NaN values found — X: %d, y: %d. Replacing with 0.", nan_count_X, nan_count_y)
+        _log.warning("NaN values found -- X: %d, y: %d. Replacing with 0.", nan_count_X, nan_count_y)
         X = np.nan_to_num(X, nan=0.0)
         y = np.nan_to_num(y, nan=0.0)
 
@@ -1647,7 +1647,7 @@ def train_adjustment_models(
     print(f"  Player model saved to: {player_path}")
 
     # Compute R² for team model
-    print(f"\n  TeamAdjustmentModel R² per metric:")
+    print(f"\n  TeamAdjustmentModel R2 per metric:")
     for m in CORE_METRICS:
         if m in team_model.models:
             model = team_model.models[m]
@@ -1657,11 +1657,11 @@ def train_adjustment_models(
                 X_m = np.array([[r["from_ra"], r["to_ra"]] for r in m_rows])
                 y_m = np.array([r["actual"] - r["naive_league_expectation"] for r in m_rows])
                 r2 = model.score(X_m, y_m)
-                flag = " ⚠️" if r2 < 0.1 else ""
-                print(f"    {m}: R²={r2:.4f}{flag}")
+                flag = " [!]" if r2 < 0.1 else ""
+                print(f"    {m}: R2={r2:.4f}{flag}")
 
     # Compute R² for player model
-    print(f"\n  PlayerAdjustmentModel mean R² per metric:")
+    print(f"\n  PlayerAdjustmentModel mean R2 per metric:")
     for m in CORE_METRICS:
         r2_values = []
         for pos, models in player_model.models.items():
@@ -1696,8 +1696,8 @@ def train_adjustment_models(
                         pass
         if r2_values:
             mean_r2 = np.mean(r2_values)
-            flag = " ⚠️" if mean_r2 < 0.1 else ""
-            print(f"    {m}: mean R²={mean_r2:.4f} (across {len(r2_values)} positions){flag}")
+            flag = " [!]" if mean_r2 < 0.1 else ""
+            print(f"    {m}: mean R2={mean_r2:.4f} (across {len(r2_values)} positions){flag}")
 
     return team_model, player_model
 
@@ -1781,7 +1781,7 @@ def train_neural_network(
             )
         else:
             # All-zero confidence → fall back to uniform weighting
-            _log.warning("All confidence values are zero — using uniform sample weights")
+            _log.warning("All confidence values are zero -- using uniform sample weights")
             sample_weights = None
 
     for group_name, targets in MODEL_GROUPS.items():
@@ -1844,7 +1844,7 @@ def train_neural_network(
         # Report (losses are in scaled space — also report original-scale MSE)
         epochs_trained = len(history.history.get("loss", []))
         if epochs_trained == 0:
-            _log.warning("Group %s: 0 epochs trained — check data", group_name)
+            _log.warning("Group %s: 0 epochs trained -- check data", group_name)
             print(f"    WARNING: 0 epochs trained - skipping report")
             continue
 
@@ -1971,7 +1971,7 @@ def _compare_model_vs_heuristic(
         t_mse = np.mean(trained_errors[m]) if trained_errors[m] else 0.0
         h_mse = np.mean(heuristic_errors[m]) if heuristic_errors[m] else 0.0
         improvement = ((h_mse - t_mse) / h_mse * 100) if h_mse > 0 else 0.0
-        flag = " ⚠️" if improvement < -20 else ""
+        flag = " [!]" if improvement < -20 else ""
         print(f"  {m:<30} {t_mse:>12.6f} {h_mse:>14.6f} {improvement:>10.1f}%{flag}")
         report[m] = {"trained_mse": float(t_mse), "heuristic_mse": float(h_mse), "improvement_pct": float(improvement)}
 
@@ -2198,7 +2198,7 @@ def run_pipeline(
         _report("Training neural network", "4-group multi-head TensorFlow model")
         train_neural_network(X_train, y_train, X_val, y_val, meta_train=meta_train)
     else:
-        _report("Skipping training", "—skip-training flag set")
+        _report("Skipping training", "--skip-training flag set")
 
     # Step 8: Backtesting
     if len(meta_test) > 0:
@@ -2289,7 +2289,7 @@ def main() -> None:
         print("=" * 60)
     else:
         print("\n" + "=" * 60)
-        print("Training failed — see messages above.")
+        print("Training failed -- see messages above.")
         print("=" * 60)
 
 
