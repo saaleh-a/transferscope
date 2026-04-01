@@ -179,7 +179,41 @@ _REQUEST_TIMEOUT = 10  # seconds
 _MAX_RETRIES = 3  # total attempts for retryable errors
 _RETRY_BASE_DELAY = 1.0  # seconds — doubles each attempt (1, 2, 4)
 _RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
-_LEAGUE_STATS_INTER_REQUEST_DELAY = 0.5  # seconds between bulk API calls
+_LEAGUE_STATS_INTER_REQUEST_DELAY = 0.5  # seconds between per-player API calls
+
+# ── Adaptive rate-limiting state ─────────────────────────────────────────────
+# When 403/429 responses are encountered, the inter-request delay is
+# automatically increased so that subsequent calls back off without the
+# caller needing to manually adjust --api-delay.
+_adaptive_delay: float = _LEAGUE_STATS_INTER_REQUEST_DELAY
+_adaptive_delay_floor: float = _LEAGUE_STATS_INTER_REQUEST_DELAY
+_ADAPTIVE_DELAY_MULTIPLIER = 2.0  # factor to increase on 403/429
+_ADAPTIVE_DELAY_MAX = 10.0  # ceiling in seconds
+
+
+def set_inter_request_delay(seconds: float) -> None:
+    """Set the base inter-request delay (called by ``--api-delay``).
+
+    Also resets the adaptive delay so callers can start fresh.
+    """
+    global _adaptive_delay, _adaptive_delay_floor
+    _adaptive_delay_floor = max(seconds, 0.1)
+    _adaptive_delay = _adaptive_delay_floor
+
+
+def _bump_adaptive_delay() -> None:
+    """Increase the adaptive inter-request delay after a rate-limit hit."""
+    global _adaptive_delay
+    _adaptive_delay = min(
+        _adaptive_delay * _ADAPTIVE_DELAY_MULTIPLIER,
+        _ADAPTIVE_DELAY_MAX,
+    )
+    _log.info("Adaptive rate-limit delay increased to %.1fs", _adaptive_delay)
+
+
+def _inter_request_delay() -> None:
+    """Sleep between API calls to avoid triggering rate limits."""
+    time.sleep(_adaptive_delay)
 
 
 _NEGATIVE_CACHE_TTL = 86400  # 24 hours — cache dead endpoints to avoid re-fetching
@@ -212,9 +246,16 @@ def _get(path: str) -> Optional[dict]:
     _had_transient_failure = False  # Track if failure was due to transient errors (429/5xx/connection)
     for attempt in range(_MAX_RETRIES):
         try:
+            # Adaptive throttle before each outbound request (not on retries
+            # — retry backoff is handled below).  This keeps the overall
+            # request rate low enough to avoid triggering Cloudflare/rate-limits.
+            if attempt == 0:
+                _inter_request_delay()
             resp = _http.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
             if resp.status_code in _RETRYABLE_STATUS_CODES:
                 _had_transient_failure = True
+                if resp.status_code in (403, 429):
+                    _bump_adaptive_delay()
                 delay = _RETRY_BASE_DELAY * (2 ** attempt)  # 1s, 2s, 4s
                 _log.info(
                     "Sofascore %d on %s — retry %d/%d in %.1fs",
