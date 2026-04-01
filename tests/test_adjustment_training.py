@@ -81,7 +81,8 @@ class TestBuildTrainingData(unittest.TestCase):
         # Verify team row structure
         tr = team_rows[0]
         self.assertIn("metric", tr)
-        self.assertIn("team_relative_feature", tr)
+        self.assertIn("from_ra", tr)
+        self.assertIn("to_ra", tr)
         self.assertIn("naive_league_expectation", tr)
         self.assertIn("actual", tr)
 

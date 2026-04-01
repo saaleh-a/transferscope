@@ -34,8 +34,15 @@ _MODELS_DIR = os.path.join(
 class TeamAdjustmentModel:
     """13 sklearn LinearRegression models — one per core metric.
 
+    Uses two features per sample:
+
+    * ``from_ra`` — source team relative ability (team_score − league_mean).
+      Captures the caliber of environment the player developed in.
+    * ``to_ra`` — target team relative ability.  Captures the caliber of
+      the environment the player is moving into.
+
     target = naive_league_expectation (offset)
-           + beta * team_relative_feature_in_previous_league
+           + beta_from * from_ra + beta_to * to_ra
            + error
     """
 
@@ -51,8 +58,8 @@ class TeamAdjustmentModel:
         training_data : list[dict]
             Each dict has:
                 - ``metric``: str (metric name)
-                - ``team_relative_feature``: float (team's relative per-90
-                  in previous league context)
+                - ``from_ra``: float (source team relative ability)
+                - ``to_ra``: float (target team relative ability)
                 - ``naive_league_expectation``: float (league-average per-90
                   at target league)
                 - ``actual``: float (observed per-90 at new club)
@@ -63,12 +70,13 @@ class TeamAdjustmentModel:
             metric = row.get("metric")
             if metric not in by_metric:
                 continue
-            X_val = row.get("team_relative_feature")
+            from_ra = row.get("from_ra")
+            to_ra = row.get("to_ra")
             y_val = row.get("actual")
             offset = row.get("naive_league_expectation", 0)
-            if X_val is None or y_val is None:
+            if from_ra is None or to_ra is None or y_val is None:
                 continue
-            by_metric[metric][0].append([X_val])
+            by_metric[metric][0].append([from_ra, to_ra])
             by_metric[metric][1].append(y_val - offset)
 
         for metric in CORE_METRICS:
@@ -78,7 +86,7 @@ class TeamAdjustmentModel:
                 model.fit(np.array(xs), np.array(ys))
             else:
                 # Not enough data — identity model (predict 0 adjustment)
-                model.coef_ = np.array([0.0])
+                model.coef_ = np.array([0.0, 0.0])
                 model.intercept_ = 0.0
             self.models[metric] = model
 
@@ -86,7 +94,8 @@ class TeamAdjustmentModel:
 
     def predict(
         self,
-        team_relative_feature: float,
+        from_ra: float,
+        to_ra: float,
         naive_expectation: float,
         metric: str,
     ) -> float:
@@ -97,20 +106,20 @@ class TeamAdjustmentModel:
         if metric not in self.models:
             return naive_expectation
         model = self.models[metric]
-        adjustment = model.predict(np.array([[team_relative_feature]]))[0]
+        adjustment = model.predict(np.array([[from_ra, to_ra]]))[0]
         return naive_expectation + adjustment
 
     def predict_all(
         self,
-        team_relative_features: Dict[str, float],
+        from_ra: float,
+        to_ra: float,
         naive_expectations: Dict[str, float],
     ) -> Dict[str, float]:
         """Predict adjusted per-90 for all 13 core metrics."""
         result = {}
         for metric in CORE_METRICS:
-            rel = team_relative_features.get(metric, 0.0)
             naive = naive_expectations.get(metric, 0.0)
-            result[metric] = self.predict(rel, naive, metric)
+            result[metric] = self.predict(from_ra, to_ra, naive, metric)
         return result
 
     def save(self, path: Optional[str] = None) -> str:
@@ -441,7 +450,8 @@ def build_training_data_from_transfers(
         # would produce nonsensical regression targets (e.g. 0.35 xG - 65.0 = -64.65).
         team_rows.append({
             "metric": metric,
-            "team_relative_feature": new_ranking.relative_ability,
+            "from_ra": old_ranking.relative_ability,
+            "to_ra": new_ranking.relative_ability,
             "naive_league_expectation": 0.0,
             "actual": actual,
         })

@@ -1552,11 +1552,11 @@ def train_adjustment_models(
 
             team_rows.append({
                 "metric": m,
-                # Use *target* team relative ability — the destination team's
-                # strength relative to its league predicts deviation from league
-                # mean at the new club.  Previously used from_ra (source team)
-                # which has near-zero correlation with post-transfer performance.
-                "team_relative_feature": to_ra,
+                # Both source and target team relative abilities are predictive:
+                # from_ra captures the caliber of environment the player developed
+                # in; to_ra captures the quality of the destination team.
+                "from_ra": from_ra,
+                "to_ra": to_ra,
                 "naive_league_expectation": naive_expectation,
                 "actual": actual,
             })
@@ -1598,7 +1598,7 @@ def train_adjustment_models(
             # Get training data for this metric
             m_rows = [r for r in team_rows if r["metric"] == m]
             if len(m_rows) >= 2:
-                X_m = np.array([[r["team_relative_feature"]] for r in m_rows])
+                X_m = np.array([[r["from_ra"], r["to_ra"]] for r in m_rows])
                 y_m = np.array([r["actual"] - r["naive_league_expectation"] for r in m_rows])
                 r2 = model.score(X_m, y_m)
                 flag = " ⚠️" if r2 < 0.1 else ""
