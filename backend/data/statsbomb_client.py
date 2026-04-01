@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import math
+import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.data import cache
@@ -45,6 +46,13 @@ def _import_sb():
     """Import statsbombpy at call time to avoid hard dependency."""
     try:
         from statsbombpy import sb
+        # Suppress the NoAuthWarning emitted on every API call when using
+        # open data without credentials — expected behaviour, not actionable.
+        try:
+            from statsbombpy.api_client import NoAuthWarning
+            warnings.filterwarnings("ignore", category=NoAuthWarning)
+        except ImportError:
+            pass
         return sb
     except ImportError:
         _log.warning("statsbombpy is not installed — StatsBomb data unavailable")
