@@ -562,8 +562,9 @@ class TestReepWhoscoredBridge(unittest.TestCase):
     @patch("backend.data.reep_registry.get_people_df")
     def test_returns_whoscored_id(self, mock_df):
         import pandas as pd
-        from backend.data.reep_registry import enrich_player
+        from backend.data.reep_registry import clear_memory_cache, enrich_player
 
+        clear_memory_cache()
         mock_df.return_value = pd.DataFrame([{
             "key_sofascore": "12345",
             "nationality": "Argentina",
@@ -582,8 +583,9 @@ class TestReepWhoscoredBridge(unittest.TestCase):
     @patch("backend.data.reep_registry.get_people_df")
     def test_missing_whoscored_id_returns_none(self, mock_df):
         import pandas as pd
-        from backend.data.reep_registry import enrich_player
+        from backend.data.reep_registry import clear_memory_cache, enrich_player
 
+        clear_memory_cache()
         mock_df.return_value = pd.DataFrame([{
             "key_sofascore": "12345",
             "nationality": "England",
@@ -600,8 +602,9 @@ class TestReepWhoscoredBridge(unittest.TestCase):
     @patch("backend.data.reep_registry.get_people_df")
     def test_player_not_found_returns_empty(self, mock_df):
         import pandas as pd
-        from backend.data.reep_registry import enrich_player
+        from backend.data.reep_registry import clear_memory_cache, enrich_player
 
+        clear_memory_cache()
         mock_df.return_value = pd.DataFrame([{
             "key_sofascore": "99999",
             "nationality": "Brazil",
