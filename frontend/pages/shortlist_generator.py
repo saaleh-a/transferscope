@@ -38,8 +38,9 @@ _log = logging.getLogger(__name__)
 
 # Delay between league API calls to avoid Sofascore rate-limiting (seconds).
 # Sofascore returns 403/429 after rapid sequential requests.  A small delay
-# between leagues dramatically improves success rate.
-_INTER_LEAGUE_DELAY = 1.5
+# between leagues improves success rate.  The adaptive backoff in
+# sofascore_client will increase the delay automatically if needed.
+_INTER_LEAGUE_DELAY = 0.5
 
 from frontend.constants import METRIC_LABELS as _LABELS
 

@@ -124,7 +124,7 @@ def main() -> None:
         print("  python backend/models/training_pipeline.py \\")
         print("    --seasons-back 3 \\")
         print("    --leagues ENG1,ESP1,GER1,ITA1,FRA1 \\")
-        print("    --api-delay 3.0")
+        print("    --api-delay 1.0")
     else:
         print(f"❌ {len(failures)} issue(s) found:\n")
         for i, f in enumerate(failures, 1):
