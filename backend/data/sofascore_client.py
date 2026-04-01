@@ -193,7 +193,7 @@ _adaptive_delay_floor: float = _DEFAULT_INTER_REQUEST_DELAY
 _ADAPTIVE_DELAY_MULTIPLIER = float(
     os.environ.get("SOFASCORE_ADAPTIVE_DELAY_MULTIPLIER", "2.0")
 )
-_ADAPTIVE_DELAY_MAX = float(os.environ.get("SOFASCORE_ADAPTIVE_DELAY_MAX", "0"))
+_ADAPTIVE_DELAY_MAX = float(os.environ.get("SOFASCORE_ADAPTIVE_DELAY_MAX", "4.0"))
 _has_made_request = False  # skip delay before the very first request
 
 
