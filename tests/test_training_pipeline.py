@@ -15,25 +15,20 @@ from backend.data.sofascore_client import CORE_METRICS
 from backend.models.transfer_portal import FEATURE_DIM
 
 
-# Auto-patch REEP and StatsBomb to avoid real network calls in tests.
-# These data sources are optional enrichments; tests should not depend
+# Auto-patch REEP to avoid real network calls in tests.
+# REEP is an optional enrichment; tests should not depend
 # on external network availability.
 _reep_patcher = mock.patch(
     "backend.data.reep_registry.enrich_player", return_value={}
-)
-_sb_patcher = mock.patch(
-    "backend.data.statsbomb_client.compute_spatial_features", return_value={}
 )
 
 
 def setUpModule():
     _reep_patcher.start()
-    _sb_patcher.start()
 
 
 def tearDownModule():
     _reep_patcher.stop()
-    _sb_patcher.stop()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -589,12 +584,12 @@ class TestErrorHandling(unittest.TestCase):
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
-        # Team-position features should be zeros (indices 26-52 in new layout)
+        # Team-position features should be zeros (indices 21-47 in new layout)
         # Layout: [0:13] player, [13:17] abilities, [17:19] raw_elo,
-        #          [19:21] reep, [21:26] spatial, [26:39] pos_current,
-        #          [39:52] pos_target, [52:55] interactions.
+        #          [19:21] reep, [21:34] pos_current,
+        #          [34:47] pos_target, [47:50] interactions.
         features = result["features"]
-        team_pos_slice = features[26:52]
+        team_pos_slice = features[21:47]
         np.testing.assert_array_equal(team_pos_slice, 0.0)
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
@@ -854,7 +849,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_team_name="Target FC",
         )
 
-        # Should have all 46 keys (FEATURE_DIM)
+        # Should have all 50 keys (FEATURE_DIM)
         self.assertEqual(len(result), FEATURE_DIM)
 
         # Player metrics should reflect match log rolling values (1.5), not season agg (0.3)
@@ -892,7 +887,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_team_name="Target FC",
         )
 
-        # Should have all 46 keys (FEATURE_DIM)
+        # Should have all 50 keys (FEATURE_DIM)
         self.assertEqual(len(result), FEATURE_DIM)
 
         # Player metrics should reflect season agg (0.8)
@@ -1196,7 +1191,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertEqual(tp_keys, ref_keys)
 
     def test_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (46)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (50)."""
         from backend.models.training_pipeline import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
