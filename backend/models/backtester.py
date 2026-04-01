@@ -296,7 +296,7 @@ def show_example_predictions(
 
     for i, meta in enumerate(examples):
         print(f"\n  {i+1}. {meta.get('player_name', 'Unknown')}")
-        print(f"     {meta.get('from_club', '?')} → {meta.get('to_club', '?')}")
+        print(f"     {meta.get('from_club', '?')} -> {meta.get('to_club', '?')}")
         print(f"     Confidence: {meta.get('confidence', 0):.2f}")
 
         pre_per90 = meta.get("pre_per90", {})

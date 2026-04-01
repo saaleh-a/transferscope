@@ -916,7 +916,7 @@ def discover_non_transfers(
 
             players = sofascore_client.get_league_player_stats(tid, pre_sid, limit=300)
             _log.info(
-                "Non-transfer scan: %s season %s → %d players before filtering",
+                "Non-transfer scan: %s season %s -> %d players before filtering",
                 league_code, pre_season.get("name", "?"), len(players),
             )
 
@@ -1903,7 +1903,7 @@ def train_neural_network(
         epochs_trained = len(history.history.get("loss", []))
         if epochs_trained == 0:
             _log.warning("Group %s: 0 epochs trained — check data", group_name)
-            print(f"    ⚠️ 0 epochs trained — skipping report")
+            print(f"    WARNING: 0 epochs trained - skipping report")
             continue
 
         final_train_loss = history.history["loss"][-1]
@@ -1916,7 +1916,7 @@ def train_neural_network(
         print(f"    Best val loss (scaled): {best_val_loss:.6f}")
 
         if final_val_loss > final_train_loss * 1.5:
-            print(f"    ⚠️ Potential overfitting detected!")
+            print(f"    WARNING: Potential overfitting detected!")
 
     model.fitted = True
 
@@ -2181,7 +2181,7 @@ def run_pipeline(
         _report("Transfers found", f"{len(records)} records saved")
 
     if len(records) < 10:
-        _report("Insufficient data", f"Only {len(records)} transfers found — need ≥10")
+        _report("Insufficient data", f"Only {len(records)} transfers found - need >=10")
         return False
 
     # Step 3: Build full dataset (or load pre-built matrices)
@@ -2226,7 +2226,7 @@ def run_pipeline(
         np.save(os.path.join(_MATRICES_DIR, "y.npy"), y)
         with open(os.path.join(_MATRICES_DIR, "metadata.json"), "w") as f:
             json.dump(metadata, f, indent=2, default=str)
-        _report("Saved feature matrices", f"{len(X)} samples → data/models/matrices/")
+        _report("Saved feature matrices", f"{len(X)} samples -> data/models/matrices/")
 
     if len(metadata) < 10:
         _report("Insufficient data", f"Only {len(metadata)} valid samples")
