@@ -179,16 +179,17 @@ _REQUEST_TIMEOUT = 10  # seconds
 _MAX_RETRIES = 3  # total attempts for retryable errors
 _RETRY_BASE_DELAY = 1.0  # seconds — doubles each attempt (1, 2, 4)
 _RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
-_LEAGUE_STATS_INTER_REQUEST_DELAY = 0.5  # seconds between per-player API calls
+_DEFAULT_INTER_REQUEST_DELAY = 0.5  # seconds between API calls (base)
 
 # ── Adaptive rate-limiting state ─────────────────────────────────────────────
 # When 403/429 responses are encountered, the inter-request delay is
 # automatically increased so that subsequent calls back off without the
 # caller needing to manually adjust --api-delay.
-_adaptive_delay: float = _LEAGUE_STATS_INTER_REQUEST_DELAY
-_adaptive_delay_floor: float = _LEAGUE_STATS_INTER_REQUEST_DELAY
+_adaptive_delay: float = _DEFAULT_INTER_REQUEST_DELAY
+_adaptive_delay_floor: float = _DEFAULT_INTER_REQUEST_DELAY
 _ADAPTIVE_DELAY_MULTIPLIER = 2.0  # factor to increase on 403/429
 _ADAPTIVE_DELAY_MAX = 10.0  # ceiling in seconds
+_has_made_request = False  # skip delay before the very first request
 
 
 def set_inter_request_delay(seconds: float) -> None:
@@ -196,9 +197,10 @@ def set_inter_request_delay(seconds: float) -> None:
 
     Also resets the adaptive delay so callers can start fresh.
     """
-    global _adaptive_delay, _adaptive_delay_floor
+    global _adaptive_delay, _adaptive_delay_floor, _has_made_request
     _adaptive_delay_floor = max(seconds, 0.1)
     _adaptive_delay = _adaptive_delay_floor
+    _has_made_request = False
 
 
 def _bump_adaptive_delay() -> None:
@@ -212,7 +214,14 @@ def _bump_adaptive_delay() -> None:
 
 
 def _inter_request_delay() -> None:
-    """Sleep between API calls to avoid triggering rate limits."""
+    """Sleep between API calls to avoid triggering rate limits.
+
+    Skips the very first call so startup is not delayed.
+    """
+    global _has_made_request
+    if not _has_made_request:
+        _has_made_request = True
+        return
     time.sleep(_adaptive_delay)
 
 
