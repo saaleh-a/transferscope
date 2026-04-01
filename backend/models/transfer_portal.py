@@ -6,10 +6,15 @@ Group 2 - Passing: xA, Crosses, Total Passes, Short Passes, Long Passes,
 Group 3 - Dribbling: Take-ons (1 head)
 Group 4 - Defending: Def own third, Def mid third, Def att third (3 heads)
 
-Architecture per group:
+Default architecture per group:
   Input -> Dense(128, relu) -> BatchNormalization -> Dropout(0.3)
   -> Dense(64, relu) -> BatchNormalization -> Dropout(0.3)
   -> [Linear output head per target]
+
+Dribbling group override (smaller feature/target ratio):
+  Input -> Dense(64, relu) -> BatchNormalization -> Dropout(0.4)
+  -> Dense(32, relu) -> BatchNormalization -> Dropout(0.4)
+  -> [Linear output head]
 """
 
 from __future__ import annotations
@@ -175,27 +180,40 @@ _MODELS_DIR = os.path.join(
 )
 
 
+# Per-group architecture overrides.  Groups not listed use the defaults
+# (hidden_units=[128, 64], dropout=0.3).  The dribbling group uses a
+# smaller network with higher dropout to combat overfitting (10 features,
+# 1 target — the default 128→64 architecture is over-parameterised).
+_GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "dribbling": {"hidden_units": [64, 32], "dropout": 0.4},
+}
+
+
 def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.keras.Model:
     """Build a multi-head model for one target group.
 
     Uses BatchNormalization + L2 regularization on Dense layers and Huber
     loss for robustness to outlier deltas in training data.
     """
+    overrides = _GROUP_ARCH_OVERRIDES.get(group_name, {})
+    hidden_units = overrides.get("hidden_units", [128, 64])
+    dropout_rate = overrides.get("dropout", 0.3)
+
     l2_reg = tf.keras.regularizers.l2(1e-3)
 
     inp = tf.keras.Input(shape=(input_dim,), name=f"{group_name}_input")
     x = tf.keras.layers.Dense(
-        128, activation="relu", kernel_regularizer=l2_reg,
+        hidden_units[0], activation="relu", kernel_regularizer=l2_reg,
         name=f"{group_name}_dense1",
     )(inp)
     x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn1")(x)
-    x = tf.keras.layers.Dropout(0.3, name=f"{group_name}_drop1")(x)
+    x = tf.keras.layers.Dropout(dropout_rate, name=f"{group_name}_drop1")(x)
     x = tf.keras.layers.Dense(
-        64, activation="relu", kernel_regularizer=l2_reg,
+        hidden_units[1], activation="relu", kernel_regularizer=l2_reg,
         name=f"{group_name}_dense2",
     )(x)
     x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn2")(x)
-    x = tf.keras.layers.Dropout(0.3, name=f"{group_name}_drop2")(x)
+    x = tf.keras.layers.Dropout(dropout_rate, name=f"{group_name}_drop2")(x)
 
     outputs = []
     targets = MODEL_GROUPS[group_name]

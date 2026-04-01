@@ -978,6 +978,7 @@ def discover_non_transfers(
 
 def build_non_transfer_sample(
     record: NonTransferRecord,
+    min_minutes: int = MIN_MINUTES_THRESHOLD,
 ) -> Optional[Dict[str, Any]]:
     """Build a training sample for a player who stayed at the same club.
 
@@ -1012,7 +1013,7 @@ def build_non_transfer_sample(
         if pre_stats:
             pre_per90 = pre_stats.get("per90") or {}
             pre_minutes = pre_stats.get("minutes_played", 0)
-            if pre_minutes < MIN_MINUTES_THRESHOLD:
+            if pre_minutes < min_minutes:
                 pre_per90 = None
         else:
             pre_per90 = None
@@ -1036,7 +1037,7 @@ def build_non_transfer_sample(
             )
             return None
 
-    if pre_minutes < MIN_MINUTES_THRESHOLD:
+    if pre_minutes < min_minutes:
         return None
 
     weight = blend_weight(pre_minutes)
@@ -1119,7 +1120,7 @@ def build_non_transfer_sample(
         if post_stats:
             post_per90 = post_stats.get("per90") or {}
             post_minutes = post_stats.get("minutes_played", 0)
-            if post_minutes < MIN_MINUTES_THRESHOLD:
+            if post_minutes < min_minutes:
                 post_per90 = None
         else:
             post_per90 = None
@@ -1285,6 +1286,7 @@ def inject_team_pos_averages(
 def build_full_dataset(
     transfer_records: List[TransferRecord],
     non_transfer_records: Optional[List[NonTransferRecord]] = None,
+    nt_min_minutes: int = MIN_MINUTES_THRESHOLD,
 ) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, Any]]]:
     """Build the full training dataset from transfer records.
 
@@ -1329,7 +1331,7 @@ def build_full_dataset(
                 _log.info("Building non-transfer sample %d / %d ...", i + 1, nt_total)
 
             try:
-                nt_sample = build_non_transfer_sample(nt_record)
+                nt_sample = build_non_transfer_sample(nt_record, min_minutes=nt_min_minutes)
             except Exception as exc:
                 _log.warning(
                     "Error building non-transfer sample for player %d: %s",
@@ -1550,7 +1552,11 @@ def train_adjustment_models(
 
             team_rows.append({
                 "metric": m,
-                "team_relative_feature": from_ra,
+                # Use *target* team relative ability — the destination team's
+                # strength relative to its league predicts deviation from league
+                # mean at the new club.  Previously used from_ra (source team)
+                # which has near-zero correlation with post-transfer performance.
+                "team_relative_feature": to_ra,
                 "naive_league_expectation": naive_expectation,
                 "actual": actual,
             })
@@ -2004,6 +2010,23 @@ def run_pipeline(
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
+    # Force UTF-8 encoding on stream handlers to prevent UnicodeEncodeError
+    # on Windows (cp1252 default can't encode non-ASCII chars like → or
+    # accented player/team names from Turkish, Polish, etc. leagues).
+    for handler in logging.root.handlers:
+        if isinstance(handler, logging.StreamHandler) and hasattr(handler, "stream"):
+            if hasattr(handler.stream, "fileno"):
+                try:
+                    handler.stream = open(
+                        handler.stream.fileno(),
+                        mode="w",
+                        encoding="utf-8",
+                        buffering=1,
+                        closefd=False,
+                    )
+                except (OSError, ValueError):
+                    pass  # fallback: keep original stream if reconfigure fails
+
     _report("Starting", "TransferScope Training Pipeline")
 
     records_path = os.path.join(_MODELS_DIR, "transfer_records.json")
@@ -2057,7 +2080,12 @@ def run_pipeline(
         )
         _report("Non-transfers found", f"{len(non_transfer_records)} records (target: {nt_target})")
 
-        X, y, metadata = build_full_dataset(records, non_transfer_records)
+        # Use relaxed minutes threshold for non-transfer samples to match
+        # discover_non_transfers retry logic (max(250, _NT_MIN_MINUTES // 2))
+        nt_effective_min = max(250, _NT_MIN_MINUTES // 2)
+        X, y, metadata = build_full_dataset(
+            records, non_transfer_records, nt_min_minutes=nt_effective_min,
+        )
 
         # Save feature matrices to disk for --skip-build on subsequent runs
         os.makedirs(_MATRICES_DIR, exist_ok=True)
