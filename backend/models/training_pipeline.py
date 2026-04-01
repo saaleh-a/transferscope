@@ -2090,7 +2090,7 @@ def run_pipeline(
     skip_training: bool = False,
     val_ratio: float = 0.15,
     test_ratio: float = 0.10,
-    api_delay: float = float(os.environ.get("SOFASCORE_API_CALL_DELAY", "0.5")),
+    api_delay: float = API_CALL_DELAY_SECONDS,
     progress_callback: Optional[Callable[[str, str], None]] = None,
 ) -> bool:
     """Run the full training pipeline programmatically.
@@ -2318,7 +2318,7 @@ def main() -> None:
     parser.add_argument(
         "--api-delay",
         type=float,
-        default=float(os.environ.get("SOFASCORE_API_CALL_DELAY", "0.5")),
+        default=API_CALL_DELAY_SECONDS,
         help="Delay between API calls in seconds (default: from env or 0.5)",
     )
     args = parser.parse_args()
