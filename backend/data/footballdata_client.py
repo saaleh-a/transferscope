@@ -104,7 +104,7 @@ def fetch_season(
         return None
 
     cache_key = f"footballdata:{league_code}:{season}"
-    cached = cache.get(cache_key)
+    cached = cache.get(cache_key, max_age=_CACHE_TTL)
     if cached is not None:
         try:
             return pd.read_csv(io.StringIO(cached), encoding="utf-8")

@@ -147,7 +147,7 @@ def _match_season(
     # Fallback: newest for post, second-newest for pre
     if mode == "post":
         return parsed[0][0]
-    return parsed[min(1, len(parsed) - 1)][0]
+    return parsed[1][0] if len(parsed) > 1 else parsed[0][0]
 
 
 def _resolve_transfer_context(
