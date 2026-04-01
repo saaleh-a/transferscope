@@ -818,9 +818,12 @@ def get_player_match_logs(
             if minutes_played_raw is None:
                 # Try alternate locations
                 minutes_played_raw = event.get("minutesPlayed")
-            if minutes_played_raw is None or int(minutes_played_raw) <= 0:
+            try:
+                minutes_played = int(minutes_played_raw)
+            except (ValueError, TypeError):
                 continue
-            minutes_played = int(minutes_played_raw)
+            if minutes_played <= 0:
+                continue
 
             per90 = _parse_stats(stats_container, minutes_played)
 
@@ -1409,7 +1412,7 @@ def _discover_tournament_for_team(team_id: int) -> Optional[int]:
             best_count = user_count
 
     # Fallback to first tournament if no domestic league found
-    if best is None:
+    if best is None and tournaments:
         first = tournaments[0]
         if isinstance(first, dict) and first.get("id"):
             best = int(first["id"])

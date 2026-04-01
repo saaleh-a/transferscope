@@ -81,6 +81,7 @@ def render():
     search_results = st.session_state.get("ti_search_results")
     stored_query = st.session_state.get("ti_player_query", "")
     if search_results and stored_query != player_query:
+        st.session_state.pop("ti_search_results", None)
         st.caption("Query changed — click **Analyse Transfer** to search.")
         return
     if not search_results:
@@ -88,7 +89,7 @@ def render():
         return
 
     def _player_label(p: dict) -> str:
-        parts = [p["name"]]
+        parts = [p.get("name", "Unknown")]
         if p.get("age"):
             parts.append(f"Age {p['age']}")
         if p.get("nationality"):

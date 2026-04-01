@@ -2150,13 +2150,15 @@ def run_pipeline(
                     _log.debug("Could not reconfigure stream to UTF-8: %s", exc)
             elif hasattr(stream, "fileno"):
                 try:
-                    handler.stream = open(
+                    new_stream = open(
                         stream.fileno(),
                         mode="w",
                         encoding="utf-8",
                         buffering=1,
                         closefd=False,
                     )
+                    handler.stream.flush()
+                    handler.stream = new_stream
                 except (OSError, ValueError) as exc:
                     _log.debug("Could not reconfigure stream to UTF-8: %s", exc)
 

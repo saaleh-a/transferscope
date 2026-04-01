@@ -59,7 +59,7 @@ _CACHE_TTL = 86400 * 7
 
 def _fetch_csv(url: str, cache_key: str) -> Optional[pd.DataFrame]:
     """Download a CSV from *url*, cache the raw text, return a DataFrame."""
-    cached = cache.get(cache_key)
+    cached = cache.get(cache_key, max_age=_CACHE_TTL)
     if cached is not None:
         try:
             return pd.read_csv(io.StringIO(cached), low_memory=False)
@@ -75,7 +75,7 @@ def _fetch_csv(url: str, cache_key: str) -> Optional[pd.DataFrame]:
         _log.warning("REEP download failed (%s): %s", url, exc)
         return None
 
-    cache.set(cache_key, raw, ttl=_CACHE_TTL)
+    cache.set(cache_key, raw)
     try:
         return pd.read_csv(io.StringIO(raw), low_memory=False)
     except Exception as exc:
