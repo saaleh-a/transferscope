@@ -2123,6 +2123,7 @@ def run_pipeline(
     """
     global API_CALL_DELAY_SECONDS
     API_CALL_DELAY_SECONDS = api_delay
+    sofascore_client.set_inter_request_delay(api_delay)
 
     if league_codes is None:
         league_codes = list(DEFAULT_LEAGUE_CODES)
