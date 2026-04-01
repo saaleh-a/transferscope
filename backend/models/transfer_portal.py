@@ -102,8 +102,6 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "raw_elo_current",
         "raw_elo_target",
         "player_height_cm",
-        "spatial_avg_shot_distance",
-        "spatial_shots_inside_box_pct",
         "team_pos_current_expected_goals",
         "team_pos_current_shots",
         "team_pos_current_touches_in_opposition_box",
@@ -131,7 +129,6 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "raw_elo_current",
         "raw_elo_target",
         "player_height_cm",
-        "spatial_progressive_pass_pct",
         "team_pos_current_expected_assists",
         "team_pos_current_successful_crosses",
         "team_pos_current_successful_passes",
@@ -159,7 +156,6 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "raw_elo_current",
         "raw_elo_target",
         "player_age",
-        "spatial_avg_carry_distance",
         "team_pos_current_successful_dribbles",
         "team_pos_target_successful_dribbles",
         "interaction_ability_gap",
@@ -177,7 +173,6 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "raw_elo_current",
         "raw_elo_target",
         "player_height_cm",
-        "spatial_avg_defensive_distance",
         "team_pos_current_clearances",
         "team_pos_current_interceptions",
         "team_pos_current_possession_won_final_3rd",
@@ -728,12 +723,6 @@ def _feature_keys() -> List[str]:
     # REEP player metadata
     keys.append("player_height_cm")
     keys.append("player_age")
-    # StatsBomb spatial features
-    keys.append("spatial_avg_shot_distance")
-    keys.append("spatial_shots_inside_box_pct")
-    keys.append("spatial_progressive_pass_pct")
-    keys.append("spatial_avg_carry_distance")
-    keys.append("spatial_avg_defensive_distance")
     # Team-position per-90 (current)
     for m in CORE_METRICS:
         keys.append(f"team_pos_current_{m}")
@@ -759,7 +748,6 @@ def build_feature_dict(
     raw_elo_target: float = 1500.0,
     player_height_cm: float = 0.0,
     player_age: float = 0.0,
-    spatial_features: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """Assemble a feature dict from components, ready for predict().
 
@@ -776,10 +764,6 @@ def build_feature_dict(
         Player height in cm from REEP.  0.0 when unavailable.
     player_age : float
         Player age in years from REEP.  0.0 when unavailable.
-    spatial_features : dict, optional
-        StatsBomb spatial features.  Keys: ``avg_shot_distance``,
-        ``shots_inside_box_pct``, ``progressive_pass_pct``,
-        ``avg_carry_distance``, ``avg_defensive_distance``.
     """
     fd: Dict[str, float] = {}
 
@@ -800,14 +784,6 @@ def build_feature_dict(
     fd["player_height_cm"] = player_height_cm
     fd["player_age"] = player_age
 
-    # StatsBomb spatial features (0.0 when unavailable)
-    sf = spatial_features or {}
-    fd["spatial_avg_shot_distance"] = sf.get("avg_shot_distance", 0.0)
-    fd["spatial_shots_inside_box_pct"] = sf.get("shots_inside_box_pct", 0.0)
-    fd["spatial_progressive_pass_pct"] = sf.get("progressive_pass_pct", 0.0)
-    fd["spatial_avg_carry_distance"] = sf.get("avg_carry_distance", 0.0)
-    fd["spatial_avg_defensive_distance"] = sf.get("avg_defensive_distance", 0.0)
-
     for m in CORE_METRICS:
         v = team_pos_current.get(m)
         fd[f"team_pos_current_{m}"] = float(v) if v is not None else 0.0
@@ -824,7 +800,7 @@ def build_feature_dict(
     return fd
 
 
-FEATURE_DIM = len(_feature_keys())  # 55 (43 base + 2 raw elo + 2 reep + 5 spatial + 3 interaction)
+FEATURE_DIM = len(_feature_keys())  # 50 (43 base + 2 raw elo + 2 reep + 3 interaction)
 
 
 # ── Improvement 9: Inference-time feature builder ────────────────────────────
@@ -962,31 +938,7 @@ def build_feature_dict_from_player(
     except Exception:
         pass
 
-    # Step 5: Spatial features — StatsBomb first, WhoScored fallback
-    spatial_features: Optional[Dict[str, float]] = None
-    if player_name:
-        try:
-            from backend.data import statsbomb_client
-            sf = statsbomb_client.compute_spatial_features(player_name)
-            if sf:
-                spatial_features = sf
-        except Exception:
-            pass
-
-    # Fallback: WhoScored via REEP whoscored_id bridge
-    if not spatial_features and player_id:
-        try:
-            from backend.data import reep_registry, whoscored_client
-            reep_data = reep_registry.enrich_player(player_id)
-            ws_id = reep_data.get("whoscored_id")
-            if ws_id:
-                ws_sf = whoscored_client.compute_spatial_features(ws_id)
-                if ws_sf:
-                    spatial_features = ws_sf
-        except Exception:
-            pass
-
-    # Step 6: Assemble via build_feature_dict
+    # Step 5: Assemble via build_feature_dict
     return build_feature_dict(
         player_per90=player_per90,
         team_ability_current=team_ability_current,
@@ -999,5 +951,4 @@ def build_feature_dict_from_player(
         raw_elo_target=raw_elo_target,
         player_height_cm=player_height_cm,
         player_age=player_age,
-        spatial_features=spatial_features,
     )

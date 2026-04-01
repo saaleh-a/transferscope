@@ -628,39 +628,6 @@ def build_training_sample(
     except Exception:
         pass
 
-    # Block 3c — Spatial features (StatsBomb first, WhoScored fallback)
-    spatial_avg_shot_distance = 0.0
-    spatial_shots_inside_box_pct = 0.0
-    spatial_progressive_pass_pct = 0.0
-    spatial_avg_carry_distance = 0.0
-    spatial_avg_defensive_distance = 0.0
-    sf: Dict[str, float] = {}
-    try:
-        from backend.data import statsbomb_client
-        player_name = getattr(record, "player_name", "")
-        if player_name:
-            sf = statsbomb_client.compute_spatial_features(player_name)
-    except Exception:
-        pass
-
-    # Fallback: WhoScored via REEP whoscored_id bridge
-    if not sf:
-        try:
-            from backend.data import reep_registry, whoscored_client
-            reep_data = reep_registry.enrich_player(record.player_id)
-            ws_id = reep_data.get("whoscored_id")
-            if ws_id:
-                sf = whoscored_client.compute_spatial_features(ws_id)
-        except Exception:
-            pass
-
-    if sf:
-        spatial_avg_shot_distance = sf.get("avg_shot_distance", 0.0)
-        spatial_shots_inside_box_pct = sf.get("shots_inside_box_pct", 0.0)
-        spatial_progressive_pass_pct = sf.get("progressive_pass_pct", 0.0)
-        spatial_avg_carry_distance = sf.get("avg_carry_distance", 0.0)
-        spatial_avg_defensive_distance = sf.get("avg_defensive_distance", 0.0)
-
     # Block 4+5 — Team-position per-90 (13 values each, placeholder zeros)
     # These are overwritten in build_full_dataset() with averages computed
     # from the training samples themselves — zero API calls needed here.
@@ -668,7 +635,7 @@ def build_training_sample(
     team_pos_current = [0.0] * len(CORE_METRICS)
     team_pos_target = [0.0] * len(CORE_METRICS)
 
-    # Assemble the 55-feature vector (43 base + 2 raw elo + 2 reep + 5 spatial + 3 interaction)
+    # Assemble the 50-feature vector (43 base + 2 raw elo + 2 reep + 3 interaction)
     ability_gap = team_ability_target - team_ability_current
     features = np.array(
         player_metrics
@@ -676,9 +643,6 @@ def build_training_sample(
            league_ability_current, league_ability_target]
         + [raw_elo_current, raw_elo_target]
         + [player_height_cm, player_age]
-        + [spatial_avg_shot_distance, spatial_shots_inside_box_pct,
-           spatial_progressive_pass_pct, spatial_avg_carry_distance,
-           spatial_avg_defensive_distance]
         + team_pos_current
         + team_pos_target
         + [ability_gap, ability_gap ** 2,
@@ -855,13 +819,13 @@ def _compute_league_means(
         return {}
 
 
-_NT_MIN_MINUTES = 450  # Minimum minutes for non-transfer candidates (5 full matches)
+_NT_MIN_MINUTES = 300  # Minimum minutes for non-transfer candidates (~3.3 full matches)
 
 
 def discover_non_transfers(
     league_codes: Optional[List[str]] = None,
     seasons_back: int = 5,
-    exclude_player_ids: Optional[set] = None,
+    exclude_player_seasons: Optional[set] = None,
     min_minutes: int = _NT_MIN_MINUTES,
     target_count: Optional[int] = None,
 ) -> List[NonTransferRecord]:
@@ -872,11 +836,13 @@ def discover_non_transfers(
 
     Parameters
     ----------
-    exclude_player_ids : set[int], optional
-        Player IDs to skip (e.g. players already in transfer records) to
-        prevent data leakage between transfer and non-transfer samples.
+    exclude_player_seasons : set[tuple[int, int]], optional
+        ``(player_id, season_id)`` pairs to skip.  A player is only
+        excluded for the specific season in which they appear in the
+        transfer dataset, so the same player can still contribute
+        non-transfer samples for other season pairs.
     min_minutes : int
-        Minimum minutes played in each season. Default 450 (5 full matches).
+        Minimum minutes played in each season. Default 300 (~3.3 full matches).
     target_count : int, optional
         Target number of non-transfer samples. If the initial pass yields
         fewer candidates, a second pass with ``min_minutes // 2`` is attempted.
@@ -884,8 +850,8 @@ def discover_non_transfers(
     if league_codes is None:
         league_codes = DEFAULT_LEAGUE_CODES
 
-    if exclude_player_ids is None:
-        exclude_player_ids = set()
+    if exclude_player_seasons is None:
+        exclude_player_seasons = set()
 
     records: List[NonTransferRecord] = []
     seen: set = set()
@@ -927,7 +893,7 @@ def discover_non_transfers(
 
                 _raw_candidates += 1
 
-                if pid in exclude_player_ids:
+                if (pid, pre_sid) in exclude_player_seasons:
                     _skipped_excluded += 1
                     continue
                 if player.get("minutes_played", 0) < min_minutes:
@@ -964,21 +930,26 @@ def discover_non_transfers(
                             if t_year in relevant_years:
                                 moved = True
                                 break
-                        else:
-                            # No date on transfer — conservatively assume they moved
-                            moved = True
-                            break
+                        # else: no date — skip this entry, verify via team_id below
 
                 if moved:
                     _skipped_moved += 1
                     continue
 
-                # Verify minutes in post season
+                # Verify minutes in post season AND same team
                 post_stats = sofascore_client.get_player_stats_for_season(
                     pid, tid, post_sid
                 )
                 if post_stats.get("minutes_played", 0) < min_minutes:
                     _skipped_post_minutes += 1
+                    continue
+
+                # Cross-check: if post-season team_id differs from pre-season,
+                # the player moved despite no dated transfer record.
+                pre_team_id = player.get("team_id") or player.get("teamId") or 0
+                post_team_id = post_stats.get("team_id") or post_stats.get("teamId") or 0
+                if pre_team_id and post_team_id and pre_team_id != post_team_id:
+                    _skipped_moved += 1
                     continue
 
                 # get_league_player_stats returns "team"/"team_id"; fallbacks for safety
@@ -1019,7 +990,9 @@ def discover_non_transfers(
         extra = discover_non_transfers(
             league_codes=league_codes,
             seasons_back=seasons_back,
-            exclude_player_ids=exclude_player_ids | {r.player_id for r in records},
+            exclude_player_seasons=exclude_player_seasons | {
+                (r.player_id, r.pre_season_id) for r in records
+            },
             min_minutes=relaxed_min,
             target_count=None,  # no recursive retry
         )
@@ -1151,36 +1124,6 @@ def build_non_transfer_sample(
     except Exception:
         pass
 
-    # Spatial features — StatsBomb first, WhoScored fallback
-    nt_spatial = [0.0, 0.0, 0.0, 0.0, 0.0]
-    sf: Dict[str, float] = {}
-    try:
-        from backend.data import statsbomb_client
-        if record.player_name:
-            sf = statsbomb_client.compute_spatial_features(record.player_name)
-    except Exception:
-        pass
-
-    # Fallback: WhoScored via REEP whoscored_id bridge
-    if not sf:
-        try:
-            from backend.data import reep_registry as _reep, whoscored_client
-            _reep_data = _reep.enrich_player(record.player_id)
-            ws_id = _reep_data.get("whoscored_id")
-            if ws_id:
-                sf = whoscored_client.compute_spatial_features(ws_id)
-        except Exception:
-            pass
-
-    if sf:
-        nt_spatial = [
-            sf.get("avg_shot_distance", 0.0),
-            sf.get("shots_inside_box_pct", 0.0),
-            sf.get("progressive_pass_pct", 0.0),
-            sf.get("avg_carry_distance", 0.0),
-            sf.get("avg_defensive_distance", 0.0),
-        ]
-
     # Team-position per-90 — placeholder zeros, overwritten in
     # build_full_dataset() with averages from the training data itself.
     position = normalize_position(record.position) or "Forward"
@@ -1193,7 +1136,6 @@ def build_non_transfer_sample(
         + [team_ability, team_ability, league_ability, league_ability]
         + [raw_elo, raw_elo]
         + [nt_height_cm, nt_age]
-        + nt_spatial
         + team_pos
         + team_pos  # team_pos_target == team_pos_current
         + [0.0, 0.0, 0.0],  # interaction: gap=0, gap²=0, league_gap=0
@@ -1369,12 +1311,12 @@ def inject_team_pos_averages(
     team_pos_lookup = compute_team_position_averages(train_metadata)
 
     # Layout: [0:13] player, [13:17] abilities, [17:19] raw_elo,
-    #          [19:21] reep, [21:26] spatial, [26:39] pos_current,
-    #          [39:52] pos_target, [52:55] interactions.
-    _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4 + 2 + 2 + 5   # 26
-    _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 39
-    assert _POS_CURRENT_OFFSET == 26, f"Expected 26, got {_POS_CURRENT_OFFSET}"
-    assert _POS_TARGET_OFFSET == 39, f"Expected 39, got {_POS_TARGET_OFFSET}"
+    #          [19:21] reep, [21:34] pos_current,
+    #          [34:47] pos_target, [47:50] interactions.
+    _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4 + 2 + 2   # 21
+    _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 34
+    assert _POS_CURRENT_OFFSET == 21, f"Expected 21, got {_POS_CURRENT_OFFSET}"
+    assert _POS_TARGET_OFFSET == 34, f"Expected 34, got {_POS_TARGET_OFFSET}"
     assert _POS_TARGET_OFFSET + len(CORE_METRICS) <= FEATURE_DIM, (
         f"team_pos slots exceed FEATURE_DIM ({FEATURE_DIM})"
     )
@@ -1407,7 +1349,7 @@ def build_full_dataset(
     Returns
     -------
     (X, y, metadata)
-        X: shape (N, 55) features
+        X: shape (N, 50) features
         y: shape (N, 13) labels
         metadata: list of dicts with player_id, transfer_date, from_club, to_club, etc.
     """
@@ -2042,11 +1984,10 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 55-feature vector.
+    """Return the ordered list of feature keys matching the 50-feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
-    includes raw Elo, REEP metadata, StatsBomb spatial features, and
-    the 3 interaction features.
+    includes raw Elo, REEP metadata, and the 3 interaction features.
     """
     keys = []
     for m in CORE_METRICS:
@@ -2061,12 +2002,6 @@ def _feature_keys_list() -> List[str]:
     # REEP player metadata
     keys.append("player_height_cm")
     keys.append("player_age")
-    # StatsBomb spatial features
-    keys.append("spatial_avg_shot_distance")
-    keys.append("spatial_shots_inside_box_pct")
-    keys.append("spatial_progressive_pass_pct")
-    keys.append("spatial_avg_carry_distance")
-    keys.append("spatial_avg_defensive_distance")
     for m in CORE_METRICS:
         keys.append(f"team_pos_current_{m}")
     for m in CORE_METRICS:
@@ -2205,12 +2140,18 @@ def run_pipeline(
 
     if not skip_build:
         _report("Building dataset", "Discovering non-transfer samples…")
-        transfer_player_ids = {r.player_id for r in records}
+        # Build (player_id, season_id) exclusion pairs — a player is only
+        # excluded for the specific season in which they transferred, so
+        # they can still contribute non-transfer samples for other seasons.
+        transfer_player_seasons = set()
+        for r in records:
+            transfer_player_seasons.add((r.player_id, r.pre_transfer_season_id))
+            transfer_player_seasons.add((r.player_id, r.post_transfer_season_id))
         # Target approximately 20% of transfer samples as non-transfer controls
         nt_target = max(1, len(records) // 5)
         non_transfer_records = discover_non_transfers(
             league_codes, seasons_back,
-            exclude_player_ids=transfer_player_ids,
+            exclude_player_seasons=transfer_player_seasons,
             target_count=nt_target,
         )
         _report("Non-transfers found", f"{len(non_transfer_records)} records (target: {nt_target})")
