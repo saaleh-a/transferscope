@@ -46,8 +46,8 @@ transferscope/
 │   │   ├── worldfootballelo_client.py  # WorldFootballElo scraper (global fallback)
 │   │   ├── elo_router.py               # Routes club to correct Elo source, merges scores
 │   │   ├── reep_registry.py            # REEP register — dynamic team alias building (~45K clubs)
-│   │   ├── statsbomb_client.py         # StatsBomb open-data — shots, passes, heatmaps, spatial features
-│   │   ├── whoscored_client.py        # WhoScored spatial data — fallback when StatsBomb misses
+│   │   ├── statsbomb_client.py         # StatsBomb open-data — shots, passes, heatmaps (frontend visualization only)
+│   │   ├── whoscored_client.py        # WhoScored spatial data — frontend visualization fallback
 │   │   ├── footballdata_client.py      # football-data.co.uk — match CSVs for coefficient calibration
 │   │   └── cache.py                    # diskcache layer — all external calls go through here
 │   ├── features/
@@ -163,18 +163,19 @@ Used by `power_rankings.py` for dynamic alias building and team name augmentatio
 Cached 7 days. Graceful degradation — if unavailable, falls back to hardcoded mappings.
 
 ### StatsBomb open data (`backend/data/statsbomb_client.py`)
-Provides spatial features via the statsbombpy package.
+Provides spatial visualization data via the statsbombpy package.
 Functions: `get_player_shots()`, `get_player_passes()`, `get_player_heatmap_data()`,
 `compute_spatial_features()`. Rendered by `frontend/components/pitch_viz.py` using mplsoccer.
 Integrated into the Transfer Impact page for shot maps, pass networks, and heatmaps.
+**Not used in training/inference** — kept for frontend visualization only.
 
 ### WhoScored (`backend/data/whoscored_client.py`)
-Fallback spatial data source when StatsBomb open data doesn't cover a player.
+Fallback spatial visualization source when StatsBomb open data doesn't cover a player.
 Uses `curl_cffi` for HTTP requests with Cloudflare bypass (same as sofascore_client).
 Functions: `search_player()`, `get_player_season_stats()`, `get_player_match_history()`,
 `get_player_heatmap_data()`, `compute_spatial_features()`.
 Player ID lookup via REEP `key_whoscored` column (cross-provider bridge).
-Fallback chain: StatsBomb → WhoScored → zeros (0.0).
+**Not used in training/inference** — kept for frontend visualization only.
 
 ### football-data.co.uk (`backend/data/footballdata_client.py`)
 Provides match-level CSV data from football-data.co.uk for league profiling.
@@ -275,13 +276,13 @@ Input (group-specific feature subset)
 ```
 
 Per-group feature subsets (GROUP_FEATURE_SUBSETS):
-- Shooting: 24 features (player metrics + ability + raw Elo + height + spatial shot + team-pos + interaction)
-- Passing: 32 features
-- Dribbling: 14 features
-- Defending: 20 features
+- Shooting: 22 features (player metrics + ability + raw Elo + height + team-pos + interaction)
+- Passing: 31 features
+- Dribbling: 13 features
+- Defending: 19 features
 
-Total input feature dict: 55 keys (13 player per-90 + 4 team/league ability
-+ 2 raw Elo + 2 REEP metadata + 5 StatsBomb spatial
+Total input feature dict: 50 keys (13 player per-90 + 4 team/league ability
++ 2 raw Elo + 2 REEP metadata
 + 26 team-pos per-90 + 3 interaction: ability_gap, gap², league_gap).
 
 **Raw Elo features** (`raw_elo_current`, `raw_elo_target`) preserve absolute
@@ -291,13 +292,6 @@ vs Sporting CP ~1700 on the same scale).
 **REEP metadata** (`player_height_cm`, `player_age`) from the REEP open-data
 register (~430K players).  Height aids aerial/crossing prediction; age
 captures adaptation speed.
-
-**Spatial features** (`spatial_avg_shot_distance`,
-`spatial_shots_inside_box_pct`, `spatial_progressive_pass_pct`,
-`spatial_avg_carry_distance`, `spatial_avg_defensive_distance`) from
-StatsBomb open data, with WhoScored fallback via REEP `key_whoscored`
-bridge.  Fallback chain: StatsBomb → WhoScored → 0.0.  All pages work
-regardless of player/club coverage.
 
 Each group slices internally — external API unchanged.
 
@@ -448,24 +442,24 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Position-aware Hot or Not verdict: offensive metrics 1.5× for forwards, defensive 1.5× for defenders; ±3% thresholds; UNKNOWN when no data
 - Position normalization to 4 categories (Forward, Midfielder, Defender, Goalkeeper) via `normalize_position()` — including Sofascore single-letter codes (F/M/D/G)
 - K-means clustering for shortlist scoring: weighted Euclidean distance + 15% same-cluster bonus vs simple z-score
-- Per-group feature subsets for TF model: shooting=24, passing=32, dribbling=14, defending=20 (not 55 for all groups)
+- Per-group feature subsets for TF model: shooting=22, passing=31, dribbling=13, defending=19 (not 50 for all groups)
 - 3-step team name resolution: exact → accent-normalized → fuzzy (5-priority cascade with 502 extreme abbreviations + dynamic REEP aliases covering 51 leagues)
 - `_CLUBELO_TO_SOFASCORE` mapping (531 entries): canonicalize ClubElo names at load time
 - Polynomial normalization: `change_ra / 50.0` in PlayerAdjustmentModel (mapping -50..+50 to -1..+1)
 - Player-system-reliance scaling: style_diff scaled by player quality vs team average — prevents over-penalizing below-average players
 - Diverging butterfly metric bar chart with paper Table 1 group markers (⚡ ◈ ◎ ◆)
 - Dynamic REEP alias augmentation: _build_dynamic_aliases() cross-links ~45K clubs from REEP teams.csv at runtime, graceful degradation to hardcoded mappings
-- StatsBomb spatial data: shot maps, pass networks, heatmaps via statsbombpy + mplsoccer
-- WhoScored fallback for spatial features: when StatsBomb returns {} for a player, fall back to WhoScored via REEP key_whoscored bridge
+- StatsBomb spatial data: shot maps, pass networks, heatmaps via statsbombpy + mplsoccer (frontend visualization only, not used in training/inference)
+- WhoScored fallback for spatial visualization: when StatsBomb returns {} for a player, fall back to WhoScored via REEP key_whoscored bridge (frontend only)
 - REEP enrich_player() returns whoscored_id for cross-provider ID mapping
 - football-data.co.uk coefficient calibration: calibrate_style_coefficients() refines per-metric style weights from cross-league match data
 - Pizza/radar charts for player profiles via player_pizza.py component
 - Backtest Validator page: validates predictions against actual post-transfer outcomes
 - Diagnostics page: system health, data source status, cache info
-- 55-feature vector: 43 base + 2 raw Elo + 2 REEP metadata + 5 StatsBomb spatial + 3 interaction
+- 50-feature vector: 43 base + 2 raw Elo + 2 REEP metadata + 3 interaction
 - Raw Elo features preserve absolute cross-league strength that 0-100 normalization loses
 - TeamAdjustmentModel uses both from_ra and to_ra (2-feature) — not single source-only feature
-- Per-group architecture overrides: dribbling 64→32 + dropout 0.4 (smaller than default 128→64) to combat overfitting with 14 features / 1 target
+- Per-group architecture overrides: dribbling 64→32 + dropout 0.4 (smaller than default 128→64) to combat overfitting with 13 features / 1 target
 
 ---
 

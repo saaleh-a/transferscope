@@ -15,25 +15,20 @@ from backend.data.sofascore_client import CORE_METRICS
 from backend.models.transfer_portal import FEATURE_DIM
 
 
-# Auto-patch REEP and StatsBomb to avoid real network calls in tests.
-# These data sources are optional enrichments; tests should not depend
+# Auto-patch REEP to avoid real network calls in tests.
+# REEP is an optional enrichment; tests should not depend
 # on external network availability.
 _reep_patcher = mock.patch(
     "backend.data.reep_registry.enrich_player", return_value={}
-)
-_sb_patcher = mock.patch(
-    "backend.data.statsbomb_client.compute_spatial_features", return_value={}
 )
 
 
 def setUpModule():
     _reep_patcher.start()
-    _sb_patcher.start()
 
 
 def tearDownModule():
     _reep_patcher.stop()
-    _sb_patcher.stop()
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -589,12 +584,12 @@ class TestErrorHandling(unittest.TestCase):
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
-        # Team-position features should be zeros (indices 26-52 in new layout)
+        # Team-position features should be zeros (indices 21-47 in new layout)
         # Layout: [0:13] player, [13:17] abilities, [17:19] raw_elo,
-        #          [19:21] reep, [21:26] spatial, [26:39] pos_current,
-        #          [39:52] pos_target, [52:55] interactions.
+        #          [19:21] reep, [21:34] pos_current,
+        #          [34:47] pos_target, [47:50] interactions.
         features = result["features"]
-        team_pos_slice = features[26:52]
+        team_pos_slice = features[21:47]
         np.testing.assert_array_equal(team_pos_slice, 0.0)
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
@@ -854,7 +849,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_team_name="Target FC",
         )
 
-        # Should have all 46 keys (FEATURE_DIM)
+        # Should have all 50 keys (FEATURE_DIM)
         self.assertEqual(len(result), FEATURE_DIM)
 
         # Player metrics should reflect match log rolling values (1.5), not season agg (0.3)
@@ -892,7 +887,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_team_name="Target FC",
         )
 
-        # Should have all 46 keys (FEATURE_DIM)
+        # Should have all 50 keys (FEATURE_DIM)
         self.assertEqual(len(result), FEATURE_DIM)
 
         # Player metrics should reflect season agg (0.8)
@@ -1134,14 +1129,14 @@ class TestNonTransferExcludesTransferPlayers(unittest.TestCase):
     """Bug 6: non-transfer discovery must exclude players in transfer records."""
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
-    def test_excludes_transfer_player_ids(self, mock_client):
+    def test_excludes_transfer_player_seasons(self, mock_client):
         from backend.models.training_pipeline import discover_non_transfers
 
         mock_client.get_season_list.return_value = [
             {"id": 100, "name": "2023/2024"},
             {"id": 200, "name": "2022/2023"},
         ]
-        # Two players: 1001 (transferred) and 1002 (stayed)
+        # Two players: 1001 (transferred in this season) and 1002 (stayed)
         mock_client.get_league_player_stats.return_value = [
             {"id": 1001, "name": "Transfer Player", "position": "Forward",
              "minutes_played": 900, "team_id": 10, "team": "Club A"},
@@ -1150,11 +1145,14 @@ class TestNonTransferExcludesTransferPlayers(unittest.TestCase):
         ]
         # Neither player has a transfer in their history
         mock_client.get_player_transfer_history.return_value = []
-        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
+        mock_client.get_player_stats_for_season.return_value = {
+            **_make_mock_season_stats(900),
+            "team_id": 10,
+        }
 
-        # Exclude player 1001 (appears in transfer records)
+        # Exclude player 1001 for season 200 (appears in transfer records)
         result = discover_non_transfers(
-            ["ENG1"], seasons_back=2, exclude_player_ids={1001}
+            ["ENG1"], seasons_back=2, exclude_player_seasons={(1001, 200)}
         )
 
         # Player 1001 should be excluded; 1002 should be included
@@ -1164,7 +1162,7 @@ class TestNonTransferExcludesTransferPlayers(unittest.TestCase):
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
     def test_no_exclusion_when_none(self, mock_client):
-        """When exclude_player_ids is None, all eligible players are included."""
+        """When exclude_player_seasons is None, all eligible players are included."""
         from backend.models.training_pipeline import discover_non_transfers
 
         mock_client.get_season_list.return_value = [
@@ -1176,7 +1174,10 @@ class TestNonTransferExcludesTransferPlayers(unittest.TestCase):
              "minutes_played": 900, "team_id": 10, "team": "Club A"},
         ]
         mock_client.get_player_transfer_history.return_value = []
-        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
+        mock_client.get_player_stats_for_season.return_value = {
+            **_make_mock_season_stats(900),
+            "team_id": 10,
+        }
 
         result = discover_non_transfers(["ENG1"], seasons_back=2)
         self.assertEqual(len(result), 1)
@@ -1196,7 +1197,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertEqual(tp_keys, ref_keys)
 
     def test_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (46)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (50)."""
         from backend.models.training_pipeline import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
