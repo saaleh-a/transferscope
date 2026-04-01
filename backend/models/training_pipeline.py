@@ -581,20 +581,24 @@ def build_training_sample(
 
     if from_ranking is not None:
         team_ability_current = from_ranking.normalized_score
+        raw_elo_current = from_ranking.raw_elo
     else:
         # Fallback: use league mean
         _log.warning("No ranking for %s, using league mean", record.from_club_name)
         from_league = _find_league_code(record.from_league_id)
         snap = league_snapshots.get(from_league) if from_league else None
         team_ability_current = snap.mean_normalized if snap else 50.0
+        raw_elo_current = snap.mean_elo if snap else 1500.0
 
     if to_ranking is not None:
         team_ability_target = to_ranking.normalized_score
+        raw_elo_target = to_ranking.raw_elo
     else:
         _log.warning("No ranking for %s, using league mean", record.to_club_name)
         to_league = _find_league_code(record.to_league_id)
         snap = league_snapshots.get(to_league) if to_league else None
         team_ability_target = snap.mean_normalized if snap else 50.0
+        raw_elo_target = snap.mean_elo if snap else 1500.0
 
     # Block 3 — League ability (2 values)
     from_league_code = _find_league_code(record.from_league_id)
@@ -606,6 +610,44 @@ def build_training_sample(
     league_ability_current = from_snap.mean_normalized if from_snap else 50.0
     league_ability_target = to_snap.mean_normalized if to_snap else 50.0
 
+    # Block 3b — REEP player metadata
+    player_height_cm = 0.0
+    player_age = 0.0
+    try:
+        from backend.data import reep_registry
+        reep_data = reep_registry.enrich_player(record.player_id)
+        if reep_data.get("height_cm"):
+            player_height_cm = float(reep_data["height_cm"])
+        if reep_data.get("date_of_birth"):
+            try:
+                from datetime import datetime
+                dob = datetime.strptime(str(reep_data["date_of_birth"])[:10], "%Y-%m-%d").date()
+                player_age = (date.today() - dob).days / 365.25
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Block 3c — StatsBomb spatial features
+    spatial_avg_shot_distance = 0.0
+    spatial_shots_inside_box_pct = 0.0
+    spatial_progressive_pass_pct = 0.0
+    spatial_avg_carry_distance = 0.0
+    spatial_avg_defensive_distance = 0.0
+    try:
+        from backend.data import statsbomb_client
+        player_name = getattr(record, "player_name", "")
+        if player_name:
+            sf = statsbomb_client.compute_spatial_features(player_name)
+            if sf:
+                spatial_avg_shot_distance = sf.get("avg_shot_distance", 0.0)
+                spatial_shots_inside_box_pct = sf.get("shots_inside_box_pct", 0.0)
+                spatial_progressive_pass_pct = sf.get("progressive_pass_pct", 0.0)
+                spatial_avg_carry_distance = sf.get("avg_carry_distance", 0.0)
+                spatial_avg_defensive_distance = sf.get("avg_defensive_distance", 0.0)
+    except Exception:
+        pass
+
     # Block 4+5 — Team-position per-90 (13 values each, placeholder zeros)
     # These are overwritten in build_full_dataset() with averages computed
     # from the training samples themselves — zero API calls needed here.
@@ -613,12 +655,17 @@ def build_training_sample(
     team_pos_current = [0.0] * len(CORE_METRICS)
     team_pos_target = [0.0] * len(CORE_METRICS)
 
-    # Assemble the 46-feature vector (43 base + 3 interaction)
+    # Assemble the 55-feature vector (43 base + 2 raw elo + 2 reep + 5 spatial + 3 interaction)
     ability_gap = team_ability_target - team_ability_current
     features = np.array(
         player_metrics
         + [team_ability_current, team_ability_target,
            league_ability_current, league_ability_target]
+        + [raw_elo_current, raw_elo_target]
+        + [player_height_cm, player_age]
+        + [spatial_avg_shot_distance, spatial_shots_inside_box_pct,
+           spatial_progressive_pass_pct, spatial_avg_carry_distance,
+           spatial_avg_defensive_distance]
         + team_pos_current
         + team_pos_target
         + [ability_gap, ability_gap ** 2,
@@ -1062,14 +1109,51 @@ def build_non_transfer_sample(
     ranking = power_rankings.get_team_ranking(record.club_name)
     if ranking is not None:
         team_ability = ranking.normalized_score
+        raw_elo = ranking.raw_elo
     else:
         lc = _find_league_code(record.league_id)
         snap = league_snapshots.get(lc) if lc else None
         team_ability = snap.mean_normalized if snap else 50.0
+        raw_elo = snap.mean_elo if snap else 1500.0
 
     league_code = _find_league_code(record.league_id)
     league_snap = league_snapshots.get(league_code) if league_code else None
     league_ability = league_snap.mean_normalized if league_snap else 50.0
+
+    # REEP player metadata
+    nt_height_cm = 0.0
+    nt_age = 0.0
+    try:
+        from backend.data import reep_registry
+        reep_data = reep_registry.enrich_player(record.player_id)
+        if reep_data.get("height_cm"):
+            nt_height_cm = float(reep_data["height_cm"])
+        if reep_data.get("date_of_birth"):
+            try:
+                from datetime import datetime
+                dob = datetime.strptime(str(reep_data["date_of_birth"])[:10], "%Y-%m-%d").date()
+                nt_age = (date.today() - dob).days / 365.25
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # StatsBomb spatial features
+    nt_spatial = [0.0, 0.0, 0.0, 0.0, 0.0]
+    try:
+        from backend.data import statsbomb_client
+        if record.player_name:
+            sf = statsbomb_client.compute_spatial_features(record.player_name)
+            if sf:
+                nt_spatial = [
+                    sf.get("avg_shot_distance", 0.0),
+                    sf.get("shots_inside_box_pct", 0.0),
+                    sf.get("progressive_pass_pct", 0.0),
+                    sf.get("avg_carry_distance", 0.0),
+                    sf.get("avg_defensive_distance", 0.0),
+                ]
+    except Exception:
+        pass
 
     # Team-position per-90 — placeholder zeros, overwritten in
     # build_full_dataset() with averages from the training data itself.
@@ -1081,6 +1165,9 @@ def build_non_transfer_sample(
     features = np.array(
         player_metrics
         + [team_ability, team_ability, league_ability, league_ability]
+        + [raw_elo, raw_elo]
+        + [nt_height_cm, nt_age]
+        + nt_spatial
         + team_pos
         + team_pos  # team_pos_target == team_pos_current
         + [0.0, 0.0, 0.0],  # interaction: gap=0, gap²=0, league_gap=0
@@ -1255,12 +1342,13 @@ def inject_team_pos_averages(
     """
     team_pos_lookup = compute_team_position_averages(train_metadata)
 
-    # Layout: [0:13] player, [13:17] abilities, [17:30] pos_current,
-    #          [30:43] pos_target, [43:46] interactions.
-    _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4   # 17
-    _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 30
-    assert _POS_CURRENT_OFFSET == 17, f"Expected 17, got {_POS_CURRENT_OFFSET}"
-    assert _POS_TARGET_OFFSET == 30, f"Expected 30, got {_POS_TARGET_OFFSET}"
+    # Layout: [0:13] player, [13:17] abilities, [17:19] raw_elo,
+    #          [19:21] reep, [21:26] spatial, [26:39] pos_current,
+    #          [39:52] pos_target, [52:55] interactions.
+    _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4 + 2 + 2 + 5   # 26
+    _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 39
+    assert _POS_CURRENT_OFFSET == 26, f"Expected 26, got {_POS_CURRENT_OFFSET}"
+    assert _POS_TARGET_OFFSET == 39, f"Expected 39, got {_POS_TARGET_OFFSET}"
     assert _POS_TARGET_OFFSET + len(CORE_METRICS) <= FEATURE_DIM, (
         f"team_pos slots exceed FEATURE_DIM ({FEATURE_DIM})"
     )
@@ -1293,7 +1381,7 @@ def build_full_dataset(
     Returns
     -------
     (X, y, metadata)
-        X: shape (N, 46) features
+        X: shape (N, 55) features
         y: shape (N, 13) labels
         metadata: list of dicts with player_id, transfer_date, from_club, to_club, etc.
     """
@@ -1928,11 +2016,11 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 46-feature vector.
+    """Return the ordered list of feature keys matching the 55-feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
-    includes the 3 interaction features (ability_gap, gap², league_gap)
-    appended after the base 43 features.
+    includes raw Elo, REEP metadata, StatsBomb spatial features, and
+    the 3 interaction features.
     """
     keys = []
     for m in CORE_METRICS:
@@ -1941,6 +2029,18 @@ def _feature_keys_list() -> List[str]:
         "team_ability_current", "team_ability_target",
         "league_ability_current", "league_ability_target",
     ])
+    # Raw Elo scores (absolute scale)
+    keys.append("raw_elo_current")
+    keys.append("raw_elo_target")
+    # REEP player metadata
+    keys.append("player_height_cm")
+    keys.append("player_age")
+    # StatsBomb spatial features
+    keys.append("spatial_avg_shot_distance")
+    keys.append("spatial_shots_inside_box_pct")
+    keys.append("spatial_progressive_pass_pct")
+    keys.append("spatial_avg_carry_distance")
+    keys.append("spatial_avg_defensive_distance")
     for m in CORE_METRICS:
         keys.append(f"team_pos_current_{m}")
     for m in CORE_METRICS:

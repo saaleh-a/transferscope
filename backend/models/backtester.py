@@ -30,11 +30,11 @@ _MODELS_DIR = os.path.join(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 46-feature vector.
+    """Return the ordered list of feature keys matching the 55-feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
-    includes the 3 interaction features (ability_gap, gap², league_gap)
-    appended after the base 43 features.
+    includes raw Elo, REEP metadata, StatsBomb spatial features, and
+    the 3 interaction features.
     """
     keys = []
     for m in CORE_METRICS:
@@ -43,6 +43,18 @@ def _feature_keys_list() -> List[str]:
         "team_ability_current", "team_ability_target",
         "league_ability_current", "league_ability_target",
     ])
+    # Raw Elo scores (absolute scale)
+    keys.append("raw_elo_current")
+    keys.append("raw_elo_target")
+    # REEP player metadata
+    keys.append("player_height_cm")
+    keys.append("player_age")
+    # StatsBomb spatial features
+    keys.append("spatial_avg_shot_distance")
+    keys.append("spatial_shots_inside_box_pct")
+    keys.append("spatial_progressive_pass_pct")
+    keys.append("spatial_avg_carry_distance")
+    keys.append("spatial_avg_defensive_distance")
     for m in CORE_METRICS:
         keys.append(f"team_pos_current_{m}")
     for m in CORE_METRICS:

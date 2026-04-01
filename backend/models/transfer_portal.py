@@ -99,6 +99,11 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "team_ability_target",
         "league_ability_current",
         "league_ability_target",
+        "raw_elo_current",
+        "raw_elo_target",
+        "player_height_cm",
+        "spatial_avg_shot_distance",
+        "spatial_shots_inside_box_pct",
         "team_pos_current_expected_goals",
         "team_pos_current_shots",
         "team_pos_current_touches_in_opposition_box",
@@ -123,6 +128,10 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "team_ability_target",
         "league_ability_current",
         "league_ability_target",
+        "raw_elo_current",
+        "raw_elo_target",
+        "player_height_cm",
+        "spatial_progressive_pass_pct",
         "team_pos_current_expected_assists",
         "team_pos_current_successful_crosses",
         "team_pos_current_successful_passes",
@@ -147,6 +156,10 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "team_ability_target",
         "league_ability_current",
         "league_ability_target",
+        "raw_elo_current",
+        "raw_elo_target",
+        "player_age",
+        "spatial_avg_carry_distance",
         "team_pos_current_successful_dribbles",
         "team_pos_target_successful_dribbles",
         "interaction_ability_gap",
@@ -161,6 +174,10 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "team_ability_target",
         "league_ability_current",
         "league_ability_target",
+        "raw_elo_current",
+        "raw_elo_target",
+        "player_height_cm",
+        "spatial_avg_defensive_distance",
         "team_pos_current_clearances",
         "team_pos_current_interceptions",
         "team_pos_current_possession_won_final_3rd",
@@ -696,11 +713,23 @@ def _feature_keys() -> List[str]:
     # Player per-90 (current club)
     for m in CORE_METRICS:
         keys.append(f"player_{m}")
-    # Team abilities
+    # Team abilities (normalized 0-100)
     keys.append("team_ability_current")
     keys.append("team_ability_target")
     keys.append("league_ability_current")
     keys.append("league_ability_target")
+    # Raw Elo scores (absolute scale, preserves cross-league strength)
+    keys.append("raw_elo_current")
+    keys.append("raw_elo_target")
+    # REEP player metadata
+    keys.append("player_height_cm")
+    keys.append("player_age")
+    # StatsBomb spatial features
+    keys.append("spatial_avg_shot_distance")
+    keys.append("spatial_shots_inside_box_pct")
+    keys.append("spatial_progressive_pass_pct")
+    keys.append("spatial_avg_carry_distance")
+    keys.append("spatial_avg_defensive_distance")
     # Team-position per-90 (current)
     for m in CORE_METRICS:
         keys.append(f"team_pos_current_{m}")
@@ -722,11 +751,31 @@ def build_feature_dict(
     league_ability_target: float,
     team_pos_current: Dict[str, float],
     team_pos_target: Dict[str, float],
+    raw_elo_current: float = 1500.0,
+    raw_elo_target: float = 1500.0,
+    player_height_cm: float = 0.0,
+    player_age: float = 0.0,
+    spatial_features: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """Assemble a feature dict from components, ready for predict().
 
     This is the convenience function that maps the conceptual inputs
     to the flat feature vector the model expects.
+
+    Parameters
+    ----------
+    raw_elo_current / raw_elo_target : float
+        Raw Elo scores (absolute scale).  Defaults to 1500.0 (neutral)
+        when unavailable.  These preserve cross-league strength that
+        normalized scores lose.
+    player_height_cm : float
+        Player height in cm from REEP.  0.0 when unavailable.
+    player_age : float
+        Player age in years from REEP.  0.0 when unavailable.
+    spatial_features : dict, optional
+        StatsBomb spatial features.  Keys: ``avg_shot_distance``,
+        ``shots_inside_box_pct``, ``progressive_pass_pct``,
+        ``avg_carry_distance``, ``avg_defensive_distance``.
     """
     fd: Dict[str, float] = {}
 
@@ -738,6 +787,22 @@ def build_feature_dict(
     fd["team_ability_target"] = team_ability_target
     fd["league_ability_current"] = league_ability_current
     fd["league_ability_target"] = league_ability_target
+
+    # Raw Elo — preserves absolute league strength across sources
+    fd["raw_elo_current"] = raw_elo_current
+    fd["raw_elo_target"] = raw_elo_target
+
+    # REEP player metadata
+    fd["player_height_cm"] = player_height_cm
+    fd["player_age"] = player_age
+
+    # StatsBomb spatial features (0.0 when unavailable)
+    sf = spatial_features or {}
+    fd["spatial_avg_shot_distance"] = sf.get("avg_shot_distance", 0.0)
+    fd["spatial_shots_inside_box_pct"] = sf.get("shots_inside_box_pct", 0.0)
+    fd["spatial_progressive_pass_pct"] = sf.get("progressive_pass_pct", 0.0)
+    fd["spatial_avg_carry_distance"] = sf.get("avg_carry_distance", 0.0)
+    fd["spatial_avg_defensive_distance"] = sf.get("avg_defensive_distance", 0.0)
 
     for m in CORE_METRICS:
         v = team_pos_current.get(m)
@@ -755,7 +820,7 @@ def build_feature_dict(
     return fd
 
 
-FEATURE_DIM = len(_feature_keys())  # 46 (43 base + 3 interaction)
+FEATURE_DIM = len(_feature_keys())  # 55 (43 base + 2 raw elo + 2 reep + 5 spatial + 3 interaction)
 
 
 # ── Improvement 9: Inference-time feature builder ────────────────────────────
@@ -770,6 +835,7 @@ def build_feature_dict_from_player(
     position: str,
     target_team_name: str = "",
     query_date: Optional[date] = None,
+    player_name: str = "",
 ) -> Dict[str, float]:
     """Build a full feature dict for inference by fetching live data.
 
@@ -778,7 +844,9 @@ def build_feature_dict_from_player(
        Falls back to season aggregate if logs unavailable.
     2. Get power rankings for source (player's current club) and target.
     3. Get team-position averages for both clubs.
-    4. Call build_feature_dict() with assembled components.
+    4. Fetch REEP player metadata (height, age).
+    5. Fetch StatsBomb spatial features (when available).
+    6. Call build_feature_dict() with assembled components.
 
     Parameters
     ----------
@@ -786,6 +854,8 @@ def build_feature_dict_from_player(
         Display name of the target club (e.g. "Arsenal") used for power
         ranking lookup.  Preferred over resolving from *target_club_id*
         via search.
+    player_name : str
+        Player display name for StatsBomb spatial feature lookup.
     """
     from backend.data import sofascore_client
     from backend.data.sofascore_client import normalize_position
@@ -846,11 +916,13 @@ def build_feature_dict_from_player(
     src_ranking = power_rankings.get_team_ranking(source_team_name) if source_team_name else None
     team_ability_current = src_ranking.normalized_score if src_ranking else 50.0
     league_ability_current = src_ranking.league_mean_normalized if src_ranking else 50.0
+    raw_elo_current = src_ranking.raw_elo if src_ranking else 1500.0
 
     # Target rankings
     tgt_ranking = power_rankings.get_team_ranking(target_team_name) if target_team_name else None
     team_ability_target = tgt_ranking.normalized_score if tgt_ranking else 50.0
     league_ability_target = tgt_ranking.league_mean_normalized if tgt_ranking else 50.0
+    raw_elo_target = tgt_ranking.raw_elo if tgt_ranking else 1500.0
 
     # Step 3: Team-position averages
     try:
@@ -867,7 +939,37 @@ def build_feature_dict_from_player(
     except Exception:
         tgt_pos_avg = {m: 0.0 for m in CORE_METRICS}
 
-    # Step 4: Assemble via build_feature_dict
+    # Step 4: REEP player metadata
+    player_height_cm = 0.0
+    player_age = 0.0
+    try:
+        from backend.data import reep_registry
+        reep_data = reep_registry.enrich_player(player_id)
+        if reep_data.get("height_cm"):
+            player_height_cm = float(reep_data["height_cm"])
+        if reep_data.get("date_of_birth"):
+            try:
+                from datetime import datetime
+                dob = datetime.strptime(str(reep_data["date_of_birth"])[:10], "%Y-%m-%d").date()
+                ref = query_date or date.today()
+                player_age = (ref - dob).days / 365.25
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Step 5: StatsBomb spatial features
+    spatial_features: Optional[Dict[str, float]] = None
+    if player_name:
+        try:
+            from backend.data import statsbomb_client
+            sf = statsbomb_client.compute_spatial_features(player_name)
+            if sf:
+                spatial_features = sf
+        except Exception:
+            pass
+
+    # Step 6: Assemble via build_feature_dict
     return build_feature_dict(
         player_per90=player_per90,
         team_ability_current=team_ability_current,
@@ -876,4 +978,9 @@ def build_feature_dict_from_player(
         league_ability_target=league_ability_target,
         team_pos_current=src_pos_avg,
         team_pos_target=tgt_pos_avg,
+        raw_elo_current=raw_elo_current,
+        raw_elo_target=raw_elo_target,
+        player_height_cm=player_height_cm,
+        player_age=player_age,
+        spatial_features=spatial_features,
     )
