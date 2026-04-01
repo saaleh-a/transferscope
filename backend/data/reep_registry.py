@@ -4,11 +4,11 @@ Uses the `withqwerty/reep` open-data register to map identifiers across
 data providers (Sofascore, ClubElo, Transfermarkt, FBref, etc.).
 
 Data files:
-    - teams.csv  (~45,000 clubs, keyed by Wikidata QID)
-    - people.csv (~430,000 players/coaches, keyed by Wikidata QID)
+    - data/reep/teams.csv  (~45,000 clubs, keyed by Wikidata QID)
+    - data/reep/people.csv (~430,000 players/coaches, keyed by Wikidata QID)
 
-Both files are downloaded once from GitHub and cached locally via
-*diskcache* with a 7-day TTL.  Subsequent imports reuse the cache.
+Both files are bundled in the repository (tracked via Git LFS) and loaded
+from disk on first access, then cached in-memory for the process lifetime.
 
 Public API
 ----------
@@ -33,26 +33,22 @@ enrich_player(sofascore_player_id)
 
 from __future__ import annotations
 
-import io
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-import requests as _requests_lib
-
-from backend.data import cache
 
 _log = logging.getLogger(__name__)
 
-_TEAMS_URL = (
-    "https://raw.githubusercontent.com/withqwerty/reep/main/data/teams.csv"
+# ── Local CSV paths (bundled in data/reep/) ──────────────────────────────────
+_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "data",
+    "reep",
 )
-_PEOPLE_URL = (
-    "https://raw.githubusercontent.com/withqwerty/reep/main/data/people.csv"
-)
-
-# Cache TTL — 7 days (same as player stats).
-_CACHE_TTL = 86400 * 7
+_TEAMS_PATH = os.path.join(_DATA_DIR, "teams.csv")
+_PEOPLE_PATH = os.path.join(_DATA_DIR, "people.csv")
 
 # ── In-memory singletons (populated on first access) ────────────────────────
 _teams_df_mem: Optional[pd.DataFrame] = None
@@ -74,29 +70,15 @@ def clear_memory_cache() -> None:
     _clubelo_map_mem = None
 
 
-def _fetch_csv(url: str, cache_key: str) -> Optional[pd.DataFrame]:
-    """Download a CSV from *url*, cache the raw text, return a DataFrame."""
-    cached = cache.get(cache_key, max_age=_CACHE_TTL)
-    if cached is not None:
-        try:
-            return pd.read_csv(io.StringIO(cached), low_memory=False)
-        except Exception:
-            pass  # stale / corrupt — refetch
-
-    _log.info("REEP: downloading %s …", url)
-    try:
-        resp = _requests_lib.get(url, timeout=30)
-        resp.raise_for_status()
-        raw = resp.text
-    except Exception as exc:
-        _log.warning("REEP download failed (%s): %s", url, exc)
+def _load_csv(path: str) -> Optional[pd.DataFrame]:
+    """Read a local CSV file and return a DataFrame."""
+    if not os.path.isfile(path):
+        _log.warning("REEP file not found: %s", path)
         return None
-
-    cache.set(cache_key, raw)
     try:
-        return pd.read_csv(io.StringIO(raw), low_memory=False)
+        return pd.read_csv(path, low_memory=False)
     except Exception as exc:
-        _log.warning("REEP CSV parse failed (%s): %s", url, exc)
+        _log.warning("REEP CSV parse failed (%s): %s", path, exc)
         return None
 
 
@@ -108,7 +90,7 @@ def get_teams_df() -> Optional[pd.DataFrame]:
     global _teams_df_mem
     if _teams_df_mem is not None:
         return _teams_df_mem
-    df = _fetch_csv(_TEAMS_URL, "reep:teams_csv")
+    df = _load_csv(_TEAMS_PATH)
     if df is not None:
         _teams_df_mem = df
     return df
@@ -119,7 +101,7 @@ def get_people_df() -> Optional[pd.DataFrame]:
     global _people_df_mem
     if _people_df_mem is not None:
         return _people_df_mem
-    df = _fetch_csv(_PEOPLE_URL, "reep:people_csv")
+    df = _load_csv(_PEOPLE_PATH)
     if df is not None:
         _people_df_mem = df
     return df
@@ -168,7 +150,8 @@ def sofascore_team_aliases(sofascore_id: int) -> List[str]:
     if df is None:
         return []
 
-    mask = df["key_sofascore"].astype(str) == str(sofascore_id)
+    sid_col = pd.to_numeric(df["key_sofascore"], errors="coerce")
+    mask = sid_col == int(sofascore_id)
     rows = df.loc[mask]
     if rows.empty:
         return []
@@ -185,18 +168,33 @@ def sofascore_team_aliases(sofascore_id: int) -> List[str]:
 
 
 def _build_people_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
-    """Build an O(1) lookup dict keyed by sofascore player ID (str)."""
+    """Build an O(1) lookup dict keyed by sofascore player ID (str).
+
+    Skips rows where ``key_sofascore`` is missing or non-numeric.
+    Uses vectorised pandas operations for speed (~430k rows in <1s).
+    """
+    subset = df[df["key_sofascore"].notna()].copy()
+    # Coerce non-numeric IDs (e.g. 'francesco-conti') to NaN, then drop.
+    subset["_sid"] = pd.to_numeric(subset["key_sofascore"], errors="coerce")
+    subset = subset[subset["_sid"].notna()]
+    subset["_sid"] = subset["_sid"].astype(int).astype(str)
+
     index: Dict[str, Dict[str, Any]] = {}
-    for _, row in df.iterrows():
-        sid = row.get("key_sofascore")
-        if pd.notna(sid):
-            index[str(int(float(sid)))] = {
-                "nationality": row.get("nationality") if pd.notna(row.get("nationality")) else None,
-                "height_cm": _safe_int(row.get("height_cm")) if pd.notna(row.get("height_cm")) else None,
-                "date_of_birth": row.get("date_of_birth") if pd.notna(row.get("date_of_birth")) else None,
-                "position": row.get("position") if pd.notna(row.get("position")) else None,
-                "whoscored_id": _safe_int(row.get("key_whoscored")) if pd.notna(row.get("key_whoscored")) else None,
-            }
+    for sid, nat, hcm, dob, pos, ws in zip(
+        subset["_sid"],
+        subset["nationality"],
+        subset["height_cm"],
+        subset["date_of_birth"],
+        subset["position"],
+        subset["key_whoscored"],
+    ):
+        index[sid] = {
+            "nationality": nat if pd.notna(nat) else None,
+            "height_cm": _safe_int(hcm) if pd.notna(hcm) else None,
+            "date_of_birth": dob if pd.notna(dob) else None,
+            "position": pos if pd.notna(pos) else None,
+            "whoscored_id": _safe_int(ws) if pd.notna(ws) else None,
+        }
     return index
 
 
