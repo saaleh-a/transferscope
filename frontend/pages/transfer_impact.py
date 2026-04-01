@@ -91,11 +91,11 @@ def render():
     def _player_label(p: dict) -> str:
         parts = [p.get("name", "Unknown")]
         if p.get("age"):
-            parts.append(f"Age {p.get('age')}")
+            parts.append(f"Age {p['age']}")
         if p.get("nationality"):
-            parts.append(p.get("nationality"))
+            parts.append(p["nationality"])
         if p.get("team_name"):
-            parts.append(p.get("team_name"))
+            parts.append(p["team_name"])
         return " · ".join(parts)
 
     player_options = {_player_label(p): p for p in search_results}
