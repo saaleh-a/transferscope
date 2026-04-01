@@ -9,6 +9,7 @@ All external calls are routed through backend.data.cache.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote as _url_quote
@@ -175,11 +176,13 @@ _HEADERS: dict[str, str] = {
     "Referer": "https://www.sofascore.com/",
 }
 
-_REQUEST_TIMEOUT = 10  # seconds
-_MAX_RETRIES = 3  # total attempts for retryable errors
-_RETRY_BASE_DELAY = 0.5  # seconds — doubles each attempt (0.5, 1, 2)
+_REQUEST_TIMEOUT = int(os.environ.get("SOFASCORE_REQUEST_TIMEOUT", "10"))
+_MAX_RETRIES = int(os.environ.get("SOFASCORE_MAX_RETRIES", "3"))
+_RETRY_BASE_DELAY = float(os.environ.get("SOFASCORE_RETRY_BASE_DELAY", "0.5"))
 _RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
-_DEFAULT_INTER_REQUEST_DELAY = 0.1  # seconds between API calls (base)
+_DEFAULT_INTER_REQUEST_DELAY = float(
+    os.environ.get("SOFASCORE_INTER_REQUEST_DELAY", "0.1")
+)
 
 # ── Adaptive rate-limiting state ─────────────────────────────────────────────
 # When 403/429 responses are encountered, the inter-request delay is
@@ -187,8 +190,10 @@ _DEFAULT_INTER_REQUEST_DELAY = 0.1  # seconds between API calls (base)
 # caller needing to manually adjust --api-delay.
 _adaptive_delay: float = _DEFAULT_INTER_REQUEST_DELAY
 _adaptive_delay_floor: float = _DEFAULT_INTER_REQUEST_DELAY
-_ADAPTIVE_DELAY_MULTIPLIER = 2.0  # factor to increase on 403/429
-_ADAPTIVE_DELAY_MAX = 4.0  # ceiling in seconds
+_ADAPTIVE_DELAY_MULTIPLIER = float(
+    os.environ.get("SOFASCORE_ADAPTIVE_DELAY_MULTIPLIER", "2.0")
+)
+_ADAPTIVE_DELAY_MAX = float(os.environ.get("SOFASCORE_ADAPTIVE_DELAY_MAX", "4.0"))
 _has_made_request = False  # skip delay before the very first request
 
 
