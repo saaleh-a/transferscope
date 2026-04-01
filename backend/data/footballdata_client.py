@@ -120,7 +120,7 @@ def fetch_season(
         _log.warning("football-data.co.uk download failed: %s", exc)
         return None
 
-    cache.set(cache_key, raw, ttl=_CACHE_TTL)
+    cache.set(cache_key, raw)
     try:
         return pd.read_csv(io.StringIO(raw), encoding="utf-8")
     except Exception as exc:

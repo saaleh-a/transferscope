@@ -75,7 +75,7 @@ def _fetch_csv(url: str, cache_key: str) -> Optional[pd.DataFrame]:
         _log.warning("REEP download failed (%s): %s", url, exc)
         return None
 
-    cache.set(cache_key, raw, ttl=_CACHE_TTL)
+    cache.set(cache_key, raw)
     try:
         return pd.read_csv(io.StringIO(raw), low_memory=False)
     except Exception as exc:
