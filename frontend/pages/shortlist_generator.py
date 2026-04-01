@@ -11,6 +11,7 @@ Now supports multi-league search via Sofascore tournament stats.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Dict, List, Optional
 
@@ -40,7 +41,7 @@ _log = logging.getLogger(__name__)
 # Sofascore returns 403/429 after rapid sequential requests.  A small delay
 # between leagues improves success rate.  The adaptive backoff in
 # sofascore_client will increase the delay automatically if needed.
-_INTER_LEAGUE_DELAY = 0.5
+_INTER_LEAGUE_DELAY = float(os.environ.get("SOFASCORE_INTER_LEAGUE_DELAY", "0.5"))
 
 from frontend.constants import METRIC_LABELS as _LABELS
 
