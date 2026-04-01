@@ -199,7 +199,7 @@ _MODELS_DIR = os.path.join(
 
 # Per-group architecture overrides.  Groups not listed use the defaults
 # (hidden_units=[128, 64], dropout=0.3).  The dribbling group uses a
-# smaller network with higher dropout to combat overfitting (10 features,
+# smaller network with higher dropout to combat overfitting (14 features,
 # 1 target — the default 128→64 architecture is over-parameterised).
 _GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "dribbling": {"hidden_units": [64, 32], "dropout": 0.4},
