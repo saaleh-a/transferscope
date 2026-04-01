@@ -1129,14 +1129,14 @@ class TestNonTransferExcludesTransferPlayers(unittest.TestCase):
     """Bug 6: non-transfer discovery must exclude players in transfer records."""
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
-    def test_excludes_transfer_player_ids(self, mock_client):
+    def test_excludes_transfer_player_seasons(self, mock_client):
         from backend.models.training_pipeline import discover_non_transfers
 
         mock_client.get_season_list.return_value = [
             {"id": 100, "name": "2023/2024"},
             {"id": 200, "name": "2022/2023"},
         ]
-        # Two players: 1001 (transferred) and 1002 (stayed)
+        # Two players: 1001 (transferred in this season) and 1002 (stayed)
         mock_client.get_league_player_stats.return_value = [
             {"id": 1001, "name": "Transfer Player", "position": "Forward",
              "minutes_played": 900, "team_id": 10, "team": "Club A"},
@@ -1145,11 +1145,13 @@ class TestNonTransferExcludesTransferPlayers(unittest.TestCase):
         ]
         # Neither player has a transfer in their history
         mock_client.get_player_transfer_history.return_value = []
-        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
+        mock_client.get_player_stats_for_season.return_value = {
+            **_make_mock_season_stats(900), "team_id": 10,
+        }
 
-        # Exclude player 1001 (appears in transfer records)
+        # Exclude player 1001 for pre_season_id=200 (appears in transfer records)
         result = discover_non_transfers(
-            ["ENG1"], seasons_back=2, exclude_player_ids={1001}
+            ["ENG1"], seasons_back=2, exclude_player_seasons={(1001, 200)}
         )
 
         # Player 1001 should be excluded; 1002 should be included
@@ -1159,7 +1161,7 @@ class TestNonTransferExcludesTransferPlayers(unittest.TestCase):
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
     def test_no_exclusion_when_none(self, mock_client):
-        """When exclude_player_ids is None, all eligible players are included."""
+        """When exclude_player_seasons is None, all eligible players are included."""
         from backend.models.training_pipeline import discover_non_transfers
 
         mock_client.get_season_list.return_value = [
@@ -1171,7 +1173,9 @@ class TestNonTransferExcludesTransferPlayers(unittest.TestCase):
              "minutes_played": 900, "team_id": 10, "team": "Club A"},
         ]
         mock_client.get_player_transfer_history.return_value = []
-        mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
+        mock_client.get_player_stats_for_season.return_value = {
+            **_make_mock_season_stats(900), "team_id": 10,
+        }
 
         result = discover_non_transfers(["ENG1"], seasons_back=2)
         self.assertEqual(len(result), 1)

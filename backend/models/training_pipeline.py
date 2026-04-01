@@ -819,13 +819,13 @@ def _compute_league_means(
         return {}
 
 
-_NT_MIN_MINUTES = 450  # Minimum minutes for non-transfer candidates (5 full matches)
+_NT_MIN_MINUTES = 300  # Minimum minutes for non-transfer candidates (~3.3 full matches)
 
 
 def discover_non_transfers(
     league_codes: Optional[List[str]] = None,
     seasons_back: int = 5,
-    exclude_player_ids: Optional[set] = None,
+    exclude_player_seasons: Optional[set] = None,
     min_minutes: int = _NT_MIN_MINUTES,
     target_count: Optional[int] = None,
 ) -> List[NonTransferRecord]:
@@ -836,11 +836,13 @@ def discover_non_transfers(
 
     Parameters
     ----------
-    exclude_player_ids : set[int], optional
-        Player IDs to skip (e.g. players already in transfer records) to
-        prevent data leakage between transfer and non-transfer samples.
+    exclude_player_seasons : set[tuple[int, int]], optional
+        ``(player_id, season_id)`` pairs to skip.  A player is only
+        excluded for the specific season in which they appear in the
+        transfer dataset, so the same player can still contribute
+        non-transfer samples for other season pairs.
     min_minutes : int
-        Minimum minutes played in each season. Default 450 (5 full matches).
+        Minimum minutes played in each season. Default 300 (~3.3 full matches).
     target_count : int, optional
         Target number of non-transfer samples. If the initial pass yields
         fewer candidates, a second pass with ``min_minutes // 2`` is attempted.
@@ -848,8 +850,8 @@ def discover_non_transfers(
     if league_codes is None:
         league_codes = DEFAULT_LEAGUE_CODES
 
-    if exclude_player_ids is None:
-        exclude_player_ids = set()
+    if exclude_player_seasons is None:
+        exclude_player_seasons = set()
 
     records: List[NonTransferRecord] = []
     seen: set = set()
@@ -891,7 +893,7 @@ def discover_non_transfers(
 
                 _raw_candidates += 1
 
-                if pid in exclude_player_ids:
+                if (pid, pre_sid) in exclude_player_seasons:
                     _skipped_excluded += 1
                     continue
                 if player.get("minutes_played", 0) < min_minutes:
@@ -928,21 +930,26 @@ def discover_non_transfers(
                             if t_year in relevant_years:
                                 moved = True
                                 break
-                        else:
-                            # No date on transfer — conservatively assume they moved
-                            moved = True
-                            break
+                        # else: no date — skip this entry, verify via team_id below
 
                 if moved:
                     _skipped_moved += 1
                     continue
 
-                # Verify minutes in post season
+                # Verify minutes in post season AND same team
                 post_stats = sofascore_client.get_player_stats_for_season(
                     pid, tid, post_sid
                 )
                 if post_stats.get("minutes_played", 0) < min_minutes:
                     _skipped_post_minutes += 1
+                    continue
+
+                # Cross-check: if post-season team_id differs from pre-season,
+                # the player moved despite no dated transfer record.
+                pre_team_id = player.get("team_id") or player.get("teamId") or 0
+                post_team_id = post_stats.get("team_id") or post_stats.get("teamId") or 0
+                if pre_team_id and post_team_id and pre_team_id != post_team_id:
+                    _skipped_moved += 1
                     continue
 
                 # get_league_player_stats returns "team"/"team_id"; fallbacks for safety
@@ -983,7 +990,9 @@ def discover_non_transfers(
         extra = discover_non_transfers(
             league_codes=league_codes,
             seasons_back=seasons_back,
-            exclude_player_ids=exclude_player_ids | {r.player_id for r in records},
+            exclude_player_seasons=exclude_player_seasons | {
+                (r.player_id, r.pre_season_id) for r in records
+            },
             min_minutes=relaxed_min,
             target_count=None,  # no recursive retry
         )
@@ -2131,12 +2140,18 @@ def run_pipeline(
 
     if not skip_build:
         _report("Building dataset", "Discovering non-transfer samples…")
-        transfer_player_ids = {r.player_id for r in records}
+        # Build (player_id, season_id) exclusion pairs — a player is only
+        # excluded for the specific season in which they transferred, so
+        # they can still contribute non-transfer samples for other seasons.
+        transfer_player_seasons = set()
+        for r in records:
+            transfer_player_seasons.add((r.player_id, r.pre_transfer_season_id))
+            transfer_player_seasons.add((r.player_id, r.post_transfer_season_id))
         # Target approximately 20% of transfer samples as non-transfer controls
         nt_target = max(1, len(records) // 5)
         non_transfer_records = discover_non_transfers(
             league_codes, seasons_back,
-            exclude_player_ids=transfer_player_ids,
+            exclude_player_seasons=transfer_player_seasons,
             target_count=nt_target,
         )
         _report("Non-transfers found", f"{len(non_transfer_records)} records (target: {nt_target})")
