@@ -1350,7 +1350,7 @@ def build_full_dataset(
     Returns
     -------
     (X, y, metadata)
-        X: shape (N, 55) features
+        X: shape (N, 50) features
         y: shape (N, 13) labels
         metadata: list of dicts with player_id, transfer_date, from_club, to_club, etc.
     """
