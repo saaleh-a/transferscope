@@ -2024,8 +2024,10 @@ def run_pipeline(
                         buffering=1,
                         closefd=False,
                     )
-                except (OSError, ValueError):
-                    pass  # fallback: keep original stream if reconfigure fails
+                except (OSError, ValueError) as exc:
+                    # Log at debug level — if this fails, non-ASCII log messages
+                    # may still trigger UnicodeEncodeError on Windows/cp1252.
+                    _log.debug("Could not reconfigure stream to UTF-8: %s", exc)
 
     _report("Starting", "TransferScope Training Pipeline")
 
