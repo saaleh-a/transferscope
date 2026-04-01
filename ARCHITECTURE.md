@@ -438,7 +438,7 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Position-aware Hot or Not verdict: offensive metrics 1.5× for forwards, defensive 1.5× for defenders; ±3% thresholds; UNKNOWN when no data
 - Position normalization to 4 categories (Forward, Midfielder, Defender, Goalkeeper) via `normalize_position()` — including Sofascore single-letter codes (F/M/D/G)
 - K-means clustering for shortlist scoring: weighted Euclidean distance + 15% same-cluster bonus vs simple z-score
-- Per-group feature subsets for TF model: shooting=19, passing=28, dribbling=10, defending=16 (not 46 for all groups)
+- Per-group feature subsets for TF model: shooting=24, passing=32, dribbling=14, defending=20 (not 55 for all groups)
 - 3-step team name resolution: exact → accent-normalized → fuzzy (5-priority cascade with 502 extreme abbreviations + dynamic REEP aliases covering 51 leagues)
 - `_CLUBELO_TO_SOFASCORE` mapping (531 entries): canonicalize ClubElo names at load time
 - Polynomial normalization: `change_ra / 50.0` in PlayerAdjustmentModel (mapping -50..+50 to -1..+1)
@@ -450,6 +450,10 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Pizza/radar charts for player profiles via player_pizza.py component
 - Backtest Validator page: validates predictions against actual post-transfer outcomes
 - Diagnostics page: system health, data source status, cache info
+- 55-feature vector: 43 base + 2 raw Elo + 2 REEP metadata + 5 StatsBomb spatial + 3 interaction
+- Raw Elo features preserve absolute cross-league strength that 0-100 normalization loses
+- TeamAdjustmentModel uses both from_ra and to_ra (2-feature) — not single source-only feature
+- Per-group architecture overrides: dribbling 64→32 + dropout 0.4 (smaller than default 128→64) to combat overfitting with 14 features / 1 target
 
 ---
 

@@ -211,6 +211,10 @@ def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.
 
     Uses BatchNormalization + L2 regularization on Dense layers and Huber
     loss for robustness to outlier deltas in training data.
+
+    ``group_name`` selects per-group architecture overrides from
+    ``_GROUP_ARCH_OVERRIDES``.  Groups without an override entry use
+    the defaults (128→64 hidden units, 0.3 dropout).
     """
     overrides = _GROUP_ARCH_OVERRIDES.get(group_name, {})
     hidden_units = overrides.get("hidden_units", [128, 64])

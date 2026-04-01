@@ -2115,18 +2115,22 @@ def run_pipeline(
     # accented player/team names from Turkish, Polish, etc. leagues).
     for handler in logging.root.handlers:
         if isinstance(handler, logging.StreamHandler) and hasattr(handler, "stream"):
-            if hasattr(handler.stream, "fileno"):
+            stream = handler.stream
+            if hasattr(stream, "reconfigure"):
+                try:
+                    stream.reconfigure(encoding="utf-8")
+                except (OSError, ValueError) as exc:
+                    _log.debug("Could not reconfigure stream to UTF-8: %s", exc)
+            elif hasattr(stream, "fileno"):
                 try:
                     handler.stream = open(
-                        handler.stream.fileno(),
+                        stream.fileno(),
                         mode="w",
                         encoding="utf-8",
                         buffering=1,
                         closefd=False,
                     )
                 except (OSError, ValueError) as exc:
-                    # Log at debug level — if this fails, non-ASCII log messages
-                    # may still trigger UnicodeEncodeError on Windows/cp1252.
                     _log.debug("Could not reconfigure stream to UTF-8: %s", exc)
 
     _report("Starting", "TransferScope Training Pipeline")
