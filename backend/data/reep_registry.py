@@ -54,7 +54,24 @@ _PEOPLE_URL = (
 # Cache TTL — 7 days (same as player stats).
 _CACHE_TTL = 86400 * 7
 
+# ── In-memory singletons (populated on first access) ────────────────────────
+_teams_df_mem: Optional[pd.DataFrame] = None
+_people_df_mem: Optional[pd.DataFrame] = None
+# Pre-indexed lookup: sofascore_player_id (str) → dict of row values.
+_people_index: Optional[Dict[str, Dict[str, Any]]] = None
+# Cached ClubElo → display-name mapping.
+_clubelo_map_mem: Optional[Dict[str, str]] = None
+
 # ── Internal helpers ─────────────────────────────────────────────────────────
+
+
+def clear_memory_cache() -> None:
+    """Reset all in-memory caches.  Useful in tests."""
+    global _teams_df_mem, _people_df_mem, _people_index, _clubelo_map_mem
+    _teams_df_mem = None
+    _people_df_mem = None
+    _people_index = None
+    _clubelo_map_mem = None
 
 
 def _fetch_csv(url: str, cache_key: str) -> Optional[pd.DataFrame]:
@@ -87,13 +104,25 @@ def _fetch_csv(url: str, cache_key: str) -> Optional[pd.DataFrame]:
 
 
 def get_teams_df() -> Optional[pd.DataFrame]:
-    """Return the REEP teams DataFrame (cached for 7 days)."""
-    return _fetch_csv(_TEAMS_URL, "reep:teams_csv")
+    """Return the REEP teams DataFrame (cached in-memory after first load)."""
+    global _teams_df_mem
+    if _teams_df_mem is not None:
+        return _teams_df_mem
+    df = _fetch_csv(_TEAMS_URL, "reep:teams_csv")
+    if df is not None:
+        _teams_df_mem = df
+    return df
 
 
 def get_people_df() -> Optional[pd.DataFrame]:
-    """Return the REEP people DataFrame (cached for 7 days)."""
-    return _fetch_csv(_PEOPLE_URL, "reep:people_csv")
+    """Return the REEP people DataFrame (cached in-memory after first load)."""
+    global _people_df_mem
+    if _people_df_mem is not None:
+        return _people_df_mem
+    df = _fetch_csv(_PEOPLE_URL, "reep:people_csv")
+    if df is not None:
+        _people_df_mem = df
+    return df
 
 
 def build_clubelo_sofascore_map() -> Dict[str, str]:
@@ -103,8 +132,13 @@ def build_clubelo_sofascore_map() -> Dict[str, str]:
     This can replace the hand-maintained ``_CLUBELO_TO_SOFASCORE`` dict
     in ``power_rankings.py``.
 
+    The result is cached in-memory after the first call.
     Returns an empty dict if the download fails.
     """
+    global _clubelo_map_mem
+    if _clubelo_map_mem is not None:
+        return _clubelo_map_mem
+
     df = get_teams_df()
     if df is None:
         return {}
@@ -112,7 +146,9 @@ def build_clubelo_sofascore_map() -> Dict[str, str]:
     # Keep only rows where both columns are present
     mask = df["key_clubelo"].notna() & df["name"].notna()
     subset = df.loc[mask, ["key_clubelo", "name"]]
-    return dict(zip(subset["key_clubelo"].astype(str), subset["name"].astype(str)))
+    result = dict(zip(subset["key_clubelo"].astype(str), subset["name"].astype(str)))
+    _clubelo_map_mem = result
+    return result
 
 
 def clubelo_to_sofascore_name(clubelo_key: str) -> Optional[str]:
@@ -148,42 +184,43 @@ def sofascore_team_aliases(sofascore_id: int) -> List[str]:
     return list(dict.fromkeys(aliases))  # deduplicate, preserve order
 
 
+def _build_people_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+    """Build an O(1) lookup dict keyed by sofascore player ID (str)."""
+    index: Dict[str, Dict[str, Any]] = {}
+    for _, row in df.iterrows():
+        sid = row.get("key_sofascore")
+        if pd.notna(sid):
+            index[str(int(float(sid)))] = {
+                "nationality": row.get("nationality") if pd.notna(row.get("nationality")) else None,
+                "height_cm": _safe_int(row.get("height_cm")) if pd.notna(row.get("height_cm")) else None,
+                "date_of_birth": row.get("date_of_birth") if pd.notna(row.get("date_of_birth")) else None,
+                "position": row.get("position") if pd.notna(row.get("position")) else None,
+                "whoscored_id": _safe_int(row.get("key_whoscored")) if pd.notna(row.get("key_whoscored")) else None,
+            }
+    return index
+
+
 def enrich_player(sofascore_player_id: int) -> Dict[str, Any]:
     """Return metadata from REEP people.csv for a Sofascore player ID.
 
     Returns a dict with keys ``nationality``, ``height_cm``,
     ``date_of_birth``, ``position``, ``whoscored_id`` (any may be
     *None*).  Returns an empty dict on miss or download failure.
+
+    Uses a pre-built in-memory index for O(1) lookups.
     """
-    df = get_people_df()
-    if df is None:
+    global _people_index
+    if _people_index is None:
+        df = get_people_df()
+        if df is None:
+            return {}
+        _people_index = _build_people_index(df)
+
+    entry = _people_index.get(str(sofascore_player_id))
+    if entry is None:
         return {}
-
-    mask = df["key_sofascore"].astype(str) == str(sofascore_player_id)
-    rows = df.loc[mask]
-    if rows.empty:
-        return {}
-
-    row = rows.iloc[0]
-    result: Dict[str, Any] = {}
-
-    for col, key in [
-        ("nationality", "nationality"),
-        ("height_cm", "height_cm"),
-        ("date_of_birth", "date_of_birth"),
-        ("position", "position"),
-    ]:
-        val = row.get(col)
-        if pd.notna(val):
-            result[key] = val if col != "height_cm" else _safe_int(val)
-        else:
-            result[key] = None
-
-    # WhoScored ID for cross-provider lookup (Phase 3 bridge).
-    ws_val = row.get("key_whoscored")
-    result["whoscored_id"] = _safe_int(ws_val) if pd.notna(ws_val) else None
-
-    return result
+    # Return a copy so callers can't mutate the cached data.
+    return dict(entry)
 
 
 def _safe_int(val: Any) -> Optional[int]:

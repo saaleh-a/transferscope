@@ -54,10 +54,14 @@ _PEOPLE_CSV = (
 @pytest.fixture(autouse=True)
 def _clear_cache():
     """Ensure each test starts with a clean cache state."""
+    from backend.data.reep_registry import clear_memory_cache
+
+    clear_memory_cache()
     with patch("backend.data.reep_registry.cache") as mock_cache:
         mock_cache.get.return_value = None
         mock_cache.set = MagicMock()
         yield mock_cache
+    clear_memory_cache()
 
 
 class TestGetTeamsDf:
