@@ -266,13 +266,29 @@ Input (group-specific feature subset)
 ```
 
 Per-group feature subsets (GROUP_FEATURE_SUBSETS):
-- Shooting: 19 features (relevant player metrics + ability + relevant team-pos metrics + 3 interaction)
-- Passing: 28 features
-- Dribbling: 10 features (minimal — dribbling is near-irreducible + interaction)
-- Defending: 16 features
+- Shooting: 24 features (player metrics + ability + raw Elo + height + spatial shot + team-pos + interaction)
+- Passing: 32 features
+- Dribbling: 14 features
+- Defending: 20 features
 
-Total input feature dict: 46 keys (13 player per-90 + 4 team/league ability
+Total input feature dict: 55 keys (13 player per-90 + 4 team/league ability
++ 2 raw Elo + 2 REEP metadata + 5 StatsBomb spatial
 + 26 team-pos per-90 + 3 interaction: ability_gap, gap², league_gap).
+
+**Raw Elo features** (`raw_elo_current`, `raw_elo_target`) preserve absolute
+cross-league strength that normalized 0-100 scores lose (e.g. Arsenal ~1900
+vs Sporting CP ~1700 on the same scale).
+
+**REEP metadata** (`player_height_cm`, `player_age`) from the REEP open-data
+register (~430K players).  Height aids aerial/crossing prediction; age
+captures adaptation speed.
+
+**StatsBomb spatial features** (`spatial_avg_shot_distance`,
+`spatial_shots_inside_box_pct`, `spatial_progressive_pass_pct`,
+`spatial_avg_carry_distance`, `spatial_avg_defensive_distance`) from
+StatsBomb open data.  Default to 0.0 when unavailable — all pages work
+regardless of player/club coverage.
+
 Each group slices internally — external API unchanged.
 
 Auto-loads trained weights from `data/models/` when available (`is_trained()` checks
