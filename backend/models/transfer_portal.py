@@ -962,7 +962,7 @@ def build_feature_dict_from_player(
     except Exception:
         pass
 
-    # Step 5: StatsBomb spatial features
+    # Step 5: Spatial features — StatsBomb first, WhoScored fallback
     spatial_features: Optional[Dict[str, float]] = None
     if player_name:
         try:
@@ -970,6 +970,19 @@ def build_feature_dict_from_player(
             sf = statsbomb_client.compute_spatial_features(player_name)
             if sf:
                 spatial_features = sf
+        except Exception:
+            pass
+
+    # Fallback: WhoScored via REEP whoscored_id bridge
+    if not spatial_features and player_id:
+        try:
+            from backend.data import reep_registry, whoscored_client
+            reep_data = reep_registry.enrich_player(player_id)
+            ws_id = reep_data.get("whoscored_id")
+            if ws_id:
+                ws_sf = whoscored_client.compute_spatial_features(ws_id)
+                if ws_sf:
+                    spatial_features = ws_sf
         except Exception:
             pass
 

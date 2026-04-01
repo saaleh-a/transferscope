@@ -19,7 +19,7 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 | Adjustment models | sklearn LinearRegression + paper-aligned heuristic (`paper_heuristic_predict`) |
 | Prediction model | TensorFlow multi-head neural network (4 model groups) — heuristic fallback when untrained |
 | UI | Streamlit |
-| Spatial data | StatsBomb open data via `statsbombpy` + `mplsoccer` pitch rendering |
+| Spatial data | StatsBomb open data via `statsbombpy` + WhoScored fallback via `curl_cffi` + `mplsoccer` pitch rendering |
 | Coefficient calibration | football-data.co.uk match CSVs via `backend/data/footballdata_client.py` |
 | Team alias augmentation | REEP register (~45K clubs) via `backend/data/reep_registry.py` |
 | Caching | diskcache (SQLite-backed) |
@@ -47,6 +47,7 @@ transferscope/
 │   │   ├── elo_router.py               # Routes club to correct Elo source, merges scores
 │   │   ├── reep_registry.py            # REEP register — dynamic team alias building (~45K clubs)
 │   │   ├── statsbomb_client.py         # StatsBomb open-data — shots, passes, heatmaps, spatial features
+│   │   ├── whoscored_client.py        # WhoScored spatial data — fallback when StatsBomb misses
 │   │   ├── footballdata_client.py      # football-data.co.uk — match CSVs for coefficient calibration
 │   │   └── cache.py                    # diskcache layer — all external calls go through here
 │   ├── features/
@@ -167,6 +168,14 @@ Functions: `get_player_shots()`, `get_player_passes()`, `get_player_heatmap_data
 `compute_spatial_features()`. Rendered by `frontend/components/pitch_viz.py` using mplsoccer.
 Integrated into the Transfer Impact page for shot maps, pass networks, and heatmaps.
 
+### WhoScored (`backend/data/whoscored_client.py`)
+Fallback spatial data source when StatsBomb open data doesn't cover a player.
+Uses `curl_cffi` for HTTP requests with Cloudflare bypass (same as sofascore_client).
+Functions: `search_player()`, `get_player_season_stats()`, `get_player_match_history()`,
+`get_player_heatmap_data()`, `compute_spatial_features()`.
+Player ID lookup via REEP `key_whoscored` column (cross-provider bridge).
+Fallback chain: StatsBomb → WhoScored → zeros (0.0).
+
 ### football-data.co.uk (`backend/data/footballdata_client.py`)
 Provides match-level CSV data from football-data.co.uk for league profiling.
 Used by `adjustment_models.calibrate_style_coefficients()` to refine `_LEAGUE_STYLE_COEFF`
@@ -283,10 +292,11 @@ vs Sporting CP ~1700 on the same scale).
 register (~430K players).  Height aids aerial/crossing prediction; age
 captures adaptation speed.
 
-**StatsBomb spatial features** (`spatial_avg_shot_distance`,
+**Spatial features** (`spatial_avg_shot_distance`,
 `spatial_shots_inside_box_pct`, `spatial_progressive_pass_pct`,
 `spatial_avg_carry_distance`, `spatial_avg_defensive_distance`) from
-StatsBomb open data.  Default to 0.0 when unavailable — all pages work
+StatsBomb open data, with WhoScored fallback via REEP `key_whoscored`
+bridge.  Fallback chain: StatsBomb → WhoScored → 0.0.  All pages work
 regardless of player/club coverage.
 
 Each group slices internally — external API unchanged.
@@ -446,6 +456,8 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Diverging butterfly metric bar chart with paper Table 1 group markers (⚡ ◈ ◎ ◆)
 - Dynamic REEP alias augmentation: _build_dynamic_aliases() cross-links ~45K clubs from REEP teams.csv at runtime, graceful degradation to hardcoded mappings
 - StatsBomb spatial data: shot maps, pass networks, heatmaps via statsbombpy + mplsoccer
+- WhoScored fallback for spatial features: when StatsBomb returns {} for a player, fall back to WhoScored via REEP key_whoscored bridge
+- REEP enrich_player() returns whoscored_id for cross-provider ID mapping
 - football-data.co.uk coefficient calibration: calibrate_style_coefficients() refines per-metric style weights from cross-league match data
 - Pizza/radar charts for player profiles via player_pizza.py component
 - Backtest Validator page: validates predictions against actual post-transfer outcomes

@@ -628,25 +628,38 @@ def build_training_sample(
     except Exception:
         pass
 
-    # Block 3c — StatsBomb spatial features
+    # Block 3c — Spatial features (StatsBomb first, WhoScored fallback)
     spatial_avg_shot_distance = 0.0
     spatial_shots_inside_box_pct = 0.0
     spatial_progressive_pass_pct = 0.0
     spatial_avg_carry_distance = 0.0
     spatial_avg_defensive_distance = 0.0
+    sf: Dict[str, float] = {}
     try:
         from backend.data import statsbomb_client
         player_name = getattr(record, "player_name", "")
         if player_name:
             sf = statsbomb_client.compute_spatial_features(player_name)
-            if sf:
-                spatial_avg_shot_distance = sf.get("avg_shot_distance", 0.0)
-                spatial_shots_inside_box_pct = sf.get("shots_inside_box_pct", 0.0)
-                spatial_progressive_pass_pct = sf.get("progressive_pass_pct", 0.0)
-                spatial_avg_carry_distance = sf.get("avg_carry_distance", 0.0)
-                spatial_avg_defensive_distance = sf.get("avg_defensive_distance", 0.0)
     except Exception:
         pass
+
+    # Fallback: WhoScored via REEP whoscored_id bridge
+    if not sf:
+        try:
+            from backend.data import reep_registry, whoscored_client
+            reep_data = reep_registry.enrich_player(record.player_id)
+            ws_id = reep_data.get("whoscored_id")
+            if ws_id:
+                sf = whoscored_client.compute_spatial_features(ws_id)
+        except Exception:
+            pass
+
+    if sf:
+        spatial_avg_shot_distance = sf.get("avg_shot_distance", 0.0)
+        spatial_shots_inside_box_pct = sf.get("shots_inside_box_pct", 0.0)
+        spatial_progressive_pass_pct = sf.get("progressive_pass_pct", 0.0)
+        spatial_avg_carry_distance = sf.get("avg_carry_distance", 0.0)
+        spatial_avg_defensive_distance = sf.get("avg_defensive_distance", 0.0)
 
     # Block 4+5 — Team-position per-90 (13 values each, placeholder zeros)
     # These are overwritten in build_full_dataset() with averages computed
@@ -1138,22 +1151,35 @@ def build_non_transfer_sample(
     except Exception:
         pass
 
-    # StatsBomb spatial features
+    # Spatial features — StatsBomb first, WhoScored fallback
     nt_spatial = [0.0, 0.0, 0.0, 0.0, 0.0]
+    sf: Dict[str, float] = {}
     try:
         from backend.data import statsbomb_client
         if record.player_name:
             sf = statsbomb_client.compute_spatial_features(record.player_name)
-            if sf:
-                nt_spatial = [
-                    sf.get("avg_shot_distance", 0.0),
-                    sf.get("shots_inside_box_pct", 0.0),
-                    sf.get("progressive_pass_pct", 0.0),
-                    sf.get("avg_carry_distance", 0.0),
-                    sf.get("avg_defensive_distance", 0.0),
-                ]
     except Exception:
         pass
+
+    # Fallback: WhoScored via REEP whoscored_id bridge
+    if not sf:
+        try:
+            from backend.data import reep_registry as _reep, whoscored_client
+            _reep_data = _reep.enrich_player(record.player_id)
+            ws_id = _reep_data.get("whoscored_id")
+            if ws_id:
+                sf = whoscored_client.compute_spatial_features(ws_id)
+        except Exception:
+            pass
+
+    if sf:
+        nt_spatial = [
+            sf.get("avg_shot_distance", 0.0),
+            sf.get("shots_inside_box_pct", 0.0),
+            sf.get("progressive_pass_pct", 0.0),
+            sf.get("avg_carry_distance", 0.0),
+            sf.get("avg_defensive_distance", 0.0),
+        ]
 
     # Team-position per-90 — placeholder zeros, overwritten in
     # build_full_dataset() with averages from the training data itself.
