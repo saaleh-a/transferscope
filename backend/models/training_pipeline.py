@@ -68,7 +68,7 @@ DEFAULT_LEAGUE_CODES = [
 ]
 
 from backend.utils.constants import MIN_MINUTES_THRESHOLD
-API_CALL_DELAY_SECONDS = 2.0
+API_CALL_DELAY_SECONDS = 0.5
 
 
 # ── Data structures ──────────────────────────────────────────────────────────
@@ -2090,7 +2090,7 @@ def run_pipeline(
     skip_training: bool = False,
     val_ratio: float = 0.15,
     test_ratio: float = 0.10,
-    api_delay: float = 2.0,
+    api_delay: float = 0.5,
     progress_callback: Optional[Callable[[str, str], None]] = None,
 ) -> bool:
     """Run the full training pipeline programmatically.
@@ -2111,7 +2111,7 @@ def run_pipeline(
     val_ratio, test_ratio : float
         Validation and test split ratios.
     api_delay : float
-        Seconds between Sofascore API calls.
+        Seconds between Sofascore API calls (default: 0.5).
     progress_callback : callable, optional
         Called with ``(step: str, detail: str)`` to report progress.
         When *None*, messages go to ``print()``.
@@ -2318,8 +2318,8 @@ def main() -> None:
     parser.add_argument(
         "--api-delay",
         type=float,
-        default=2.0,
-        help="Delay between API calls in seconds (default: 2.0)",
+        default=0.5,
+        help="Delay between API calls in seconds (default: 0.5)",
     )
     args = parser.parse_args()
 

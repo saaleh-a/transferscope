@@ -135,10 +135,9 @@ The shortlist generator scans players across multiple leagues simultaneously. By
 it searches the **Big 5 European leagues** (Premier League, La Liga, Bundesliga, Serie A,
 Ligue 1), plus the player's own league which is always scanned first.
 
-**Rate-limit protection:** Sofascore applies aggressive rate-limiting (403/429 errors)
-after 2-3 rapid requests. A **1.5-second delay** between league API calls prevents this.
-Without the delay, scanning multiple leagues causes all but the first 2-3 to fail →
-0 candidates.
+**Rate-limit protection:** Sofascore applies rate-limiting (403/429 errors)
+after rapid requests. A **0.5-second delay** between league API calls reduces this risk,
+and adaptive backoff automatically increases the delay if rate-limit errors occur.
 
 A diagnostic panel shows which leagues returned data and how many candidates were found
 from each.
