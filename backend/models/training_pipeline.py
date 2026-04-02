@@ -23,6 +23,14 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+# ── Force UTF-8 on stdout/stderr before any logging call ────────────────────
+# Windows defaults to cp1252 which cannot encode Turkish (ş, ı, ğ), Polish
+# (ć, ź), or arrow (→) characters, producing "--- Logging error ---" blocks.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 # ── Ensure repo root is on sys.path ─────────────────────────────────────────
 _REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -2080,7 +2088,7 @@ def run_pipeline(
             stream = handler.stream
             if hasattr(stream, "reconfigure"):
                 try:
-                    stream.reconfigure(encoding="utf-8")
+                    stream.reconfigure(encoding="utf-8", errors="replace")
                 except (OSError, ValueError) as exc:
                     _log.debug("Could not reconfigure stream to UTF-8: %s", exc)
             elif hasattr(stream, "fileno"):
