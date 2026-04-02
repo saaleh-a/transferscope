@@ -3,6 +3,14 @@
 Normalize all clubs 0-100 globally daily.
 Store per-league mean, std, and percentile bands (10th, 25th, 50th, 75th, 90th).
 Compute relative_ability = team_score - league_mean_score.
+
+**Inference path (Option B hybrid)**: When ``query_date`` is today/None,
+Opta Power Rankings (0-100 natively) are used for normalized scores.  ClubElo
+provides the ``raw_elo`` on the ~1000-2100 scale the model was trained on.
+Teams not covered by ClubElo get a linear rescale from Opta's 0-100.
+
+**Training path**: Historical dates always use ClubElo / WorldFootballElo
+(Opta has no historical API).
 """
 
 from __future__ import annotations
@@ -87,6 +95,23 @@ TEAM_ALIASES: Dict[str, Optional[str]] = {
 # ClubElo ratings typically range ~1000-2100; 1500 is the median across ~526 top
 # clubs (by design Elo 1500 ≈ average).
 DEFAULT_RANKING = 1500.0
+
+# ── Opta→ClubElo raw-Elo rescale (Option B) ──────────────────────────────────
+# When using Opta for normalized scores at inference but ClubElo for raw_elo,
+# teams not covered by ClubElo need a linear rescale from Opta's 0-100 into
+# the ~1000-2100 range the model was trained on.
+# Formula:  pseudo_raw_elo = opta_score / 100 * (_OPTA_ELO_MAX - _OPTA_ELO_MIN) + _OPTA_ELO_MIN
+_OPTA_ELO_MIN = 1000.0
+_OPTA_ELO_MAX = 2100.0
+
+# Whether to prefer Opta for current-day rankings.  Set to False to disable
+# the Opta path entirely (e.g. if the scraper is broken).
+_USE_OPTA_FOR_INFERENCE = True
+
+
+def _opta_score_to_raw_elo(opta_score: float) -> float:
+    """Linearly rescale an Opta 0-100 score to the ~1000-2100 raw Elo range."""
+    return opta_score / 100.0 * (_OPTA_ELO_MAX - _OPTA_ELO_MIN) + _OPTA_ELO_MIN
 
 
 # ── ClubElo → Sofascore direct name mapping ──────────────────────────────────
@@ -849,10 +874,163 @@ class TeamRanking:
     match_type: str = "exact"  # "exact" or "fuzzy"
 
 
+# ── Opta-based ranking builder (Option B) ─────────────────────────────────────
+
+def _compute_rankings_from_opta() -> (
+    Optional[Tuple[Dict[str, TeamRanking], Dict[str, LeagueSnapshot]]]
+):
+    """Build TeamRanking / LeagueSnapshot dicts from Opta Power Rankings.
+
+    Opta provides normalized 0-100 scores natively.  For ``raw_elo`` the
+    function first tries ClubElo (exact scale the model was trained on); if
+    the team isn't in ClubElo it falls back to a linear rescale from Opta's
+    0-100 → ~1000-2100.
+
+    Returns ``None`` if the Opta scrape yields no data (caller should
+    fall back to the legacy ClubElo pipeline).
+    """
+    from backend.data import opta_client
+
+    opta_teams = opta_client.get_team_rankings()
+    if not opta_teams:
+        _log.warning("Opta team rankings empty — falling back to ClubElo")
+        return None
+
+    opta_leagues = opta_client.get_league_rankings()
+
+    # Build a league-name → rating lookup for Opta league rankings.
+    opta_league_ratings: Dict[str, float] = {}
+    for lr in opta_leagues:
+        opta_league_ratings[lr.league] = lr.rating
+
+    # Collect all ClubElo data for raw_elo lookups (cheap — already cached).
+    clubelo_raw: Dict[str, float] = {}  # sofascore_name → raw elo
+    try:
+        clubelo_name_map = _get_clubelo_sofascore_map()
+        ce_df = clubelo_client.get_all_by_date(date.today())
+        if ce_df is not None and len(ce_df) > 0:
+            for raw_name in ce_df.index:
+                elo_val = float(ce_df.loc[raw_name, "elo"])
+                canonical = clubelo_name_map.get(str(raw_name), str(raw_name))
+                clubelo_raw[canonical] = elo_val
+    except Exception as exc:
+        _log.warning("ClubElo fetch for raw_elo overlay failed: %s", exc)
+
+    # Build per-league member lists for LeagueSnapshot computation.
+    # We'll try to map Opta teams to our league codes.  Without a perfect
+    # opta_id→league mapping we fall back to exact name matching against
+    # the ClubElo coverage, then use "UNK" for genuinely unknown leagues.
+    # For simplicity, we group teams by the league they are known to belong
+    # to (via ClubElo) or assign a generic code.
+    all_teams_data: Dict[str, Tuple[float, float, str]] = {}
+    # team_name -> (opta_rating, raw_elo, league_code)
+
+    # Pre-build canonical→league_code from ClubElo
+    clubelo_league_map: Dict[str, str] = {}
+    try:
+        ce_df_for_league = clubelo_client.get_all_by_date(date.today())
+        if ce_df_for_league is not None and len(ce_df_for_league) > 0:
+            clubelo_name_map_local = _get_clubelo_sofascore_map()
+            for raw_name in ce_df_for_league.index:
+                canonical = clubelo_name_map_local.get(str(raw_name), str(raw_name))
+                ce_league = ce_df_for_league.loc[raw_name, "league"]
+                league_code = _clubelo_to_code(ce_league)
+                if league_code is None and "country" in ce_df_for_league.columns:
+                    league_code = _clubelo_to_code_from_country(
+                        ce_df_for_league.loc[raw_name, "country"],
+                        (
+                            ce_df_for_league.loc[raw_name, "level"]
+                            if "level" in ce_df_for_league.columns
+                            else 1
+                        ),
+                    )
+                if league_code:
+                    clubelo_league_map[canonical] = league_code
+    except Exception:
+        pass  # Proceed without league mapping — we'll use "UNK"
+
+    for opta_team in opta_teams:
+        team_name = opta_team.team
+        opta_rating = opta_team.rating
+
+        # raw_elo: prefer ClubElo actual Elo, fall back to rescale
+        raw_elo = clubelo_raw.get(team_name)
+        if raw_elo is None:
+            raw_elo = _opta_score_to_raw_elo(opta_rating)
+
+        # League code: try ClubElo mapping, else "UNK"
+        league_code = clubelo_league_map.get(team_name, "UNK")
+
+        all_teams_data[team_name] = (opta_rating, raw_elo, league_code)
+
+    if not all_teams_data:
+        return None
+
+    # Build league snapshots from the Opta ratings
+    league_teams: Dict[str, List[Tuple[str, float, float]]] = {}
+    # league_code -> [(team_name, raw_elo, opta_rating)]
+    for team_name, (opta_rating, raw_elo, code) in all_teams_data.items():
+        league_teams.setdefault(code, []).append((team_name, raw_elo, opta_rating))
+
+    today = date.today()
+    league_snapshots: Dict[str, LeagueSnapshot] = {}
+    for code, members in league_teams.items():
+        raw_elos = np.array([e for _, e, _ in members])
+        norms = np.array([n for _, _, n in members])
+        info = LEAGUES.get(code)
+        league_snapshots[code] = LeagueSnapshot(
+            league_code=code,
+            league_name=info.name if info else code,
+            date=today,
+            mean_elo=float(np.mean(raw_elos)),
+            std_elo=float(np.std(raw_elos)) if len(raw_elos) > 1 else 0.0,
+            p10=float(np.percentile(norms, 10)) if len(norms) > 1 else float(norms[0]),
+            p25=float(np.percentile(norms, 25)) if len(norms) > 1 else float(norms[0]),
+            p50=float(np.percentile(norms, 50)),
+            p75=float(np.percentile(norms, 75)) if len(norms) > 1 else float(norms[0]),
+            p90=float(np.percentile(norms, 90)) if len(norms) > 1 else float(norms[0]),
+            mean_normalized=float(np.mean(norms)),
+            team_count=len(members),
+        )
+
+    # Build team rankings
+    team_rankings: Dict[str, TeamRanking] = {}
+    for team_name, (opta_rating, raw_elo, code) in all_teams_data.items():
+        league_mean = league_snapshots[code].mean_normalized
+        team_rankings[team_name] = TeamRanking(
+            team_name=team_name,
+            league_code=code,
+            raw_elo=raw_elo,
+            normalized_score=opta_rating,
+            league_mean_normalized=league_mean,
+            relative_ability=opta_rating - league_mean,
+        )
+
+    _log.info(
+        "Built Opta-based rankings: %d teams, %d leagues "
+        "(%d with ClubElo raw_elo, %d rescaled)",
+        len(team_rankings),
+        len(league_snapshots),
+        sum(1 for tn in all_teams_data if tn in clubelo_raw),
+        sum(1 for tn in all_teams_data if tn not in clubelo_raw),
+    )
+    return team_rankings, league_snapshots
+
+
 def compute_daily_rankings(
     query_date: Optional[date] = None,
 ) -> Tuple[Dict[str, TeamRanking], Dict[str, LeagueSnapshot]]:
     """Compute global Power Rankings for all known teams on a date.
+
+    **Option B hybrid behaviour**:
+
+    *   When *query_date* is today (or ``None`` → today) **and**
+        ``_USE_OPTA_FOR_INFERENCE`` is ``True``, Opta Power Rankings are
+        used as the primary source for normalised scores (0-100).  ClubElo
+        provides the ``raw_elo`` on the ~1000-2100 scale the model trained
+        on; teams not in ClubElo get a linear rescale from Opta's 0-100.
+    *   For historical dates the legacy ClubElo + WorldFootballElo pipeline
+        is used (Opta has no historical archive).
 
     Returns
     -------
@@ -867,6 +1045,21 @@ def compute_daily_rankings(
     cached = cache.get(key, max_age=_ONE_DAY)
     if cached is not None:
         return cached
+
+    # ── Option B: try Opta for current-day inference ──────────────────────
+    if _USE_OPTA_FOR_INFERENCE and query_date == date.today():
+        try:
+            opta_result = _compute_rankings_from_opta()
+            if opta_result is not None:
+                cache.set(key, opta_result)
+                return opta_result
+        except Exception as exc:
+            _log.warning(
+                "Opta ranking build failed, falling back to ClubElo: %s", exc
+            )
+
+    # ── Legacy path: ClubElo + WorldFootballElo ─────────────────────────────
+    # Used for historical dates (training) or when Opta is unavailable.
 
     # Step 1 — Collect all team Elo scores
     all_teams: Dict[str, Tuple[float, str]] = {}  # team -> (elo, league_code)
