@@ -55,7 +55,7 @@ def _import_sb():
             pass
         return sb
     except ImportError:
-        _log.warning("statsbombpy is not installed — StatsBomb data unavailable")
+        _log.warning("statsbombpy is not installed -- StatsBomb data unavailable")
         return None
 
 
