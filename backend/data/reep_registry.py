@@ -71,12 +71,17 @@ def clear_memory_cache() -> None:
 
 
 def _load_csv(path: str) -> Optional[pd.DataFrame]:
-    """Read a local CSV file and return a DataFrame."""
+    """Read a local CSV file and return a DataFrame.
+
+    Uses ``dtype=str`` to prevent pandas from auto-coercing sparse ID
+    columns to float64 (which would add spurious ``.0`` suffixes to
+    values like ``key_sofascore`` or ``height_cm``).
+    """
     if not os.path.isfile(path):
         _log.warning("REEP file not found: %s", path)
         return None
     try:
-        return pd.read_csv(path, low_memory=False)
+        return pd.read_csv(path, dtype=str, keep_default_na=False, low_memory=False)
     except Exception as exc:
         _log.warning("REEP CSV parse failed (%s): %s", path, exc)
         return None
@@ -125,10 +130,10 @@ def build_clubelo_sofascore_map() -> Dict[str, str]:
     if df is None:
         return {}
 
-    # Keep only rows where both columns are present
-    mask = df["key_clubelo"].notna() & df["name"].notna()
+    # Keep only rows where both columns are present (non-empty string)
+    mask = (df["key_clubelo"] != "") & (df["name"] != "")
     subset = df.loc[mask, ["key_clubelo", "name"]]
-    result = dict(zip(subset["key_clubelo"].astype(str), subset["name"].astype(str)))
+    result = dict(zip(subset["key_clubelo"], subset["name"]))
     _clubelo_map_mem = result
     return result
 
@@ -158,12 +163,12 @@ def sofascore_team_aliases(sofascore_id: int) -> List[str]:
 
     aliases: List[str] = []
     for _, row in rows.iterrows():
-        name = row.get("name")
-        if pd.notna(name) and str(name).strip():
-            aliases.append(str(name).strip())
-        clubelo = row.get("key_clubelo")
-        if pd.notna(clubelo) and str(clubelo).strip():
-            aliases.append(str(clubelo).strip())
+        name = row.get("name", "")
+        if name.strip():
+            aliases.append(name.strip())
+        clubelo = row.get("key_clubelo", "")
+        if clubelo.strip():
+            aliases.append(clubelo.strip())
     return list(dict.fromkeys(aliases))  # deduplicate, preserve order
 
 
@@ -173,7 +178,7 @@ def _build_people_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     Skips rows where ``key_sofascore`` is missing or non-numeric.
     Uses vectorised pandas operations for speed (~430k rows in <1s).
     """
-    subset = df[df["key_sofascore"].notna()].copy()
+    subset = df[df["key_sofascore"] != ""].copy()
     # Coerce non-numeric IDs (e.g. 'francesco-conti') to NaN, then drop.
     subset["_sid"] = pd.to_numeric(subset["key_sofascore"], errors="coerce")
     subset = subset[subset["_sid"].notna()]
@@ -189,11 +194,11 @@ def _build_people_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
         subset["key_whoscored"],
     ):
         index[sid] = {
-            "nationality": nat if pd.notna(nat) else None,
-            "height_cm": _safe_int(hcm) if pd.notna(hcm) else None,
-            "date_of_birth": dob if pd.notna(dob) else None,
-            "position": pos if pd.notna(pos) else None,
-            "whoscored_id": _safe_int(ws) if pd.notna(ws) else None,
+            "nationality": nat if nat else None,
+            "height_cm": _safe_int(hcm) if hcm else None,
+            "date_of_birth": dob if dob else None,
+            "position": pos if pos else None,
+            "whoscored_id": _safe_int(ws) if ws else None,
         }
     return index
 

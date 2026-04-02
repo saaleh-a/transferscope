@@ -896,13 +896,17 @@ def build_feature_dict_from_player(
         if stats_for_name:
             source_team_name = stats_for_name.get("team", "")
 
-    src_ranking = power_rankings.get_team_ranking(source_team_name) if source_team_name else None
+    src_ranking = power_rankings.get_team_ranking(
+        source_team_name, tournament_id=tournament_id,
+    ) if source_team_name else None
     team_ability_current = src_ranking.normalized_score if src_ranking else 50.0
     league_ability_current = src_ranking.league_mean_normalized if src_ranking else 50.0
     raw_elo_current = src_ranking.raw_elo if src_ranking else 1500.0
 
     # Target rankings
-    tgt_ranking = power_rankings.get_team_ranking(target_team_name) if target_team_name else None
+    tgt_ranking = power_rankings.get_team_ranking(
+        target_team_name, tournament_id=target_league_id,
+    ) if target_team_name else None
     team_ability_target = tgt_ranking.normalized_score if tgt_ranking else 50.0
     league_ability_target = tgt_ranking.league_mean_normalized if tgt_ranking else 50.0
     raw_elo_target = tgt_ranking.raw_elo if tgt_ranking else 1500.0

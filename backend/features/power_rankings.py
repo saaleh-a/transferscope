@@ -3,6 +3,14 @@
 Normalize all clubs 0-100 globally daily.
 Store per-league mean, std, and percentile bands (10th, 25th, 50th, 75th, 90th).
 Compute relative_ability = team_score - league_mean_score.
+
+**Inference path (Option B hybrid)**: When ``query_date`` is today/None,
+Opta Power Rankings (0-100 natively) are used for normalized scores.  ClubElo
+provides the ``raw_elo`` on the ~1000-2100 scale the model was trained on.
+Teams not covered by ClubElo get a linear rescale from Opta's 0-100.
+
+**Training path**: Historical dates always use ClubElo / WorldFootballElo
+(Opta has no historical API).
 """
 
 from __future__ import annotations
@@ -25,6 +33,85 @@ from backend.utils.league_registry import LEAGUES, LeagueInfo
 
 
 _ONE_DAY = 86400
+
+# ── Significant-token overlap helpers (Fix C) ────────────────────────────────
+# Common short/generic tokens that should be ignored when comparing team names.
+_IGNORE_TOKENS = frozenset({
+    "fc", "afc", "sc", "cf", "sv", "fk", "sk", "ac", "ss", "rc", "as",
+    "cd", "sl", "vv", "kv", "bk", "if", "united", "city", "town",
+    "rovers", "wanderers", "athletic", "real", "club", "sporting",
+})
+
+# Threshold above which a fuzzy match is accepted even without token overlap
+# (handles abbreviation pairs like "Manchester United" ↔ "Man United").
+_HIGH_SIMILARITY_BYPASS = 0.85
+
+
+def _significant_tokens(name: str) -> set:
+    """Return the set of lowercased tokens in *name* that are ≥ 4 chars
+    and not in the ignore list."""
+    return {
+        t.lower()
+        for t in name.split()
+        if len(t) >= 4 and t.lower() not in _IGNORE_TOKENS
+    }
+
+
+def _has_token_overlap(query: str, match: str) -> bool:
+    """Return True if *query* and *match* share at least one significant token."""
+    return bool(_significant_tokens(query) & _significant_tokens(match))
+
+
+# ── Team alias map for known Sofascore↔REEP discrepancies (Problem 2) ────────
+# Value = alternative name to attempt, or None if the team is confirmed absent.
+TEAM_ALIASES: Dict[str, Optional[str]] = {
+    # English Championship
+    "Nottingham Forest": "Nottingham Forest",
+    "Hull City": None,
+    "Cardiff City": None,
+    "Sheffield Wednesday": None,
+    "Huddersfield Town": None,
+    "Luton Town": None,
+    "West Bromwich Albion": "West Brom",
+    # Belgian
+    "Royale Union Saint-Gilloise": "Union SG",
+    "Oud-Heverlee Leuven": None,
+    "Sint-Truidense VV": "St Truiden",
+    "KAS Eupen": None,
+    "KV Kortrijk": None,
+    # Portuguese
+    "Sporting Braga": "Braga",
+    # Scottish
+    "Ross County": None,
+    "St. Johnstone": None,
+    # Italian
+    "Genoa": "Genoa CFC",
+    "Lecce": "US Lecce",
+    # French
+    "Olympique Lyonnais": "Lyon",
+}
+
+# Mid-table fallback ranking for teams confirmed absent from all Elo sources.
+# ClubElo ratings typically range ~1000-2100; 1500 is the median across ~526 top
+# clubs (by design Elo 1500 ≈ average).
+DEFAULT_RANKING = 1500.0
+
+# ── Opta→ClubElo raw-Elo rescale (Option B) ──────────────────────────────────
+# When using Opta for normalized scores at inference but ClubElo for raw_elo,
+# teams not covered by ClubElo need a linear rescale from Opta's 0-100 into
+# the ~1000-2100 range the model was trained on.
+# Formula:  pseudo_raw_elo = opta_score / 100 * (_OPTA_ELO_MAX - _OPTA_ELO_MIN) + _OPTA_ELO_MIN
+_OPTA_ELO_MIN = 1000.0
+_OPTA_ELO_MAX = 2100.0
+
+# Whether to prefer Opta for current-day rankings.  Set to False to disable
+# the Opta path entirely (e.g. if the scraper is broken).
+_USE_OPTA_FOR_INFERENCE = True
+
+
+def _opta_score_to_raw_elo(opta_score: float) -> float:
+    """Linearly rescale an Opta 0-100 score to the ~1000-2100 raw Elo range."""
+    return opta_score / 100.0 * (_OPTA_ELO_MAX - _OPTA_ELO_MIN) + _OPTA_ELO_MIN
 
 
 # ── ClubElo → Sofascore direct name mapping ──────────────────────────────────
@@ -666,9 +753,13 @@ def _build_dynamic_aliases() -> Dict[str, List[str]]:
         _log.debug("REEP teams unavailable for alias building: %s", exc)
         return {}
 
-    # Columns that may contain team names across providers
+    # Columns that may contain team names across providers.
+    # NOTE: key_clubelo is deliberately EXCLUDED — the upstream REEP repo has
+    # misaligned values in that column (e.g. Lille OSC→"Fulham"), so using it
+    # as a name variant creates poisonous cross-links.  The remaining columns
+    # (key_fbref, key_transfermarkt) are reliable.
     name_columns = [
-        c for c in ["name", "key_clubelo", "key_fbref", "key_transfermarkt"]
+        c for c in ["name", "key_fbref", "key_transfermarkt"]
         if c in df.columns
     ]
     if not name_columns:
@@ -691,23 +782,35 @@ def _build_dynamic_aliases() -> Dict[str, List[str]]:
 
         # Normalize all variants
         normed = []
+        raw_for_norm: Dict[str, str] = {}  # norm → raw (for token check)
         for v in variants:
             n = _normalize_team_name(v)
             if n and len(n) >= 3:  # skip trivially short
                 normed.append(n)
+                raw_for_norm[n] = v
 
         # Remove duplicates but preserve order
         normed = list(dict.fromkeys(normed))
         if len(normed) < 2:
             continue
 
-        # Create bidirectional links between all pairs
+        # Create bidirectional links between all pairs, but only when
+        # variants share at least one significant token OR have high
+        # character-level similarity.  This prevents cross-links from
+        # misaligned REEP columns (e.g. key_clubelo of Lille OSC being
+        # "Fulham" due to a data error).
         for i, norm_a in enumerate(normed):
             for j, norm_b in enumerate(normed):
-                if i != j:
-                    aliases.setdefault(norm_a, [])
-                    if norm_b not in aliases[norm_a]:
-                        aliases[norm_a].append(norm_b)
+                if i == j:
+                    continue
+                raw_a = raw_for_norm.get(norm_a, norm_a)
+                raw_b = raw_for_norm.get(norm_b, norm_b)
+                sim = SequenceMatcher(None, norm_a, norm_b).ratio()
+                if not _has_token_overlap(raw_a, raw_b) and sim < _HIGH_SIMILARITY_BYPASS:
+                    continue  # skip bogus cross-link
+                aliases.setdefault(norm_a, [])
+                if norm_b not in aliases[norm_a]:
+                    aliases[norm_a].append(norm_b)
 
     _log.info(
         "Built %d dynamic aliases from REEP teams (%d bidirectional links)",
@@ -775,10 +878,169 @@ class TeamRanking:
     match_type: str = "exact"  # "exact" or "fuzzy"
 
 
+# ── Opta-based ranking builder (Option B) ─────────────────────────────────────
+
+def _compute_rankings_from_opta() -> (
+    Optional[Tuple[Dict[str, TeamRanking], Dict[str, LeagueSnapshot]]]
+):
+    """Build TeamRanking / LeagueSnapshot dicts from Opta Power Rankings.
+
+    Opta provides normalized 0-100 scores natively.  For ``raw_elo`` the
+    function first tries ClubElo (exact scale the model was trained on); if
+    the team isn't in ClubElo it falls back to a linear rescale from Opta's
+    0-100 → ~1000-2100.
+
+    Returns ``None`` if the Opta scrape yields no data (caller should
+    fall back to the legacy ClubElo pipeline).
+    """
+    from backend.data import opta_client
+
+    opta_teams = opta_client.get_team_rankings()
+    if not opta_teams:
+        _log.warning("Opta team rankings empty — falling back to ClubElo")
+        return None
+
+    opta_leagues = opta_client.get_league_rankings()
+
+    # Build a league-name → rating lookup for Opta league rankings.
+    opta_league_ratings: Dict[str, float] = {}
+    for lr in opta_leagues:
+        opta_league_ratings[lr.league] = lr.rating
+
+    # Collect all ClubElo data (single fetch, reused for raw_elo + league mapping).
+    clubelo_raw: Dict[str, float] = {}  # canonical_name → raw elo
+    clubelo_league_map: Dict[str, str] = {}  # canonical_name → league_code
+    try:
+        clubelo_name_map = _get_clubelo_sofascore_map()
+        ce_df = clubelo_client.get_all_by_date(date.today())
+        if ce_df is not None and len(ce_df) > 0:
+            for raw_name in ce_df.index:
+                elo_val = float(ce_df.loc[raw_name, "elo"])
+                canonical = clubelo_name_map.get(str(raw_name), str(raw_name))
+                clubelo_raw[canonical] = elo_val
+                # Also build league code mapping
+                ce_league = ce_df.loc[raw_name, "league"]
+                league_code = _clubelo_to_code(ce_league)
+                if league_code is None and "country" in ce_df.columns:
+                    league_code = _clubelo_to_code_from_country(
+                        ce_df.loc[raw_name, "country"],
+                        (
+                            ce_df.loc[raw_name, "level"]
+                            if "level" in ce_df.columns
+                            else 1
+                        ),
+                    )
+                if league_code:
+                    clubelo_league_map[canonical] = league_code
+    except Exception as exc:
+        _log.warning("ClubElo fetch for raw_elo/league overlay failed: %s", exc)
+
+    # Build a reverse lookup: opta_name → canonical ClubElo name.
+    # This handles cases where Opta uses "Man City" but ClubElo canonical
+    # is "Manchester City" (or vice versa).  We also index by lowercase for
+    # case-insensitive matching.
+    clubelo_lower_index: Dict[str, str] = {}  # lower(canonical) → canonical
+    for canonical in clubelo_raw:
+        clubelo_lower_index[canonical.lower()] = canonical
+
+    all_teams_data: Dict[str, Tuple[float, float, str]] = {}
+    # team_name -> (opta_rating, raw_elo, league_code)
+
+    for opta_team in opta_teams:
+        team_name = opta_team.team
+        opta_rating = opta_team.rating
+
+        # raw_elo: prefer ClubElo actual Elo, fall back to rescale.
+        # Try exact match first, then case-insensitive.
+        raw_elo = clubelo_raw.get(team_name)
+        if raw_elo is None:
+            ce_canonical = clubelo_lower_index.get(team_name.lower())
+            if ce_canonical is not None:
+                raw_elo = clubelo_raw[ce_canonical]
+        if raw_elo is None:
+            raw_elo = _opta_score_to_raw_elo(opta_rating)
+
+        # League code: try exact, then case-insensitive, else "UNK"
+        league_code = clubelo_league_map.get(team_name)
+        if league_code is None:
+            ce_canonical = clubelo_lower_index.get(team_name.lower())
+            if ce_canonical is not None:
+                league_code = clubelo_league_map.get(ce_canonical, "UNK")
+            else:
+                league_code = "UNK"
+
+        all_teams_data[team_name] = (opta_rating, raw_elo, league_code)
+
+    if not all_teams_data:
+        return None
+
+    # Build league snapshots from the Opta ratings
+    league_teams: Dict[str, List[Tuple[str, float, float]]] = {}
+    # league_code -> [(team_name, raw_elo, opta_rating)]
+    for team_name, (opta_rating, raw_elo, code) in all_teams_data.items():
+        league_teams.setdefault(code, []).append((team_name, raw_elo, opta_rating))
+
+    today = date.today()
+    league_snapshots: Dict[str, LeagueSnapshot] = {}
+    for code, members in league_teams.items():
+        raw_elos = np.array([e for _, e, _ in members])
+        norms = np.array([n for _, _, n in members])
+        info = LEAGUES.get(code)
+        league_snapshots[code] = LeagueSnapshot(
+            league_code=code,
+            league_name=info.name if info else code,
+            date=today,
+            mean_elo=float(np.mean(raw_elos)),
+            std_elo=float(np.std(raw_elos)) if len(raw_elos) > 1 else 0.0,
+            p10=float(np.percentile(norms, 10)) if len(norms) > 1 else float(norms[0]),
+            p25=float(np.percentile(norms, 25)) if len(norms) > 1 else float(norms[0]),
+            p50=float(np.percentile(norms, 50)),
+            p75=float(np.percentile(norms, 75)) if len(norms) > 1 else float(norms[0]),
+            p90=float(np.percentile(norms, 90)) if len(norms) > 1 else float(norms[0]),
+            mean_normalized=float(np.mean(norms)),
+            team_count=len(members),
+        )
+
+    # Build team rankings
+    team_rankings: Dict[str, TeamRanking] = {}
+    for team_name, (opta_rating, raw_elo, code) in all_teams_data.items():
+        league_mean = league_snapshots[code].mean_normalized
+        team_rankings[team_name] = TeamRanking(
+            team_name=team_name,
+            league_code=code,
+            raw_elo=raw_elo,
+            normalized_score=opta_rating,
+            league_mean_normalized=league_mean,
+            relative_ability=opta_rating - league_mean,
+        )
+
+    unk_count = sum(1 for _, (_, _, c) in all_teams_data.items() if c == "UNK")
+    _log.info(
+        "Built Opta-based rankings: %d teams, %d leagues "
+        "(%d with ClubElo raw_elo, %d rescaled, %d UNK league)",
+        len(team_rankings),
+        len(league_snapshots),
+        sum(1 for tn in all_teams_data if tn in clubelo_raw),
+        sum(1 for tn in all_teams_data if tn not in clubelo_raw),
+        unk_count,
+    )
+    return team_rankings, league_snapshots
+
+
 def compute_daily_rankings(
     query_date: Optional[date] = None,
 ) -> Tuple[Dict[str, TeamRanking], Dict[str, LeagueSnapshot]]:
     """Compute global Power Rankings for all known teams on a date.
+
+    **Option B hybrid behaviour**:
+
+    *   When *query_date* is today (or ``None`` → today) **and**
+        ``_USE_OPTA_FOR_INFERENCE`` is ``True``, Opta Power Rankings are
+        used as the primary source for normalised scores (0-100).  ClubElo
+        provides the ``raw_elo`` on the ~1000-2100 scale the model trained
+        on; teams not in ClubElo get a linear rescale from Opta's 0-100.
+    *   For historical dates the legacy ClubElo + WorldFootballElo pipeline
+        is used (Opta has no historical archive).
 
     Returns
     -------
@@ -793,6 +1055,21 @@ def compute_daily_rankings(
     cached = cache.get(key, max_age=_ONE_DAY)
     if cached is not None:
         return cached
+
+    # ── Option B: try Opta for current-day inference ──────────────────────
+    if _USE_OPTA_FOR_INFERENCE and query_date == date.today():
+        try:
+            opta_result = _compute_rankings_from_opta()
+            if opta_result is not None:
+                cache.set(key, opta_result)
+                return opta_result
+        except Exception as exc:
+            _log.warning(
+                "Opta ranking build failed, falling back to ClubElo: %s", exc
+            )
+
+    # ── Legacy path: ClubElo + WorldFootballElo ─────────────────────────────
+    # Used for historical dates (training) or when Opta is unavailable.
 
     # Step 1 — Collect all team Elo scores
     all_teams: Dict[str, Tuple[float, str]] = {}  # team -> (elo, league_code)
@@ -897,9 +1174,67 @@ def compute_daily_rankings(
     return result
 
 
+def _resolve_league_for_ranking(
+    ranking: TeamRanking,
+    tournament_id: Optional[int],
+    league_snapshots: Dict[str, "LeagueSnapshot"],
+) -> TeamRanking:
+    """Patch a TeamRanking's league fields when tournament_id is available.
+
+    If the ranking has ``league_code == "UNK"`` (team not in ClubElo) but
+    the caller knows the Sofascore ``tournament_id``, we resolve the league
+    via :func:`league_registry.get_by_sofascore_id` and recompute
+    ``league_mean_normalized`` and ``relative_ability`` from the correct
+    league snapshot.
+
+    Returns the (possibly mutated) ranking.
+    """
+    if tournament_id is None:
+        return ranking
+    if ranking.league_code != "UNK":
+        return ranking  # already resolved
+
+    from backend.utils.league_registry import LEAGUES, get_by_sofascore_id
+
+    info = get_by_sofascore_id(tournament_id)
+    if info is None:
+        return ranking
+
+    # Find the matching league code
+    resolved_code: Optional[str] = None
+    for code, li in LEAGUES.items():
+        if li.sofascore_tournament_id == tournament_id:
+            resolved_code = code
+            break
+
+    if resolved_code is None:
+        return ranking
+
+    # If we have a league snapshot for this code, use its mean
+    if resolved_code in league_snapshots:
+        snap = league_snapshots[resolved_code]
+        ranking.league_code = resolved_code
+        ranking.league_mean_normalized = snap.mean_normalized
+        ranking.relative_ability = ranking.normalized_score - snap.mean_normalized
+        _log.debug(
+            "Resolved league for '%s': UNK -> %s (mean=%.1f)",
+            ranking.team_name, resolved_code, snap.mean_normalized,
+        )
+    else:
+        # No snapshot for this league yet — use overall mean as approximation
+        ranking.league_code = resolved_code
+        _log.debug(
+            "Resolved league code for '%s': UNK -> %s (no snapshot available)",
+            ranking.team_name, resolved_code,
+        )
+
+    return ranking
+
+
 def get_team_ranking(
     team_name: str,
     query_date: Optional[date] = None,
+    tournament_id: Optional[int] = None,
 ) -> Optional[TeamRanking]:
     """Get a single team's Power Ranking.
 
@@ -909,8 +1244,26 @@ def get_team_ranking(
 
     The returned ``TeamRanking.match_type`` is ``"exact"`` for direct
     hits or ``"fuzzy"`` when the name was resolved via similarity.
+
+    For teams known to be absent from every Elo source (listed in
+    ``TEAM_ALIASES`` with a ``None`` value), a mid-table fallback
+    ranking is returned instead of ``None`` to avoid corrupting
+    downstream features.
+
+    Parameters
+    ----------
+    team_name : str
+        Display name of the team (e.g. ``"Arsenal"``).
+    query_date : date, optional
+        Date for historical lookup.  ``None`` → today.
+    tournament_id : int, optional
+        Sofascore tournament ID for the team's league.  When provided and
+        the team's ``league_code`` would otherwise be ``"UNK"``, this is
+        used to resolve the correct league via ``league_registry``.  This
+        also enables accurate ``league_mean_normalized`` and
+        ``relative_ability`` for Opta teams not covered by ClubElo.
     """
-    teams, _ = compute_daily_rankings(query_date)
+    teams, league_snapshots = compute_daily_rankings(query_date)
 
     if not teams:
         _log.warning(
@@ -918,29 +1271,79 @@ def get_team_ranking(
         )
         return None
 
-    # 1. Exact match (cheapest check)
-    if team_name in teams:
-        ranking = teams[team_name]
-        ranking.match_type = "exact"
-        return ranking
+    # 0. Check TEAM_ALIASES before any matching.
+    #    - alias is None and name IS in TEAM_ALIASES → confirmed absent, use fallback
+    #    - alias is a string → remap the lookup name and continue matching
+    effective_name = team_name
+    if team_name in TEAM_ALIASES:
+        alias = TEAM_ALIASES[team_name]
+        if alias is None:
+            _log.debug(
+                "Team '%s' confirmed absent from Elo sources — "
+                "returning default ranking (%.0f)",
+                team_name, DEFAULT_RANKING,
+            )
+            return _resolve_league_for_ranking(
+                TeamRanking(
+                    team_name=team_name,
+                    league_code="UNK",
+                    raw_elo=DEFAULT_RANKING,
+                    normalized_score=50.0,
+                    league_mean_normalized=50.0,
+                    relative_ability=0.0,
+                    match_type="fallback",
+                ),
+                tournament_id,
+                league_snapshots,
+            )
+        effective_name = alias
+
+    # 1. Exact match (cheapest check) — try both original and alias name
+    for lookup in dict.fromkeys([effective_name, team_name]):
+        if lookup in teams:
+            ranking = teams[lookup]
+            ranking.match_type = "exact"
+            return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
 
     # 2. Accent-normalized exact match — handles "Atlético Madrid" matching
     #    "Atletico Madrid" or vice-versa without needing a fuzzy pass.
-    norm_query = _strip_accents(team_name)
-    if norm_query != team_name:
+    norm_query = _strip_accents(effective_name)
+    if norm_query != effective_name:
         for key in teams:
             if _strip_accents(key) == norm_query:
                 ranking = teams[key]
                 ranking.match_type = "exact"
-                return ranking
+                return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
 
     # 3. Build normalized lookup and try fuzzy match
-    match = _fuzzy_find_team(team_name, teams)
+    match = _fuzzy_find_team(effective_name, teams)
     if match is not None:
         _log.info("Fuzzy matched '%s' -> '%s'", team_name, match)
         ranking = teams[match]
         ranking.match_type = "fuzzy"
-        return ranking
+        return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
+
+    # 4. Final fallback — if the team was alias-remapped but still not
+    #    found, return default ranking instead of None.
+    if team_name in TEAM_ALIASES:
+        _log.warning(
+            "Alias-remapped team '%s' (-> '%s') still not found — "
+            "returning default ranking (%.0f)",
+            team_name, effective_name, DEFAULT_RANKING,
+        )
+        return _resolve_league_for_ranking(
+            TeamRanking(
+                team_name=team_name,
+                league_code="UNK",
+                raw_elo=DEFAULT_RANKING,
+                normalized_score=50.0,
+                league_mean_normalized=50.0,
+                relative_ability=0.0,
+                match_type="fallback",
+            ),
+            tournament_id,
+            league_snapshots,
+        )
 
     _log.warning(
         "No Power Ranking match for '%s' among %d teams", team_name, len(teams)
@@ -1797,24 +2200,20 @@ def _fuzzy_find_team(
             best_match = orig
 
     if best_ratio >= _FUZZY_THRESHOLD:
-        # Secondary token validation: reject matches that share fewer than
-        # 2 significant tokens (≥ 4 chars).  This prevents matches like
-        # "Brentford" → "AFC Bournemouth" or "Sivasspor" → "Samsunspor"
-        # where high character-level similarity doesn't reflect true identity.
-        # Only applied when both sides have ≥ 2 tokens (multi-word names);
-        # single-word names like "celtadevigo" vs "celtavigo" are handled
-        # adequately by the SequenceMatcher ratio alone.
-        q_tokens = set(re.findall(r"[a-z]{4,}", q))
-        match_norm = _normalize_team_name(best_match)
-        m_tokens = set(re.findall(r"[a-z]{4,}", match_norm))
-        shared_tokens = q_tokens & m_tokens
-        if len(q_tokens) >= 2 and len(m_tokens) >= 2 and len(shared_tokens) < 2:
-            _log.debug(
-                "Fuzzy match rejected (insufficient token overlap): "
-                "'%s' -> '%s' (ratio=%.3f, shared_tokens=%s)",
-                query, best_match, best_ratio, shared_tokens,
-            )
-            return None
+        # Fix C — Significant-token overlap gate.
+        # Before accepting any fuzzy match, verify at least one significant
+        # token overlaps.  If no overlap, only allow the match when
+        # similarity >= _HIGH_SIMILARITY_BYPASS (handles abbreviation pairs
+        # like "Manchester United" ↔ "Man United" where both collapse to
+        # short tokens).
+        if not _has_token_overlap(query, best_match):
+            if best_ratio < _HIGH_SIMILARITY_BYPASS:
+                _log.debug(
+                    "Fuzzy match rejected (no significant token overlap): "
+                    "'%s' -> '%s' (ratio=%.3f)",
+                    query, best_match, best_ratio,
+                )
+                return None
         return best_match
 
     return None
