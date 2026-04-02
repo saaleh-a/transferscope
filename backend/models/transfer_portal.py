@@ -447,7 +447,10 @@ class TransferPortalModel:
                 continue
             group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
             X_group = full_X[:, group_indices]
-            preds = self.models[group_name].predict(X_group, verbose=0)
+            # Use direct model call instead of model.predict() for
+            # single-sample inference to avoid tf.function retracing
+            # warnings caused by varying input shapes.
+            preds = self.models[group_name](X_group, training=False).numpy()
 
             # Inverse-transform predictions if target scalers are available
             target_scaler = self._target_scalers.get(group_name)
