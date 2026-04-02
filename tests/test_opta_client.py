@@ -433,5 +433,177 @@ class TestOptaToggle(unittest.TestCase):
             pr._USE_OPTA_FOR_INFERENCE = original
 
 
+# ── Verify _resolve_league_for_ranking ────────────────────────────────────────
+
+class TestResolveLeagueForRanking(unittest.TestCase):
+    """Test league resolution from tournament_id for UNK teams."""
+
+    def _make_ranking(self, league_code="UNK", score=72.0):
+        from backend.features.power_rankings import TeamRanking
+        return TeamRanking(
+            team_name="Test Team",
+            league_code=league_code,
+            raw_elo=1500.0,
+            normalized_score=score,
+            league_mean_normalized=50.0,
+            relative_ability=score - 50.0,
+        )
+
+    def _make_snapshot(self, code="ENG1", mean_norm=70.0):
+        from backend.features.power_rankings import LeagueSnapshot
+        return LeagueSnapshot(
+            league_code=code,
+            league_name="Premier League",
+            date=date.today(),
+            mean_elo=1700.0,
+            std_elo=100.0,
+            p10=40.0, p25=55.0, p50=70.0, p75=82.0, p90=90.0,
+            mean_normalized=mean_norm,
+            team_count=20,
+        )
+
+    def test_no_tournament_id_returns_unchanged(self):
+        from backend.features.power_rankings import _resolve_league_for_ranking
+        ranking = self._make_ranking()
+        result = _resolve_league_for_ranking(ranking, None, {})
+        self.assertEqual(result.league_code, "UNK")
+
+    def test_non_unk_league_returns_unchanged(self):
+        from backend.features.power_rankings import _resolve_league_for_ranking
+        ranking = self._make_ranking(league_code="ESP1")
+        result = _resolve_league_for_ranking(ranking, 17, {})
+        self.assertEqual(result.league_code, "ESP1")
+
+    def test_unk_resolved_with_known_tournament_id(self):
+        from backend.features.power_rankings import _resolve_league_for_ranking
+        ranking = self._make_ranking(league_code="UNK", score=72.0)
+        snapshots = {"ENG1": self._make_snapshot("ENG1", 70.0)}
+        # tournament_id=17 → ENG1 (Premier League) in league_registry
+        result = _resolve_league_for_ranking(ranking, 17, snapshots)
+        self.assertEqual(result.league_code, "ENG1")
+        self.assertAlmostEqual(result.league_mean_normalized, 70.0)
+        self.assertAlmostEqual(result.relative_ability, 2.0)  # 72 - 70
+
+    def test_unk_resolved_without_snapshot_keeps_original_mean(self):
+        from backend.features.power_rankings import _resolve_league_for_ranking
+        ranking = self._make_ranking(league_code="UNK", score=72.0)
+        # No snapshot for ENG1
+        result = _resolve_league_for_ranking(ranking, 17, {})
+        self.assertEqual(result.league_code, "ENG1")
+        # league_mean_normalized unchanged since no snapshot
+        self.assertAlmostEqual(result.league_mean_normalized, 50.0)
+
+    def test_unknown_tournament_id_returns_unchanged(self):
+        from backend.features.power_rankings import _resolve_league_for_ranking
+        ranking = self._make_ranking(league_code="UNK")
+        result = _resolve_league_for_ranking(ranking, 999999, {})
+        self.assertEqual(result.league_code, "UNK")
+
+
+# ── Verify get_team_ranking accepts tournament_id ─────────────────────────────
+
+class TestGetTeamRankingTournamentId(unittest.TestCase):
+    """Test that tournament_id resolves UNK league in get_team_ranking."""
+
+    @patch("backend.features.power_rankings.compute_daily_rankings")
+    def test_tournament_id_resolves_unk(self, mock_compute):
+        from backend.features.power_rankings import (
+            TeamRanking, LeagueSnapshot, get_team_ranking,
+        )
+
+        team_ranking = TeamRanking(
+            team_name="Stoke City",
+            league_code="UNK",
+            raw_elo=1500.0,
+            normalized_score=55.0,
+            league_mean_normalized=45.0,
+            relative_ability=10.0,
+        )
+        league_snap = LeagueSnapshot(
+            league_code="ENG2",
+            league_name="Championship",
+            date=date.today(),
+            mean_elo=1500.0,
+            std_elo=80.0,
+            p10=30.0, p25=40.0, p50=50.0, p75=60.0, p90=70.0,
+            mean_normalized=48.0,
+            team_count=24,
+        )
+        mock_compute.return_value = (
+            {"Stoke City": team_ranking},
+            {"ENG2": league_snap},
+        )
+
+        # tournament_id=18 → ENG2 (Championship)
+        result = get_team_ranking("Stoke City", tournament_id=18)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.league_code, "ENG2")
+        self.assertAlmostEqual(result.league_mean_normalized, 48.0)
+        self.assertAlmostEqual(result.relative_ability, 7.0)  # 55 - 48
+
+    @patch("backend.features.power_rankings.compute_daily_rankings")
+    def test_without_tournament_id_stays_unk(self, mock_compute):
+        from backend.features.power_rankings import (
+            TeamRanking, LeagueSnapshot, get_team_ranking,
+        )
+
+        team_ranking = TeamRanking(
+            team_name="Stoke City",
+            league_code="UNK",
+            raw_elo=1500.0,
+            normalized_score=55.0,
+            league_mean_normalized=45.0,
+            relative_ability=10.0,
+        )
+        mock_compute.return_value = (
+            {"Stoke City": team_ranking},
+            {},
+        )
+
+        result = get_team_ranking("Stoke City")
+        self.assertIsNotNone(result)
+        self.assertEqual(result.league_code, "UNK")
+
+
+# ── Verify key_clubelo excluded from dynamic aliases ──────────────────────────
+
+class TestDynamicAliasesExcludeClubElo(unittest.TestCase):
+    """Ensure _build_dynamic_aliases does NOT use key_clubelo column."""
+
+    def test_key_clubelo_not_in_name_columns(self):
+        """The name_columns list should not include key_clubelo."""
+        import backend.features.power_rankings as pr
+
+        # Reset cache so function re-evaluates
+        old_cache = pr._dynamic_aliases_cache
+        pr._dynamic_aliases_cache = None
+        try:
+            # Mock the get_teams_df to return a small DataFrame
+            import pandas as pd
+            mock_df = pd.DataFrame({
+                "name": ["Arsenal F.C.", "Chelsea F.C."],
+                "key_clubelo": ["SomeWrongValue", "AnotherWrong"],
+                "key_fbref": ["Arsenal", "Chelsea"],
+                "key_transfermarkt": ["arsenal", "chelsea-fc"],
+            })
+
+            with patch("backend.data.reep_registry.get_teams_df", return_value=mock_df):
+                aliases = pr._build_dynamic_aliases()
+
+            # Verify that misaligned key_clubelo values did NOT create aliases
+            all_alias_values = set()
+            for key, vals in aliases.items():
+                all_alias_values.add(key)
+                all_alias_values.update(vals)
+
+            # Normalized versions of the wrong values should not appear
+            self.assertNotIn("somewrongvalue", all_alias_values,
+                "key_clubelo value should not appear in aliases")
+            self.assertNotIn("anotherwrong", all_alias_values,
+                "key_clubelo value should not appear in aliases")
+        finally:
+            pr._dynamic_aliases_cache = old_cache
+
+
 if __name__ == "__main__":
     unittest.main()

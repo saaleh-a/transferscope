@@ -753,9 +753,13 @@ def _build_dynamic_aliases() -> Dict[str, List[str]]:
         _log.debug("REEP teams unavailable for alias building: %s", exc)
         return {}
 
-    # Columns that may contain team names across providers
+    # Columns that may contain team names across providers.
+    # NOTE: key_clubelo is deliberately EXCLUDED — the upstream REEP repo has
+    # misaligned values in that column (e.g. Lille OSC→"Fulham"), so using it
+    # as a name variant creates poisonous cross-links.  The remaining columns
+    # (key_fbref, key_transfermarkt) are reliable.
     name_columns = [
-        c for c in ["name", "key_clubelo", "key_fbref", "key_transfermarkt"]
+        c for c in ["name", "key_fbref", "key_transfermarkt"]
         if c in df.columns
     ]
     if not name_columns:
@@ -1010,13 +1014,15 @@ def _compute_rankings_from_opta() -> (
             relative_ability=opta_rating - league_mean,
         )
 
+    unk_count = sum(1 for _, (_, _, c) in all_teams_data.items() if c == "UNK")
     _log.info(
         "Built Opta-based rankings: %d teams, %d leagues "
-        "(%d with ClubElo raw_elo, %d rescaled)",
+        "(%d with ClubElo raw_elo, %d rescaled, %d UNK league)",
         len(team_rankings),
         len(league_snapshots),
         sum(1 for tn in all_teams_data if tn in clubelo_raw),
         sum(1 for tn in all_teams_data if tn not in clubelo_raw),
+        unk_count,
     )
     return team_rankings, league_snapshots
 
@@ -1168,9 +1174,67 @@ def compute_daily_rankings(
     return result
 
 
+def _resolve_league_for_ranking(
+    ranking: TeamRanking,
+    tournament_id: Optional[int],
+    league_snapshots: Dict[str, "LeagueSnapshot"],
+) -> TeamRanking:
+    """Patch a TeamRanking's league fields when tournament_id is available.
+
+    If the ranking has ``league_code == "UNK"`` (team not in ClubElo) but
+    the caller knows the Sofascore ``tournament_id``, we resolve the league
+    via :func:`league_registry.get_by_sofascore_id` and recompute
+    ``league_mean_normalized`` and ``relative_ability`` from the correct
+    league snapshot.
+
+    Returns the (possibly mutated) ranking.
+    """
+    if tournament_id is None:
+        return ranking
+    if ranking.league_code != "UNK":
+        return ranking  # already resolved
+
+    from backend.utils.league_registry import LEAGUES, get_by_sofascore_id
+
+    info = get_by_sofascore_id(tournament_id)
+    if info is None:
+        return ranking
+
+    # Find the matching league code
+    resolved_code: Optional[str] = None
+    for code, li in LEAGUES.items():
+        if li.sofascore_tournament_id == tournament_id:
+            resolved_code = code
+            break
+
+    if resolved_code is None:
+        return ranking
+
+    # If we have a league snapshot for this code, use its mean
+    if resolved_code in league_snapshots:
+        snap = league_snapshots[resolved_code]
+        ranking.league_code = resolved_code
+        ranking.league_mean_normalized = snap.mean_normalized
+        ranking.relative_ability = ranking.normalized_score - snap.mean_normalized
+        _log.debug(
+            "Resolved league for '%s': UNK -> %s (mean=%.1f)",
+            ranking.team_name, resolved_code, snap.mean_normalized,
+        )
+    else:
+        # No snapshot for this league yet — use overall mean as approximation
+        ranking.league_code = resolved_code
+        _log.debug(
+            "Resolved league code for '%s': UNK -> %s (no snapshot available)",
+            ranking.team_name, resolved_code,
+        )
+
+    return ranking
+
+
 def get_team_ranking(
     team_name: str,
     query_date: Optional[date] = None,
+    tournament_id: Optional[int] = None,
 ) -> Optional[TeamRanking]:
     """Get a single team's Power Ranking.
 
@@ -1185,8 +1249,21 @@ def get_team_ranking(
     ``TEAM_ALIASES`` with a ``None`` value), a mid-table fallback
     ranking is returned instead of ``None`` to avoid corrupting
     downstream features.
+
+    Parameters
+    ----------
+    team_name : str
+        Display name of the team (e.g. ``"Arsenal"``).
+    query_date : date, optional
+        Date for historical lookup.  ``None`` → today.
+    tournament_id : int, optional
+        Sofascore tournament ID for the team's league.  When provided and
+        the team's ``league_code`` would otherwise be ``"UNK"``, this is
+        used to resolve the correct league via ``league_registry``.  This
+        also enables accurate ``league_mean_normalized`` and
+        ``relative_ability`` for Opta teams not covered by ClubElo.
     """
-    teams, _ = compute_daily_rankings(query_date)
+    teams, league_snapshots = compute_daily_rankings(query_date)
 
     if not teams:
         _log.warning(
@@ -1206,14 +1283,18 @@ def get_team_ranking(
                 "returning default ranking (%.0f)",
                 team_name, DEFAULT_RANKING,
             )
-            return TeamRanking(
-                team_name=team_name,
-                league_code="UNK",
-                raw_elo=DEFAULT_RANKING,
-                normalized_score=50.0,
-                league_mean_normalized=50.0,
-                relative_ability=0.0,
-                match_type="fallback",
+            return _resolve_league_for_ranking(
+                TeamRanking(
+                    team_name=team_name,
+                    league_code="UNK",
+                    raw_elo=DEFAULT_RANKING,
+                    normalized_score=50.0,
+                    league_mean_normalized=50.0,
+                    relative_ability=0.0,
+                    match_type="fallback",
+                ),
+                tournament_id,
+                league_snapshots,
             )
         effective_name = alias
 
@@ -1222,7 +1303,7 @@ def get_team_ranking(
         if lookup in teams:
             ranking = teams[lookup]
             ranking.match_type = "exact"
-            return ranking
+            return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
 
     # 2. Accent-normalized exact match — handles "Atlético Madrid" matching
     #    "Atletico Madrid" or vice-versa without needing a fuzzy pass.
@@ -1232,7 +1313,7 @@ def get_team_ranking(
             if _strip_accents(key) == norm_query:
                 ranking = teams[key]
                 ranking.match_type = "exact"
-                return ranking
+                return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
 
     # 3. Build normalized lookup and try fuzzy match
     match = _fuzzy_find_team(effective_name, teams)
@@ -1240,7 +1321,7 @@ def get_team_ranking(
         _log.info("Fuzzy matched '%s' -> '%s'", team_name, match)
         ranking = teams[match]
         ranking.match_type = "fuzzy"
-        return ranking
+        return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
 
     # 4. Final fallback — if the team was alias-remapped but still not
     #    found, return default ranking instead of None.
@@ -1250,14 +1331,18 @@ def get_team_ranking(
             "returning default ranking (%.0f)",
             team_name, effective_name, DEFAULT_RANKING,
         )
-        return TeamRanking(
-            team_name=team_name,
-            league_code="UNK",
-            raw_elo=DEFAULT_RANKING,
-            normalized_score=50.0,
-            league_mean_normalized=50.0,
-            relative_ability=0.0,
-            match_type="fallback",
+        return _resolve_league_for_ranking(
+            TeamRanking(
+                team_name=team_name,
+                league_code="UNK",
+                raw_elo=DEFAULT_RANKING,
+                normalized_score=50.0,
+                league_mean_normalized=50.0,
+                relative_ability=0.0,
+                match_type="fallback",
+            ),
+            tournament_id,
+            league_snapshots,
         )
 
     _log.warning(
