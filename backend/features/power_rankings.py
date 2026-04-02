@@ -903,8 +903,9 @@ def _compute_rankings_from_opta() -> (
     for lr in opta_leagues:
         opta_league_ratings[lr.league] = lr.rating
 
-    # Collect all ClubElo data for raw_elo lookups (cheap — already cached).
-    clubelo_raw: Dict[str, float] = {}  # sofascore_name → raw elo
+    # Collect all ClubElo data (single fetch, reused for raw_elo + league mapping).
+    clubelo_raw: Dict[str, float] = {}  # canonical_name → raw elo
+    clubelo_league_map: Dict[str, str] = {}  # canonical_name → league_code
     try:
         clubelo_name_map = _get_clubelo_sofascore_map()
         ce_df = clubelo_client.get_all_by_date(date.today())
@@ -913,53 +914,56 @@ def _compute_rankings_from_opta() -> (
                 elo_val = float(ce_df.loc[raw_name, "elo"])
                 canonical = clubelo_name_map.get(str(raw_name), str(raw_name))
                 clubelo_raw[canonical] = elo_val
-    except Exception as exc:
-        _log.warning("ClubElo fetch for raw_elo overlay failed: %s", exc)
-
-    # Build per-league member lists for LeagueSnapshot computation.
-    # We'll try to map Opta teams to our league codes.  Without a perfect
-    # opta_id→league mapping we fall back to exact name matching against
-    # the ClubElo coverage, then use "UNK" for genuinely unknown leagues.
-    # For simplicity, we group teams by the league they are known to belong
-    # to (via ClubElo) or assign a generic code.
-    all_teams_data: Dict[str, Tuple[float, float, str]] = {}
-    # team_name -> (opta_rating, raw_elo, league_code)
-
-    # Pre-build canonical→league_code from ClubElo
-    clubelo_league_map: Dict[str, str] = {}
-    try:
-        ce_df_for_league = clubelo_client.get_all_by_date(date.today())
-        if ce_df_for_league is not None and len(ce_df_for_league) > 0:
-            clubelo_name_map_local = _get_clubelo_sofascore_map()
-            for raw_name in ce_df_for_league.index:
-                canonical = clubelo_name_map_local.get(str(raw_name), str(raw_name))
-                ce_league = ce_df_for_league.loc[raw_name, "league"]
+                # Also build league code mapping
+                ce_league = ce_df.loc[raw_name, "league"]
                 league_code = _clubelo_to_code(ce_league)
-                if league_code is None and "country" in ce_df_for_league.columns:
+                if league_code is None and "country" in ce_df.columns:
                     league_code = _clubelo_to_code_from_country(
-                        ce_df_for_league.loc[raw_name, "country"],
+                        ce_df.loc[raw_name, "country"],
                         (
-                            ce_df_for_league.loc[raw_name, "level"]
-                            if "level" in ce_df_for_league.columns
+                            ce_df.loc[raw_name, "level"]
+                            if "level" in ce_df.columns
                             else 1
                         ),
                     )
                 if league_code:
                     clubelo_league_map[canonical] = league_code
-    except Exception:
-        pass  # Proceed without league mapping — we'll use "UNK"
+    except Exception as exc:
+        _log.warning("ClubElo fetch for raw_elo/league overlay failed: %s", exc)
+
+    # Build a reverse lookup: opta_name → canonical ClubElo name.
+    # This handles cases where Opta uses "Man City" but ClubElo canonical
+    # is "Manchester City" (or vice versa).  We also index by lowercase for
+    # case-insensitive matching.
+    clubelo_lower_index: Dict[str, str] = {}  # lower(canonical) → canonical
+    for canonical in clubelo_raw:
+        clubelo_lower_index[canonical.lower()] = canonical
+
+    all_teams_data: Dict[str, Tuple[float, float, str]] = {}
+    # team_name -> (opta_rating, raw_elo, league_code)
 
     for opta_team in opta_teams:
         team_name = opta_team.team
         opta_rating = opta_team.rating
 
-        # raw_elo: prefer ClubElo actual Elo, fall back to rescale
+        # raw_elo: prefer ClubElo actual Elo, fall back to rescale.
+        # Try exact match first, then case-insensitive.
         raw_elo = clubelo_raw.get(team_name)
+        if raw_elo is None:
+            ce_canonical = clubelo_lower_index.get(team_name.lower())
+            if ce_canonical is not None:
+                raw_elo = clubelo_raw[ce_canonical]
         if raw_elo is None:
             raw_elo = _opta_score_to_raw_elo(opta_rating)
 
-        # League code: try ClubElo mapping, else "UNK"
-        league_code = clubelo_league_map.get(team_name, "UNK")
+        # League code: try exact, then case-insensitive, else "UNK"
+        league_code = clubelo_league_map.get(team_name)
+        if league_code is None:
+            ce_canonical = clubelo_lower_index.get(team_name.lower())
+            if ce_canonical is not None:
+                league_code = clubelo_league_map.get(ce_canonical, "UNK")
+            else:
+                league_code = "UNK"
 
         all_teams_data[team_name] = (opta_rating, raw_elo, league_code)
 

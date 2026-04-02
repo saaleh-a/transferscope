@@ -96,8 +96,9 @@ def _scrape_team_rankings() -> List[OptaTeamRanking]:
 
     _log.info("Scraping Opta team rankings from %s", _TEAM_URL)
 
-    driver = Driver(uc=True, headless=True)
+    driver = None
     try:
+        driver = Driver(uc=True, headless=True)
         driver.get(_TEAM_URL)
         time.sleep(_LOAD_DELAY)
 
@@ -124,11 +125,10 @@ def _scrape_team_rankings() -> List[OptaTeamRanking]:
                 img = tr.select_one("img")
                 opta_id = ""
                 if img and img.get("src"):
-                    src = img["src"]
-                    if "&id=" in src:
-                        opta_id = src.split("&id=")[-1]
-                    elif "id=" in src:
-                        opta_id = src.split("id=")[-1].split("&")[0]
+                    import re as _re
+
+                    opta_id_match = _re.search(r"[?&]id=([^&]+)", img["src"])
+                    opta_id = opta_id_match.group(1) if opta_id_match else ""
 
                 # Columns: Rank | Team | Rating | 7-day change
                 rank_text = tds[0].get_text(strip=True)
@@ -179,10 +179,11 @@ def _scrape_team_rankings() -> List[OptaTeamRanking]:
         _log.exception("Opta team rankings scrape failed: %s", exc)
         return []
     finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 
 def _scrape_league_rankings() -> List[OptaLeagueRanking]:
@@ -201,8 +202,9 @@ def _scrape_league_rankings() -> List[OptaLeagueRanking]:
 
     _log.info("Scraping Opta league rankings from %s", _LEAGUE_URL)
 
-    driver = Driver(uc=True, headless=True)
+    driver = None
     try:
+        driver = Driver(uc=True, headless=True)
         driver.get(_LEAGUE_URL)
         time.sleep(_LOAD_DELAY)
 
@@ -243,10 +245,11 @@ def _scrape_league_rankings() -> List[OptaLeagueRanking]:
         _log.exception("Opta league rankings scrape failed: %s", exc)
         return []
     finally:
-        try:
-            driver.quit()
-        except Exception:
-            pass
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
 
 
 # ── Public API (cached) ───────────────────────────────────────────────────────
