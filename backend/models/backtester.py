@@ -41,25 +41,41 @@ _TYPICAL_MAX: Dict[str, float] = {
 }
 
 
+# Confidence score component weights.  Metric coverage is the strongest
+# signal (missing stats directly degrade prediction quality); pre-value
+# magnitude and context completeness contribute equally to the remainder.
+_CONF_W_METRIC_COVERAGE = 0.4
+_CONF_W_PRE_MAGNITUDE = 0.3
+_CONF_W_CTX_COMPLETENESS = 0.3
+
+
 def _prediction_confidence(X_row: np.ndarray) -> float:
     """Compute a [0, 1] prediction confidence score from a feature row.
+
+    Parameters
+    ----------
+    X_row : ndarray, shape (FEATURE_DIM,)
+        A single row from the unscaled feature matrix.  The first
+        ``len(CORE_METRICS)`` columns are player per-90 stats; the
+        remaining columns are contextual features (team ability, Elo,
+        REEP metadata, team-position averages, interactions).
 
     Combines three independent signals so that the score has meaningful
     variance across the test set:
 
-    1. **Player metric coverage** (40%) -- fraction of the 13 core per-90
-       stats that are non-zero.  Zeros may indicate missing data rather
-       than genuinely zero contribution.
-    2. **Pre-value magnitude** (30%) -- average of each per-90 stat
-       normalised by its typical upper bound.  Players with very low
-       baselines (e.g. defenders with near-zero xG) get lower scores
-       because the model has less signal to anchor its prediction.
-    3. **Context feature completeness** (30%) -- fraction of non-player
-       features (team ability, Elo, REEP metadata, team-position
-       averages, interactions) that are non-zero.  Missing context
-       degrades prediction quality.
+    1. **Player metric coverage** -- fraction of the core per-90 stats
+       that are non-zero.  Zeros may indicate missing data rather than
+       genuinely zero contribution.
+    2. **Pre-value magnitude** -- average of each per-90 stat normalised
+       by its typical upper bound.  Players with very low baselines
+       (e.g. defenders with near-zero xG) get lower scores because the
+       model has less signal to anchor its prediction.
+    3. **Context feature completeness** -- fraction of non-player features
+       (team ability, Elo, REEP metadata, team-position averages,
+       interactions) that are non-zero.  Missing context degrades
+       prediction quality.
     """
-    n_player = len(CORE_METRICS)  # 13
+    n_player = len(CORE_METRICS)
 
     # Component 1: Player metric coverage
     player_vals = X_row[:n_player]
@@ -80,7 +96,11 @@ def _prediction_confidence(X_row: np.ndarray) -> float:
     ctx_nonzero = int(np.count_nonzero(context_features))
     ctx_completeness = ctx_nonzero / n_ctx if n_ctx > 0 else 0.0
 
-    confidence = 0.4 * metric_coverage + 0.3 * pre_magnitude + 0.3 * ctx_completeness
+    confidence = (
+        _CONF_W_METRIC_COVERAGE * metric_coverage
+        + _CONF_W_PRE_MAGNITUDE * pre_magnitude
+        + _CONF_W_CTX_COMPLETENESS * ctx_completeness
+    )
     return float(np.clip(confidence, 0.0, 1.0))
 
 
