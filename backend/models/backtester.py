@@ -376,7 +376,7 @@ def show_example_predictions(
     # Filter to high-confidence (weight > 0.7)
     high_conf = [m for m in deduped if m.get(conf_key, 0) > 0.7]
     if not high_conf:
-        high_conf = sorted_meta  # Fall back to all if none above threshold
+        high_conf = deduped  # Fall back to all (deduped) if none above threshold
 
     examples = high_conf[:n]
 
