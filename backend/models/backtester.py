@@ -360,8 +360,21 @@ def show_example_predictions(
         reverse=True,
     )
 
+    # Deduplicate by player_id — keep the highest-confidence entry per player.
+    # This prevents the same player appearing multiple times when a transfer
+    # is recorded bidirectionally or across multiple seasons.
+    seen_players: set = set()
+    deduped: List[Dict[str, Any]] = []
+    for m in sorted_meta:
+        pid = m.get("player_id")
+        if pid is not None and pid in seen_players:
+            continue
+        if pid is not None:
+            seen_players.add(pid)
+        deduped.append(m)
+
     # Filter to high-confidence (weight > 0.7)
-    high_conf = [m for m in sorted_meta if m.get(conf_key, 0) > 0.7]
+    high_conf = [m for m in deduped if m.get(conf_key, 0) > 0.7]
     if not high_conf:
         high_conf = sorted_meta  # Fall back to all if none above threshold
 

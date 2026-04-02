@@ -1117,10 +1117,11 @@ _STRIP_ABBREVS = re.compile(
 )
 
 # Minimum similarity ratio (0-1) for SequenceMatcher to accept a match.
-# 0.70 rejects false positives like "Orlando City" matching "Man City" (0.667).
-# Edge cases below 0.70 (ManCity ↔ ManchesterCity = 0.667, ManUtd ↔
-# ManchesterUnited = 0.545) are handled by _EXTREME_ABBREVS instead.
-_FUZZY_THRESHOLD = 0.70
+# 0.85 prevents false positives like "Brentford" matching "AFC Bournemouth"
+# or "Sivasspor" matching "Samsunspor".  Edge cases below 0.85
+# (ManCity ↔ ManchesterCity = 0.667, ManUtd ↔ ManchesterUnited = 0.545)
+# are handled by _EXTREME_ABBREVS instead.
+_FUZZY_THRESHOLD = 0.85
 
 # Abbreviation map for cases where SequenceMatcher mathematically fails
 # (ratio < 0.5) and substring matching can't help.  These cover common
@@ -1796,6 +1797,24 @@ def _fuzzy_find_team(
             best_match = orig
 
     if best_ratio >= _FUZZY_THRESHOLD:
+        # Secondary token validation: reject matches that share fewer than
+        # 2 significant tokens (≥ 4 chars).  This prevents matches like
+        # "Brentford" → "AFC Bournemouth" or "Sivasspor" → "Samsunspor"
+        # where high character-level similarity doesn't reflect true identity.
+        # Only applied when both sides have ≥ 2 tokens (multi-word names);
+        # single-word names like "celtadevigo" vs "celtavigo" are handled
+        # adequately by the SequenceMatcher ratio alone.
+        q_tokens = set(re.findall(r"[a-z]{4,}", q))
+        match_norm = _normalize_team_name(best_match)
+        m_tokens = set(re.findall(r"[a-z]{4,}", match_norm))
+        shared_tokens = q_tokens & m_tokens
+        if len(q_tokens) >= 2 and len(m_tokens) >= 2 and len(shared_tokens) < 2:
+            _log.debug(
+                "Fuzzy match rejected (insufficient token overlap): "
+                "'%s' -> '%s' (ratio=%.3f, shared_tokens=%s)",
+                query, best_match, best_ratio, shared_tokens,
+            )
+            return None
         return best_match
 
     return None
