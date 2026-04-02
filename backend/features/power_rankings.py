@@ -26,6 +26,68 @@ from backend.utils.league_registry import LEAGUES, LeagueInfo
 
 _ONE_DAY = 86400
 
+# ── Significant-token overlap helpers (Fix C) ────────────────────────────────
+# Common short/generic tokens that should be ignored when comparing team names.
+_IGNORE_TOKENS = frozenset({
+    "fc", "afc", "sc", "cf", "sv", "fk", "sk", "ac", "ss", "rc", "as",
+    "cd", "sl", "vv", "kv", "bk", "if", "united", "city", "town",
+    "rovers", "wanderers", "athletic", "real", "club", "sporting",
+})
+
+# Threshold above which a fuzzy match is accepted even without token overlap
+# (handles abbreviation pairs like "Manchester United" ↔ "Man United").
+_HIGH_SIMILARITY_BYPASS = 0.85
+
+
+def _significant_tokens(name: str) -> set:
+    """Return the set of lowercased tokens in *name* that are ≥ 4 chars
+    and not in the ignore list."""
+    return {
+        t.lower()
+        for t in name.split()
+        if len(t) >= 4 and t.lower() not in _IGNORE_TOKENS
+    }
+
+
+def _has_token_overlap(query: str, match: str) -> bool:
+    """Return True if *query* and *match* share at least one significant token."""
+    return bool(_significant_tokens(query) & _significant_tokens(match))
+
+
+# ── Team alias map for known Sofascore↔REEP discrepancies (Problem 2) ────────
+# Value = alternative name to attempt, or None if the team is confirmed absent.
+TEAM_ALIASES: Dict[str, Optional[str]] = {
+    # English Championship
+    "Nottingham Forest": "Nottingham Forest",
+    "Hull City": None,
+    "Cardiff City": None,
+    "Sheffield Wednesday": None,
+    "Huddersfield Town": None,
+    "Luton Town": None,
+    "West Bromwich Albion": "West Brom",
+    # Belgian
+    "Royale Union Saint-Gilloise": "Union SG",
+    "Oud-Heverlee Leuven": None,
+    "Sint-Truidense VV": "St Truiden",
+    "KAS Eupen": None,
+    "KV Kortrijk": None,
+    # Portuguese
+    "Sporting Braga": "Braga",
+    # Scottish
+    "Ross County": None,
+    "St. Johnstone": None,
+    # Italian
+    "Genoa": "Genoa CFC",
+    "Lecce": "US Lecce",
+    # French
+    "Olympique Lyonnais": "Lyon",
+}
+
+# Mid-table fallback ranking for teams confirmed absent from all Elo sources.
+# ClubElo ratings typically range ~1000-2100; 1500 is the median across ~526 top
+# clubs (by design Elo 1500 ≈ average).
+DEFAULT_RANKING = 1500.0
+
 
 # ── ClubElo → Sofascore direct name mapping ──────────────────────────────────
 # ClubElo uses abbreviated team names (e.g. "PSG", "ManCity") while Sofascore
@@ -691,23 +753,35 @@ def _build_dynamic_aliases() -> Dict[str, List[str]]:
 
         # Normalize all variants
         normed = []
+        raw_for_norm: Dict[str, str] = {}  # norm → raw (for token check)
         for v in variants:
             n = _normalize_team_name(v)
             if n and len(n) >= 3:  # skip trivially short
                 normed.append(n)
+                raw_for_norm[n] = v
 
         # Remove duplicates but preserve order
         normed = list(dict.fromkeys(normed))
         if len(normed) < 2:
             continue
 
-        # Create bidirectional links between all pairs
+        # Create bidirectional links between all pairs, but only when
+        # variants share at least one significant token OR have high
+        # character-level similarity.  This prevents cross-links from
+        # misaligned REEP columns (e.g. key_clubelo of Lille OSC being
+        # "Fulham" due to a data error).
         for i, norm_a in enumerate(normed):
             for j, norm_b in enumerate(normed):
-                if i != j:
-                    aliases.setdefault(norm_a, [])
-                    if norm_b not in aliases[norm_a]:
-                        aliases[norm_a].append(norm_b)
+                if i == j:
+                    continue
+                raw_a = raw_for_norm.get(norm_a, norm_a)
+                raw_b = raw_for_norm.get(norm_b, norm_b)
+                sim = SequenceMatcher(None, norm_a, norm_b).ratio()
+                if not _has_token_overlap(raw_a, raw_b) and sim < _HIGH_SIMILARITY_BYPASS:
+                    continue  # skip bogus cross-link
+                aliases.setdefault(norm_a, [])
+                if norm_b not in aliases[norm_a]:
+                    aliases[norm_a].append(norm_b)
 
     _log.info(
         "Built %d dynamic aliases from REEP teams (%d bidirectional links)",
@@ -909,6 +983,11 @@ def get_team_ranking(
 
     The returned ``TeamRanking.match_type`` is ``"exact"`` for direct
     hits or ``"fuzzy"`` when the name was resolved via similarity.
+
+    For teams known to be absent from every Elo source (listed in
+    ``TEAM_ALIASES`` with a ``None`` value), a mid-table fallback
+    ranking is returned instead of ``None`` to avoid corrupting
+    downstream features.
     """
     teams, _ = compute_daily_rankings(query_date)
 
@@ -918,16 +997,40 @@ def get_team_ranking(
         )
         return None
 
-    # 1. Exact match (cheapest check)
-    if team_name in teams:
-        ranking = teams[team_name]
-        ranking.match_type = "exact"
-        return ranking
+    # 0. Check TEAM_ALIASES before any matching.
+    #    - alias is None and name IS in TEAM_ALIASES → confirmed absent, use fallback
+    #    - alias is a string → remap the lookup name and continue matching
+    effective_name = team_name
+    if team_name in TEAM_ALIASES:
+        alias = TEAM_ALIASES[team_name]
+        if alias is None:
+            _log.debug(
+                "Team '%s' confirmed absent from Elo sources — "
+                "returning default ranking (%.0f)",
+                team_name, DEFAULT_RANKING,
+            )
+            return TeamRanking(
+                team_name=team_name,
+                league_code="UNK",
+                raw_elo=DEFAULT_RANKING,
+                normalized_score=50.0,
+                league_mean_normalized=50.0,
+                relative_ability=0.0,
+                match_type="fallback",
+            )
+        effective_name = alias
+
+    # 1. Exact match (cheapest check) — try both original and alias name
+    for lookup in dict.fromkeys([effective_name, team_name]):
+        if lookup in teams:
+            ranking = teams[lookup]
+            ranking.match_type = "exact"
+            return ranking
 
     # 2. Accent-normalized exact match — handles "Atlético Madrid" matching
     #    "Atletico Madrid" or vice-versa without needing a fuzzy pass.
-    norm_query = _strip_accents(team_name)
-    if norm_query != team_name:
+    norm_query = _strip_accents(effective_name)
+    if norm_query != effective_name:
         for key in teams:
             if _strip_accents(key) == norm_query:
                 ranking = teams[key]
@@ -935,12 +1038,30 @@ def get_team_ranking(
                 return ranking
 
     # 3. Build normalized lookup and try fuzzy match
-    match = _fuzzy_find_team(team_name, teams)
+    match = _fuzzy_find_team(effective_name, teams)
     if match is not None:
         _log.info("Fuzzy matched '%s' -> '%s'", team_name, match)
         ranking = teams[match]
         ranking.match_type = "fuzzy"
         return ranking
+
+    # 4. Final fallback — if the team was alias-remapped but still not
+    #    found, return default ranking instead of None.
+    if team_name in TEAM_ALIASES:
+        _log.warning(
+            "Alias-remapped team '%s' (-> '%s') still not found — "
+            "returning default ranking (%.0f)",
+            team_name, effective_name, DEFAULT_RANKING,
+        )
+        return TeamRanking(
+            team_name=team_name,
+            league_code="UNK",
+            raw_elo=DEFAULT_RANKING,
+            normalized_score=50.0,
+            league_mean_normalized=50.0,
+            relative_ability=0.0,
+            match_type="fallback",
+        )
 
     _log.warning(
         "No Power Ranking match for '%s' among %d teams", team_name, len(teams)
@@ -1797,24 +1918,20 @@ def _fuzzy_find_team(
             best_match = orig
 
     if best_ratio >= _FUZZY_THRESHOLD:
-        # Secondary token validation: reject matches that share fewer than
-        # 2 significant tokens (≥ 4 chars).  This prevents matches like
-        # "Brentford" → "AFC Bournemouth" or "Sivasspor" → "Samsunspor"
-        # where high character-level similarity doesn't reflect true identity.
-        # Only applied when both sides have ≥ 2 tokens (multi-word names);
-        # single-word names like "celtadevigo" vs "celtavigo" are handled
-        # adequately by the SequenceMatcher ratio alone.
-        q_tokens = set(re.findall(r"[a-z]{4,}", q))
-        match_norm = _normalize_team_name(best_match)
-        m_tokens = set(re.findall(r"[a-z]{4,}", match_norm))
-        shared_tokens = q_tokens & m_tokens
-        if len(q_tokens) >= 2 and len(m_tokens) >= 2 and len(shared_tokens) < 2:
-            _log.debug(
-                "Fuzzy match rejected (insufficient token overlap): "
-                "'%s' -> '%s' (ratio=%.3f, shared_tokens=%s)",
-                query, best_match, best_ratio, shared_tokens,
-            )
-            return None
+        # Fix C — Significant-token overlap gate.
+        # Before accepting any fuzzy match, verify at least one significant
+        # token overlaps.  If no overlap, only allow the match when
+        # similarity >= _HIGH_SIMILARITY_BYPASS (handles abbreviation pairs
+        # like "Manchester United" ↔ "Man United" where both collapse to
+        # short tokens).
+        if not _has_token_overlap(query, best_match):
+            if best_ratio < _HIGH_SIMILARITY_BYPASS:
+                _log.debug(
+                    "Fuzzy match rejected (no significant token overlap): "
+                    "'%s' -> '%s' (ratio=%.3f)",
+                    query, best_match, best_ratio,
+                )
+                return None
         return best_match
 
     return None
