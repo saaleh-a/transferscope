@@ -108,10 +108,10 @@ class TestSofascoreTeamAliases:
         # Use a sofascore ID that actually exists in the real data.
         # First find one dynamically.
         df = reep_registry.get_teams_df()
-        valid = df[df["key_sofascore"].notna()]
+        valid = df[(df["key_sofascore"] != "") & df["key_sofascore"].str.match(r"^\d+$")]
         if valid.empty:
             pytest.skip("No sofascore IDs in teams.csv")
-        sid = int(float(valid.iloc[0]["key_sofascore"]))
+        sid = int(valid.iloc[0]["key_sofascore"])
         aliases = reep_registry.sofascore_team_aliases(sid)
         assert len(aliases) > 0
 
@@ -144,3 +144,95 @@ class TestEnrichPlayer:
         assert info1 == info2
         # Returned dicts are copies, not the same object
         assert info1 is not info2
+
+
+# ── Data Quality Validation ──────────────────────────────────────────────────
+
+
+class TestTeamsCsvDataQuality:
+    """Validate teams.csv has no misaligned / malformed values."""
+
+    def test_key_sofascore_all_numeric(self):
+        """key_sofascore entries must be clean integer strings (no '.0')."""
+        df = reep_registry.get_teams_df()
+        filled = df[df["key_sofascore"].notna()]
+        for _, row in filled.iterrows():
+            val = str(row["key_sofascore"]).strip()
+            if val:
+                assert val.isdigit(), (
+                    f"key_sofascore '{val}' for {row['name']} is not a clean integer"
+                )
+
+    def test_key_transfermarkt_all_numeric(self):
+        """key_transfermarkt entries must be numeric IDs (no URLs)."""
+        df = reep_registry.get_teams_df()
+        filled = df[df["key_transfermarkt"].notna()]
+        for _, row in filled.iterrows():
+            val = str(row["key_transfermarkt"]).strip()
+            if val and val != "nan":
+                assert not val.startswith("http"), (
+                    f"key_transfermarkt for {row['name']} is a URL: {val}"
+                )
+
+    def test_key_clubelo_no_misalignment(self):
+        """Spot-check known teams have correct key_clubelo."""
+        df = reep_registry.get_teams_df()
+        checks = {
+            "Lille OSC": "Lille",
+            "AFC Bournemouth": "Bournemouth",
+            "Brentford F.C.": "Brentford",
+            "Fulham F.C.": "Fulham",
+        }
+        for team_name, expected_ce in checks.items():
+            rows = df[df["name"] == team_name]
+            if rows.empty:
+                continue
+            for _, row in rows.iterrows():
+                ce = row.get("key_clubelo")
+                if ce is not None and str(ce).strip() and str(ce) != "nan":
+                    assert str(ce).strip() == expected_ce, (
+                        f"{team_name} has key_clubelo='{ce}', expected '{expected_ce}'"
+                    )
+
+
+class TestPeopleCsvDataQuality:
+    """Validate people.csv has no malformed values."""
+
+    def test_height_cm_all_integer(self):
+        """height_cm values must be clean integers (no '.0' or decimals)."""
+        df = reep_registry.get_people_df()
+        filled = df[df["height_cm"].notna()]
+        bad = []
+        for _, row in filled.iterrows():
+            val = str(row["height_cm"]).strip()
+            if val and val != "nan" and not val.isdigit():
+                bad.append((row["key_wikidata"], val))
+                if len(bad) >= 5:
+                    break
+        assert len(bad) == 0, f"Non-integer height_cm values found: {bad}"
+
+    def test_date_of_birth_no_urls(self):
+        """date_of_birth must be YYYY-MM-DD or empty — never a URL."""
+        df = reep_registry.get_people_df()
+        filled = df[df["date_of_birth"].notna()]
+        bad = []
+        for _, row in filled.iterrows():
+            val = str(row["date_of_birth"]).strip()
+            if val and val.startswith("http"):
+                bad.append((row["key_wikidata"], val[:60]))
+                if len(bad) >= 5:
+                    break
+        assert len(bad) == 0, f"URL date_of_birth values found: {bad}"
+
+    def test_key_sofascore_all_numeric(self):
+        """key_sofascore entries must be clean integer strings."""
+        df = reep_registry.get_people_df()
+        filled = df[df["key_sofascore"].notna()]
+        bad = []
+        for _, row in filled.iterrows():
+            val = str(row["key_sofascore"]).strip()
+            if val and val != "nan" and not val.isdigit():
+                bad.append((row["key_wikidata"], val))
+                if len(bad) >= 5:
+                    break
+        assert len(bad) == 0, f"Non-numeric key_sofascore values: {bad}"
