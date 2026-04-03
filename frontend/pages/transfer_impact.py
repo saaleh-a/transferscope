@@ -232,6 +232,50 @@ def render():
 
     change_ra = (target_norm - target_league_mean) - (source_norm - source_league_mean)
 
+    # ── Opta analyst context (UI-only — never fed to model) ──────────────
+    # Fetch raw Opta team objects for form and momentum signals.
+    # These use current-date data only; they are display context, not features.
+    _src_opta = None
+    _tgt_opta = None
+    try:
+        from backend.data import opta_client as _opta_client
+        _opta_teams = _opta_client.get_team_rankings()
+        _opta_by_name = {t.team.lower(): t for t in _opta_teams}
+        _src_opta = _opta_by_name.get(current_team.lower())
+        _tgt_opta = _opta_by_name.get(target_club_display.lower())
+        # Fallback: case-insensitive search if exact lower didn't match
+        if _src_opta is None:
+            for t in _opta_teams:
+                if t.team.lower() == current_team.lower():
+                    _src_opta = t
+                    break
+        if _tgt_opta is None:
+            for t in _opta_teams:
+                if t.team.lower() == target_club_display.lower():
+                    _tgt_opta = t
+                    break
+    except Exception as _opta_exc:
+        _log.debug("Opta analyst context unavailable: %s", _opta_exc)
+
+    # form_delta = current rating − season average (positive = in form)
+    _src_form = (
+        _src_opta.rating - _src_opta.season_avg_rating
+        if _src_opta and _src_opta.season_avg_rating
+        else None
+    )
+    _tgt_form = (
+        _tgt_opta.rating - _tgt_opta.season_avg_rating
+        if _tgt_opta and _tgt_opta.season_avg_rating
+        else None
+    )
+
+    # Opta league ratings for the ambition (league step-up) metric
+    _src_league_code = source_ranking.league_code if source_ranking else None
+    _tgt_league_code = target_ranking.league_code if target_ranking else None
+    _src_opta_league = power_rankings.get_league_opta_rating(_src_league_code, current_team)
+    _tgt_opta_league = power_rankings.get_league_opta_rating(_tgt_league_code, target_club_display)
+    _league_step = _tgt_opta_league - _src_opta_league
+
     # ── (c) RAG confidence ───────────────────────────────────────────────
     features = rolling_windows.compute_player_features(player_stats)
     confidence = features.confidence
@@ -399,6 +443,74 @@ def render():
         f'<span class="ts-stat-value" style="font-size:1.3rem;">{target_norm:.0f}</span>'
         f'<span style="font-size:0.72rem; color:var(--text-muted);">league avg {target_league_mean:.0f}</span>'
         f'</div>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── Opta analyst context cards ───────────────────────────────────────────
+    # Form, momentum, and ambition signals — inference-only, not model features.
+    _form_cards = []
+
+    def _form_html(label: str, club: str, form_val: float | None, change_7d: str | None) -> str:
+        # form_delta card
+        if form_val is not None:
+            _sign = "+" if form_val >= 0 else ""
+            _col = "#2DD4A8" if form_val >= 0 else "#F45B69"
+            _desc = "above season avg" if form_val >= 0 else "below season avg"
+            form_part = (
+                f'<span style="font-size:1.1rem; color:{_col}; font-weight:600;">'
+                f'{_sign}{form_val:.1f}</span>'
+                f'<span style="font-size:0.72rem; color:var(--text-muted);"> {_desc}</span>'
+            )
+        else:
+            form_part = '<span style="font-size:0.8rem; color:var(--text-muted);">No Opta data</span>'
+
+        # 7-day momentum
+        if change_7d and change_7d not in ("0", "None", ""):
+            try:
+                _delta = int(change_7d)
+                _arrow = "↑" if _delta > 0 else "↓"
+                _mcol = "#2DD4A8" if _delta > 0 else "#F45B69"
+                _places = abs(_delta)
+                momentum_part = (
+                    f'<span style="color:{_mcol}; font-size:0.75rem;">'
+                    f'{_arrow}{_places} place{"s" if _places != 1 else ""} (7d)</span>'
+                )
+            except (ValueError, TypeError):
+                momentum_part = ""
+        else:
+            momentum_part = '<span style="font-size:0.72rem; color:var(--text-muted);">stable (7d)</span>'
+
+        return (
+            f'<div class="ts-stat-card" style="flex:1; min-width:180px;">'
+            f'<span class="ts-stat-label">Current Form — {club}</span>'
+            f'{form_part}<br/>{momentum_part}'
+            f'</div>'
+        )
+
+    _src_change_7d = _src_opta.ranking_change_7d if _src_opta else None
+    _tgt_change_7d = _tgt_opta.ranking_change_7d if _tgt_opta else None
+
+    _form_html_src = _form_html("Origin", current_team, _src_form, _src_change_7d)
+    _form_html_tgt = _form_html("Destination", target_club_display, _tgt_form, _tgt_change_7d)
+
+    # Ambition card (league step-up/down)
+    _amb_sign = "+" if _league_step >= 0 else ""
+    _amb_col = "#2DD4A8" if _league_step > 2 else ("#F45B69" if _league_step < -2 else "var(--text-muted)")
+    _amb_label = "step up" if _league_step > 2 else ("step down" if _league_step < -2 else "lateral")
+    _amb_card = (
+        f'<div class="ts-stat-card" style="flex:1; min-width:180px;">'
+        f'<span class="ts-stat-label">League Step-Up</span>'
+        f'<span class="ts-stat-value" style="font-size:1.3rem; color:{_amb_col};">'
+        f'{_amb_sign}{_league_step:.1f}</span>'
+        f'<span style="font-size:0.72rem; color:{_amb_col};">{_amb_label} '
+        f'({_src_opta_league:.0f} → {_tgt_opta_league:.0f})</span>'
+        f'</div>'
+    )
+
+    st.markdown(
+        f'<div style="display:flex; gap:1.5rem; margin:0.6rem 0 1.2rem; flex-wrap:wrap;">'
+        f'{_form_html_src}{_form_html_tgt}{_amb_card}'
         f'</div>',
         unsafe_allow_html=True,
     )

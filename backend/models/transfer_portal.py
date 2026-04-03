@@ -803,7 +803,8 @@ def build_feature_dict(
     return fd
 
 
-FEATURE_DIM = len(_feature_keys())  # 50 (43 base + 2 raw elo + 2 reep + 3 interaction)
+FEATURE_DIM = len(_feature_keys())  # 50 (13 player + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction)
+_log.info("Feature vector dimension: %d", FEATURE_DIM)
 
 
 # ── Improvement 9: Inference-time feature builder ────────────────────────────
@@ -900,16 +901,22 @@ def build_feature_dict_from_player(
         source_team_name, tournament_id=tournament_id,
     ) if source_team_name else None
     team_ability_current = src_ranking.normalized_score if src_ranking else 50.0
-    league_ability_current = src_ranking.league_mean_normalized if src_ranking else 50.0
     raw_elo_current = src_ranking.raw_elo if src_ranking else 1500.0
+    league_ability_current = power_rankings.get_league_opta_rating(
+        src_ranking.league_code if src_ranking else None,
+        source_team_name or None,
+    )
 
     # Target rankings
     tgt_ranking = power_rankings.get_team_ranking(
         target_team_name, tournament_id=target_league_id,
     ) if target_team_name else None
     team_ability_target = tgt_ranking.normalized_score if tgt_ranking else 50.0
-    league_ability_target = tgt_ranking.league_mean_normalized if tgt_ranking else 50.0
     raw_elo_target = tgt_ranking.raw_elo if tgt_ranking else 1500.0
+    league_ability_target = power_rankings.get_league_opta_rating(
+        tgt_ranking.league_code if tgt_ranking else None,
+        target_team_name or None,
+    )
 
     # Step 3: Team-position averages
     try:
