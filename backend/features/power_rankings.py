@@ -117,6 +117,60 @@ _OPTA_ELO_MAX = 2100.0
 # Re-enabled: opta_client now extracts data directly from index.js (no Selenium).
 _USE_OPTA_FOR_INFERENCE = True
 
+# ── In-process rankings cache (keyed by date ISO string) ─────────────────────
+# Avoids repeated diskcache lookups during training (one lookup per unique date
+# instead of one per player call).  Much cheaper than hitting SQLite for every
+# sample in the build loop.
+_rankings_in_process_cache: Dict[str, tuple] = {}
+
+# ── Opta league rating in-process cache ──────────────────────────────────────
+# {league_name_lower: rating (0-100)}.  Populated lazily on first call to
+# get_league_opta_rating().  Avoids re-fetching league-meta.json on every
+# build_training_sample() call across a training run.
+_opta_league_map: Optional[Dict[str, float]] = None
+
+# ── Opta team alias map (short_name / club_name → canonical team name) ────────
+# Built lazily from the Opta team list.  Allows resolving "Man City" or "MCFC"
+# to "Manchester City" without fuzzy matching overhead.
+_opta_alias_map: Optional[Dict[str, str]] = None
+
+# ── ClubElo canonical name aliases ───────────────────────────────────────────
+# Maps incoming Sofascore/Opta display names → names closer to ClubElo's
+# canonical form so the existing exact + fuzzy pipeline resolves them cleanly.
+# Checked BEFORE fuzzy matching.
+CLUBELO_ALIASES: Dict[str, str] = {
+    "New York Red Bulls": "New York RB",
+    "New York Red Bulls II": "New York RB",
+    "Heart of Midlothian": "Hearts",
+    "Royale Union Saint-Gilloise": "Union SG",
+    "TSG Hoffenheim": "Hoffenheim",
+    "FC Porto": "Porto",
+    "AFC Ajax": "Ajax",
+    "Bayer 04 Leverkusen": "Bayer Leverkusen",
+    "FC Bayern München": "Bayern München",
+    "1. FSV Mainz 05": "Mainz 05",
+    "1. FC Heidenheim": "Heidenheim",
+    "Wolverhampton": "Wolverhampton Wanderers",
+    "Bournemouth": "AFC Bournemouth",
+    "Stade Rennais": "Rennes",
+    "RC Strasbourg": "Strasbourg",
+    "AS Monaco": "Monaco",
+    "RSC Anderlecht": "Anderlecht",
+    "Olympique de Marseille": "Olympique Marseille",
+    "Atletico Madrid": "Atlético",
+    "Deportivo La Coruña": "Deportivo La Coruña",
+    "Celta Vigo": "Celta de Vigo",
+}
+
+# ── Youth / reserve suffix stripping ─────────────────────────────────────────
+# Before fuzzy matching, strip suffixes that identify reserve/youth teams.
+# The parent club's Elo is used as a proxy (better than None).
+_YOUTH_SUFFIX_RE = re.compile(
+    r"\s+(U1[5-9]|U2[0-3]|U\d+|II|2nd|2|B|Jong|Youth|Reserve|Reserves"
+    r"|Academy|Atlètic|Atlético\s*B|2ème|FC\s*2)$",
+    re.IGNORECASE,
+)
+
 # ── ClubElo per-team JSON API (replacement for Opta inference path) ───────────
 # http://api.club-elo.com/api/getTeamStats/?team={name} returns JSON with Elo.
 # Cached per-team per-day to avoid hammering the API per-player during build.
@@ -128,6 +182,15 @@ try:
     _clubelo_http = _CurlSessionCls(impersonate="chrome110")
 except Exception:
     import requests as _clubelo_http  # type: ignore
+
+
+def _strip_youth_suffix(name: str) -> str:
+    """Strip youth/reserve suffixes from a team name (e.g. 'Chelsea U21' → 'Chelsea').
+
+    Returns the stripped name if a suffix was found, otherwise returns *name*
+    unchanged.  Only one suffix is stripped to avoid over-stripping.
+    """
+    return _YOUTH_SUFFIX_RE.sub("", name).strip()
 
 
 def _fetch_clubelo_team_elo(team_name: str) -> Optional[float]:
@@ -1103,17 +1166,32 @@ def compute_daily_rankings(
     if query_date is None:
         query_date = date.today()
 
-    key = cache.make_key("power_rankings", query_date.isoformat())
+    # Cap to today — prevents future-date lookups that would time out or
+    # return empty results from ClubElo (the API has no future data).
+    today = date.today()
+    if query_date > today:
+        query_date = today
+
+    date_str = query_date.isoformat()
+
+    # In-process cache — fastest path, avoids diskcache I/O for repeated
+    # dates within the same training run (e.g. all 2022-07-01 samples).
+    if date_str in _rankings_in_process_cache:
+        return _rankings_in_process_cache[date_str]
+
+    key = cache.make_key("power_rankings", date_str)
     cached = cache.get(key, max_age=_ONE_DAY)
     if cached is not None:
+        _rankings_in_process_cache[date_str] = cached
         return cached
 
     # ── Option B: try Opta for current-day inference ──────────────────────
-    if _USE_OPTA_FOR_INFERENCE and query_date == date.today():
+    if _USE_OPTA_FOR_INFERENCE and query_date == today:
         try:
             opta_result = _compute_rankings_from_opta()
             if opta_result is not None:
                 cache.set(key, opta_result)
+                _rankings_in_process_cache[date_str] = opta_result
                 return opta_result
         except Exception as exc:
             _log.warning(
@@ -1223,6 +1301,7 @@ def compute_daily_rankings(
 
     result = (team_rankings, league_snapshots)
     cache.set(key, result)
+    _rankings_in_process_cache[date_str] = result
     return result
 
 
@@ -1283,6 +1362,268 @@ def _resolve_league_for_ranking(
     return ranking
 
 
+# ── Opta league rating helpers ────────────────────────────────────────────────
+
+def _get_opta_league_map() -> Dict[str, float]:
+    """Return {league_name_lower: rating} from Opta league rankings.
+
+    Populated lazily on first call; the underlying opta_client result is
+    already cached for 24 h so this adds only a tiny dict-build overhead.
+    """
+    global _opta_league_map
+    if _opta_league_map is not None:
+        return _opta_league_map
+    try:
+        from backend.data import opta_client
+        _opta_league_map = {
+            lr.league.lower(): lr.rating
+            for lr in opta_client.get_league_rankings()
+            if lr.league
+        }
+        _log.debug("Built Opta league map: %d leagues", len(_opta_league_map))
+    except Exception as exc:
+        _log.warning("Failed to build Opta league map: %s — using empty dict", exc)
+        _opta_league_map = {}
+    return _opta_league_map
+
+
+def _get_opta_alias_map() -> Dict[str, str]:
+    """Return {alias_lower → canonical_team_name} from Opta short/club names.
+
+    Includes ``short_name`` and ``club_name`` fields from every Opta team,
+    mapped back to the canonical ``team`` field used in the team rankings dict.
+    Only aliases that differ from the canonical name are included.
+    """
+    global _opta_alias_map
+    if _opta_alias_map is not None:
+        return _opta_alias_map
+    try:
+        from backend.data import opta_client
+        _opta_alias_map = {}
+        n_aliases = 0
+        n_teams = 0
+        for t in opta_client.get_team_rankings():
+            n_teams += 1
+            canonical = t.team
+            for alt in (t.short_name, t.club_name):
+                if alt and alt.lower() != canonical.lower():
+                    _opta_alias_map[alt.lower()] = canonical
+                    n_aliases += 1
+        _log.info(
+            "Built Opta alias map: %d short_name/club_name aliases from %d teams",
+            n_aliases, n_teams,
+        )
+    except Exception as exc:
+        _log.warning("Failed to build Opta alias map: %s — using empty dict", exc)
+        _opta_alias_map = {}
+    return _opta_alias_map
+
+
+def get_league_opta_rating(
+    league_code: Optional[str] = None,
+    team_name: Optional[str] = None,
+) -> float:
+    """Return Opta league rating (0-100) for a league or team.
+
+    Lookup priority
+    ---------------
+    1. *team_name* → find in Opta team list → ``domestic_league`` field →
+       look up in Opta league ratings.  Most accurate for clubs whose
+       ``domestic_league`` matches the Opta league name exactly.
+    2. *league_code* → ``LEAGUES`` registry name → fuzzy-match in Opta league
+       list.  Covers the ~50 leagues in our registry even when team lookup
+       fails (e.g. training samples without Opta team coverage).
+    3. Returns 50.0 (scale midpoint) when neither resolves and logs at DEBUG.
+
+    This replaces the ClubElo-derived ``league_mean_normalized`` which only
+    covered ~50 European leagues.  Opta league ratings cover 446 leagues on
+    the same 0-100 scale.
+
+    Safe to call during training (leakage risk accepted per task spec): Opta
+    league ratings are relatively stable season-to-season.
+    """
+    league_map = _get_opta_league_map()
+
+    # ── Priority 1: team_name → domestic_league from Opta team object ────────
+    if team_name:
+        try:
+            from backend.data import opta_client
+            name_lower = team_name.lower()
+            alias_map = _get_opta_alias_map()
+            # Resolve via alias if needed (short_name, club_name)
+            canonical = alias_map.get(name_lower, team_name)
+            for t in opta_client.get_team_rankings():
+                if t.team.lower() == canonical.lower() and t.domestic_league:
+                    rating = league_map.get(t.domestic_league.lower())
+                    if rating is not None:
+                        return rating
+        except Exception as exc:
+            _log.debug("Opta team lookup failed for '%s': %s", team_name, exc)
+
+    # ── Priority 2: league_code → registry name → Opta league fuzzy match ────
+    if league_code:
+        info = LEAGUES.get(league_code)
+        if info and info.name:
+            # Exact match
+            rating = league_map.get(info.name.lower())
+            if rating is not None:
+                return rating
+            # Fuzzy match for slight naming differences
+            best_score = 0.0
+            best_rating = None
+            for key, r in league_map.items():
+                score = SequenceMatcher(None, info.name.lower(), key).ratio()
+                if score > best_score and score >= 0.70:
+                    best_score = score
+                    best_rating = r
+            if best_rating is not None:
+                return best_rating
+
+    _log.debug(
+        "No Opta league rating for code=%s, team=%s — returning 50.0",
+        league_code, team_name,
+    )
+    return 50.0
+
+
+def _opta_fallback_ranking(
+    team_name: str,
+    tournament_id: Optional[int],
+    league_snapshots: Dict[str, LeagueSnapshot],
+) -> Optional[TeamRanking]:
+    """Try Opta Power Rankings when ClubElo has no coverage for *team_name*.
+
+    Priority:
+    1. Exact or fuzzy name match in Opta team list → use ``opta_team.rating``
+    2. No team match → find the team's league via *tournament_id* and use
+       the Opta league's average ``rating`` as a proxy.
+    3. Still nothing → return ``None``.
+
+    ``match_type`` is set to ``"opta"`` for a team match and
+    ``"opta_league_avg"`` for a league-average proxy.
+    """
+    try:
+        from backend.data import opta_client
+    except ImportError:
+        return None
+
+    opta_teams = opta_client.get_team_rankings()
+    if not opta_teams:
+        return None
+
+    # ── Step 1: find team in Opta ────────────────────────────────────────────
+    opta_team = None
+
+    # Exact match — check canonical name, short_name, and club_name
+    for t in opta_teams:
+        if (t.team == team_name
+                or (t.short_name and t.short_name == team_name)
+                or (t.club_name and t.club_name == team_name)):
+            opta_team = t
+            break
+
+    # Case-insensitive if exact failed (includes short_name / club_name)
+    if opta_team is None:
+        name_lower = team_name.lower()
+        # Check alias map built from short_name / club_name
+        alias_map = _get_opta_alias_map()
+        canonical_name = alias_map.get(name_lower)
+        if canonical_name:
+            for t in opta_teams:
+                if t.team == canonical_name:
+                    opta_team = t
+                    break
+    if opta_team is None:
+        name_lower = team_name.lower()
+        for t in opta_teams:
+            if (t.team.lower() == name_lower
+                    or (t.short_name and t.short_name.lower() == name_lower)
+                    or (t.club_name and t.club_name.lower() == name_lower)):
+                opta_team = t
+                break
+
+    # Fuzzy if still no match
+    if opta_team is None:
+        best_score = 0.0
+        for t in opta_teams:
+            if _RAPIDFUZZ_AVAILABLE:
+                score = float(_rfuzz.token_sort_ratio(team_name, t.team))
+            else:
+                score = SequenceMatcher(None, team_name.lower(), t.team.lower()).ratio() * 100.0
+            if score > best_score and score >= 80.0:
+                best_score = score
+                opta_team = t
+
+    if opta_team is not None:
+        raw_elo = _opta_score_to_raw_elo(opta_team.rating)
+        # Determine league code — prefer league_snapshots resolution via
+        # tournament_id, fall back to "UNK".
+        league_code = "UNK"
+        league_mean = 50.0
+        if tournament_id is not None:
+            for code, li in LEAGUES.items():
+                if li.sofascore_tournament_id == tournament_id:
+                    league_code = code
+                    if code in league_snapshots:
+                        league_mean = league_snapshots[code].mean_normalized
+                    break
+        ranking = TeamRanking(
+            team_name=team_name,
+            league_code=league_code,
+            raw_elo=raw_elo,
+            normalized_score=opta_team.rating,
+            league_mean_normalized=league_mean,
+            relative_ability=opta_team.rating - league_mean,
+            match_type="opta",
+        )
+        return ranking
+
+    # ── Step 2: league-average proxy via tournament_id ───────────────────────
+    if tournament_id is None:
+        return None
+
+    league_code = "UNK"
+    for code, li in LEAGUES.items():
+        if li.sofascore_tournament_id == tournament_id:
+            league_code = code
+            break
+
+    if league_code == "UNK":
+        return None
+
+    opta_leagues = opta_client.get_league_rankings()
+    if not opta_leagues:
+        return None
+
+    # Look up by league name similarity
+    league_info = LEAGUES.get(league_code)
+    league_display = league_info.name if league_info else league_code
+    best_lr = None
+    best_score = 0.0
+    for lr in opta_leagues:
+        score = SequenceMatcher(None, league_display.lower(), lr.league.lower()).ratio() * 100.0
+        if score > best_score and score >= 60.0:
+            best_score = score
+            best_lr = lr
+
+    if best_lr is None:
+        return None
+
+    raw_elo = _opta_score_to_raw_elo(best_lr.rating)
+    league_mean = best_lr.rating
+    if league_code in league_snapshots:
+        league_mean = league_snapshots[league_code].mean_normalized
+    return TeamRanking(
+        team_name=team_name,
+        league_code=league_code,
+        raw_elo=raw_elo,
+        normalized_score=best_lr.rating,
+        league_mean_normalized=league_mean,
+        relative_ability=0.0,
+        match_type="opta_league_avg",
+    )
+
+
 def get_team_ranking(
     team_name: str,
     query_date: Optional[date] = None,
@@ -1294,13 +1635,10 @@ def get_team_ranking(
     For example, ClubElo returns ``"RealMadrid"`` while Sofascore returns
     ``"Real Madrid"``.
 
-    The returned ``TeamRanking.match_type`` is ``"exact"`` for direct
-    hits or ``"fuzzy"`` when the name was resolved via similarity.
-
-    For teams known to be absent from every Elo source (listed in
-    ``TEAM_ALIASES`` with a ``None`` value), a mid-table fallback
-    ranking is returned instead of ``None`` to avoid corrupting
-    downstream features.
+    The returned ``TeamRanking.match_type`` reflects how the team was
+    resolved: ``"exact"`` / ``"fuzzy"`` for ClubElo, ``"opta"`` for an
+    Opta team match, ``"opta_league_avg"`` for an Opta league-average proxy.
+    Returns ``None`` when no source (ClubElo or Opta) has coverage.
 
     Parameters
     ----------
@@ -1324,33 +1662,25 @@ def get_team_ranking(
         return None
 
     # 0. Check TEAM_ALIASES before any matching.
-    #    - alias is None and name IS in TEAM_ALIASES → confirmed absent, use fallback
+    #    - alias is None → confirmed absent, skip immediately (return None)
     #    - alias is a string → remap the lookup name and continue matching
     effective_name = team_name
     if team_name in TEAM_ALIASES:
         alias = TEAM_ALIASES[team_name]
         if alias is None:
             _log.debug(
-                "Team '%s' confirmed absent from Elo sources — "
-                "returning default ranking (%.0f)",
-                team_name, DEFAULT_RANKING,
+                "Team '%s' confirmed absent from Elo sources — returning None",
+                team_name,
             )
-            return _resolve_league_for_ranking(
-                TeamRanking(
-                    team_name=team_name,
-                    league_code="UNK",
-                    raw_elo=DEFAULT_RANKING,
-                    normalized_score=50.0,
-                    league_mean_normalized=50.0,
-                    relative_ability=0.0,
-                    match_type="fallback",
-                ),
-                tournament_id,
-                league_snapshots,
-            )
+            return None
         effective_name = alias
 
-    # 1. Exact match (cheapest check) — try both original and alias name
+    # 0a. CLUBELO_ALIASES — maps display names to ClubElo canonical names
+    #     before fuzzy matching (exact lookups for known high-value variants).
+    if effective_name in CLUBELO_ALIASES:
+        effective_name = CLUBELO_ALIASES[effective_name]
+
+    # 1. Exact match (cheapest check) — try both effective and original name
     for lookup in dict.fromkeys([effective_name, team_name]):
         if lookup in teams:
             ranking = teams[lookup]
@@ -1367,7 +1697,24 @@ def get_team_ranking(
                 ranking.match_type = "exact"
                 return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
 
-    # 3. Build normalized lookup and try fuzzy match
+    # 2a. Youth-suffix stripping — try the parent club name when the team is
+    #     a reserve/youth side (e.g. "Sporting CP B" → "Sporting CP").
+    stripped = _strip_youth_suffix(effective_name)
+    if stripped != effective_name:
+        for lookup in dict.fromkeys([stripped, _strip_accents(stripped)]):
+            if lookup in teams:
+                ranking = teams[lookup]
+                ranking.match_type = "exact"
+                return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
+        # Also try fuzzy on the stripped name
+        match = _fuzzy_find_team(stripped, teams)
+        if match is not None:
+            _log.info("Youth-stripped fuzzy '%s' -> '%s'", team_name, match)
+            ranking = teams[match]
+            ranking.match_type = "fuzzy"
+            return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
+
+    # 3. Fuzzy match on effective name
     match = _fuzzy_find_team(effective_name, teams)
     if match is not None:
         try:
@@ -1382,30 +1729,18 @@ def get_team_ranking(
         ranking.match_type = "fuzzy"
         return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
 
-    # 4. Final fallback — if the team was alias-remapped but still not
-    #    found, return default ranking instead of None.
-    if team_name in TEAM_ALIASES:
-        _log.warning(
-            "Alias-remapped team '%s' (-> '%s') still not found — "
-            "returning default ranking (%.0f)",
-            team_name, effective_name, DEFAULT_RANKING,
+    # 4. Opta fallback — try Opta Power Rankings when ClubElo has no coverage.
+    opta_result = _opta_fallback_ranking(team_name, tournament_id, league_snapshots)
+    if opta_result is not None:
+        _log.info(
+            "No ClubElo for '%s' — resolved via Opta (score=%.1f, type=%s)",
+            team_name, opta_result.normalized_score, opta_result.match_type,
         )
-        return _resolve_league_for_ranking(
-            TeamRanking(
-                team_name=team_name,
-                league_code="UNK",
-                raw_elo=DEFAULT_RANKING,
-                normalized_score=50.0,
-                league_mean_normalized=50.0,
-                relative_ability=0.0,
-                match_type="fallback",
-            ),
-            tournament_id,
-            league_snapshots,
-        )
+        return opta_result
 
     _log.warning(
-        "No Power Ranking match for '%s' among %d teams", team_name, len(teams)
+        "No Power Ranking match for '%s' among %d teams (ClubElo + Opta checked)",
+        team_name, len(teams)
     )
     return None
 

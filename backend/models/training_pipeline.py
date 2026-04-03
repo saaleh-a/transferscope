@@ -594,39 +594,47 @@ def build_training_sample(
         _log.warning("Power rankings failed: %s, using defaults", exc)
         team_rankings, league_snapshots = {}, {}
 
-    from_ranking = power_rankings.get_team_ranking(record.from_club_name)
-    to_ranking = power_rankings.get_team_ranking(record.to_club_name)
+    from_ranking = power_rankings.get_team_ranking(
+        record.from_club_name,
+        query_date=_ranking_date,
+        tournament_id=record.from_league_id,
+    )
+    to_ranking = power_rankings.get_team_ranking(
+        record.to_club_name,
+        query_date=_ranking_date,
+        tournament_id=record.to_league_id,
+    )
 
-    if from_ranking is not None:
-        team_ability_current = from_ranking.normalized_score
-        raw_elo_current = from_ranking.raw_elo
-    else:
-        # Fallback: use league mean
-        _log.warning("No ranking for %s, using league mean", record.from_club_name)
-        from_league = _find_league_code(record.from_league_id)
-        snap = league_snapshots.get(from_league) if from_league else None
-        team_ability_current = snap.mean_normalized if snap else 50.0
-        raw_elo_current = snap.mean_elo if snap else 1500.0
+    if from_ranking is None or to_ranking is None:
+        _missing = []
+        if from_ranking is None:
+            _missing.append(f"source={record.from_club_name!r}")
+        if to_ranking is None:
+            _missing.append(f"dest={record.to_club_name!r}")
+        _log.debug(
+            "Player %d: no power ranking for %s — dropping",
+            record.player_id, ", ".join(_missing),
+        )
+        return None
 
-    if to_ranking is not None:
-        team_ability_target = to_ranking.normalized_score
-        raw_elo_target = to_ranking.raw_elo
-    else:
-        _log.warning("No ranking for %s, using league mean", record.to_club_name)
-        to_league = _find_league_code(record.to_league_id)
-        snap = league_snapshots.get(to_league) if to_league else None
-        team_ability_target = snap.mean_normalized if snap else 50.0
-        raw_elo_target = snap.mean_elo if snap else 1500.0
+    team_ability_current = from_ranking.normalized_score
+    raw_elo_current = from_ranking.raw_elo
+    team_ability_target = to_ranking.normalized_score
+    raw_elo_target = to_ranking.raw_elo
 
     # Block 3 — League ability (2 values)
+    # Use Opta league ratings (446 leagues, 0-100) instead of ClubElo-derived
+    # league means (~50 European leagues only).  Leakage risk accepted per
+    # task spec: Opta league ratings are stable enough season-to-season.
     from_league_code = _find_league_code(record.from_league_id)
     to_league_code = _find_league_code(record.to_league_id)
 
-    from_snap = league_snapshots.get(from_league_code) if from_league_code else None
-    to_snap = league_snapshots.get(to_league_code) if to_league_code else None
-
-    league_ability_current = from_snap.mean_normalized if from_snap else 50.0
-    league_ability_target = to_snap.mean_normalized if to_snap else 50.0
+    league_ability_current = power_rankings.get_league_opta_rating(
+        from_league_code, record.from_club_name
+    )
+    league_ability_target = power_rankings.get_league_opta_rating(
+        to_league_code, record.to_club_name
+    )
 
     # Block 3b — REEP player metadata
     player_height_cm = 0.0
@@ -1110,15 +1118,18 @@ def build_non_transfer_sample(
     except Exception:
         team_rankings, league_snapshots = {}, {}
 
-    ranking = power_rankings.get_team_ranking(record.club_name)
-    if ranking is not None:
-        team_ability = ranking.normalized_score
-        raw_elo = ranking.raw_elo
-    else:
-        lc = _find_league_code(record.league_id)
-        snap = league_snapshots.get(lc) if lc else None
-        team_ability = snap.mean_normalized if snap else 50.0
-        raw_elo = snap.mean_elo if snap else 1500.0
+    ranking = power_rankings.get_team_ranking(
+        record.club_name,
+        tournament_id=record.league_id,
+    )
+    if ranking is None:
+        _log.debug(
+            "Non-transfer player %d (%s): no power ranking coverage — dropping",
+            record.player_id, record.club_name,
+        )
+        return None
+    team_ability = ranking.normalized_score
+    raw_elo = ranking.raw_elo
 
     league_code = _find_league_code(record.league_id)
     league_snap = league_snapshots.get(league_code) if league_code else None
@@ -1373,11 +1384,42 @@ def build_full_dataset(
     """
     samples = []
     drop_reasons: Dict[str, int] = {}
+    opta_resolved_source = 0
+    opta_resolved_dest = 0
     total = len(transfer_records)
+
+    _OPTA_TYPES = frozenset({"opta", "opta_league_avg"})
 
     for i, record in enumerate(transfer_records):
         if (i + 1) % 50 == 0 or i == 0:
             _log.info("Building sample %d / %d ...", i + 1, total)
+
+        # ── Coverage pre-check ───────────────────────────────────────────────
+        # Resolve the transfer date for date-accurate ranking lookups.
+        _pre_date = None
+        if record.transfer_date:
+            try:
+                _pre_date = date.fromisoformat(record.transfer_date[:10])
+            except (ValueError, TypeError):
+                pass
+
+        from_r = power_rankings.get_team_ranking(
+            record.from_club_name, _pre_date, record.from_league_id
+        )
+        to_r = power_rankings.get_team_ranking(
+            record.to_club_name, _pre_date, record.to_league_id
+        )
+
+        if from_r is None or to_r is None:
+            drop_reasons["no_coverage_at_all"] = (
+                drop_reasons.get("no_coverage_at_all", 0) + 1
+            )
+            continue
+
+        if from_r.match_type in _OPTA_TYPES:
+            opta_resolved_source += 1
+        if to_r.match_type in _OPTA_TYPES:
+            opta_resolved_dest += 1
 
         try:
             sample = build_training_sample(record)
@@ -1458,6 +1500,8 @@ def build_full_dataset(
     print(f"  Valid samples: {len(samples)}")
     print(f"    Transfer samples: {n_transfer_samples}")
     print(f"    Non-transfer samples: {len(samples) - n_transfer_samples}")
+    print(f"  Transfer coverage (of {total} records):")
+    print(f"    Resolved via ClubElo+Opta fallback — source: {opta_resolved_source}, dest: {opta_resolved_dest}")
     print(f"  Dropped: {sum(drop_reasons.values())}")
     for reason, count in sorted(drop_reasons.items(), key=lambda x: -x[1]):
         print(f"    {reason}: {count}")

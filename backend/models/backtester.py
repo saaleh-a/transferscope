@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 
 from backend.data.sofascore_client import CORE_METRICS
+from backend.features import power_rankings
 from backend.models.transfer_portal import (
     FEATURE_DIM,
     MODEL_GROUPS,
@@ -192,8 +193,30 @@ def run_backtest(
     direction_total: Dict[str, int] = {m: 0 for m in CORE_METRICS}
 
     n = len(X_test)
+    skipped_no_coverage = 0
 
     for i in range(n):
+        # Coverage guard — skip samples where neither ClubElo nor Opta covers
+        # both clubs.  Samples built after the training_pipeline pre-filter will
+        # never hit this, but it protects against independently-assembled test sets.
+        meta_i = meta_test[i]
+        from_club = meta_i.get("from_club")
+        to_club = meta_i.get("to_club")
+        if from_club or to_club:
+            _bt_date = None
+            raw_date = meta_i.get("transfer_date")
+            if raw_date:
+                try:
+                    from datetime import date as _date_cls
+                    _bt_date = _date_cls.fromisoformat(str(raw_date)[:10])
+                except (ValueError, TypeError):
+                    pass
+            from_r = power_rankings.get_team_ranking(from_club, _bt_date) if from_club else None
+            to_r = power_rankings.get_team_ranking(to_club, _bt_date) if to_club else None
+            if from_club and from_r is None or to_club and to_r is None:
+                skipped_no_coverage += 1
+                continue
+
         # Naive baseline: player's pre-transfer stats (from X_test, first 13 cols)
         naive_pred = {m: float(X_test[i, j]) for j, m in enumerate(CORE_METRICS)}
 
@@ -246,10 +269,14 @@ def run_backtest(
                     trained_direction[m] += 1
 
     # Aggregate report
-    report: Dict[str, Any] = {"n_samples": n, "per_metric": {}}
+    report: Dict[str, Any] = {
+        "n_samples": n,
+        "skipped_no_coverage": skipped_no_coverage,
+        "per_metric": {},
+    }
 
     print(f"\n{'='*80}")
-    print(f"Backtest Report ({n} test samples)")
+    print(f"Backtest Report ({n} test samples, {skipped_no_coverage} skipped no coverage)")
     print(f"{'='*80}")
     print(f"\n{'Metric':<30} {'MAE':>8} {'MPE%':>8} {'<10%':>6} {'<20%':>6} {'Dir%':>6} {'Naive MAE':>10} {'Improv%':>8}")
     print(f"{'-'*88}")
