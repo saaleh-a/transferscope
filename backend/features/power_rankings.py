@@ -113,9 +113,9 @@ _OPTA_ELO_MIN = 1000.0
 _OPTA_ELO_MAX = 2100.0
 
 # Whether to prefer Opta for current-day rankings.  Set to False to disable
-# the Opta path entirely (e.g. if the scraper is broken).
-# Disabled: dataviz.theanalyst.com is a React SPA — scraping returns empty HTML.
-_USE_OPTA_FOR_INFERENCE = False
+# the Opta path entirely (e.g. if the client is broken).
+# Re-enabled: opta_client now extracts data directly from index.js (no Selenium).
+_USE_OPTA_FOR_INFERENCE = True
 
 # ── ClubElo per-team JSON API (replacement for Opta inference path) ───────────
 # http://api.club-elo.com/api/getTeamStats/?team={name} returns JSON with Elo.
