@@ -578,8 +578,18 @@ def build_training_sample(
         player_metrics.append(val)
 
     # Block 2 — Team ability (2 values)
+    # Parse transfer_date so historical Elo is used instead of today's.
+    # Falling back to None (= today) only when the date is missing/unparseable.
+    _ranking_date = None
+    if record.transfer_date:
+        try:
+            _ranking_date = date.fromisoformat(record.transfer_date[:10])
+        except (ValueError, TypeError):
+            pass
     try:
-        team_rankings, league_snapshots = power_rankings.compute_daily_rankings()
+        team_rankings, league_snapshots = power_rankings.compute_daily_rankings(
+            _ranking_date
+        )
     except Exception as exc:
         _log.warning("Power rankings failed: %s, using defaults", exc)
         team_rankings, league_snapshots = {}, {}
@@ -1637,6 +1647,38 @@ def train_adjustment_models(
                 "actual": actual,
             })
 
+    # ── Bug 4: Validate team rating features before training ─────────────────
+    # If ClubElo was unavailable during dataset build, all teams fall back to
+    # league-mean ability (relative_ability = 0 for every row).  Training on
+    # flat features makes R² ≈ 0.  Fail loudly so this is never silent.
+    if team_rows:
+        from_ras = np.array([r["from_ra"] for r in team_rows])
+        to_ras = np.array([r["to_ra"] for r in team_rows])
+        ra_std = float(np.std(from_ras))
+        # A row where both from_ra AND to_ra are exactly 0 signals a fallback.
+        n_zero = int(np.sum((np.abs(from_ras) < 1e-3) & (np.abs(to_ras) < 1e-3)))
+        fallback_pct = n_zero / len(team_rows)
+        _log.info(
+            "TeamAdjustmentModel feature check: from_ra std=%.3f, "
+            "zero_ra rows=%d/%d (%.1f%%)",
+            ra_std, n_zero, len(team_rows), fallback_pct * 100,
+        )
+        print(f"\n  Team rating feature check:")
+        print(f"    from_ra std = {ra_std:.4f}")
+        print(f"    Zero relative_ability: {n_zero}/{len(team_rows)} ({fallback_pct:.1%})")
+        if ra_std < 0.1:
+            raise RuntimeError(
+                "TeamAdjustmentModel: zero variance in team rating feature "
+                "(from_ra std < 0.1). All teams likely returned default 1500 — "
+                "check ClubElo API connectivity and power_rankings logs."
+            )
+        if fallback_pct > 0.20:
+            raise RuntimeError(
+                f"TeamAdjustmentModel: {fallback_pct:.1%} of rows have "
+                f"zero relative_ability (threshold 20%). Too many teams are "
+                f"on default rating — re-run after fixing ClubElo connectivity."
+            )
+
     # Fit team model
     team_model = TeamAdjustmentModel()
     team_model.fit(team_rows)
@@ -1772,19 +1814,40 @@ def train_neural_network(
     y_train_delta = y_train - X_train[:, :len(CORE_METRICS)]
     y_val_delta = y_val - X_val[:, :len(CORE_METRICS)]
 
-    # Sample weights: prioritise high-confidence samples (more pre-transfer
-    # minutes → more reliable features/labels).  Confidence ∈ [0, 1] from
-    # blend_weight().  Rescale so mean weight ≈ 1.0 to keep loss scale stable.
+    # Sample weights: combine class-balance correction (10:1 transfer ratio)
+    # with confidence weighting (more pre-transfer minutes → more reliable).
+    # Without class balancing the model ignores non-transfer samples entirely.
     sample_weights = None
     if meta_train:
-        raw_weights = np.array(
+        n_total = len(meta_train)
+        n_transfer = sum(1 for m in meta_train if m.get("is_transfer", True))
+        n_non_transfer = n_total - n_transfer
+
+        if n_non_transfer > 0 and n_transfer > 0:
+            # Inverse-frequency class weights so both classes contribute equally.
+            w_transfer = n_total / (2.0 * n_transfer)
+            w_non_transfer = n_total / (2.0 * n_non_transfer)
+            _log.info(
+                "Class balance: %d transfer (w=%.3f), %d non-transfer (w=%.3f)",
+                n_transfer, w_transfer, n_non_transfer, w_non_transfer,
+            )
+            class_w = np.array(
+                [w_transfer if m.get("is_transfer", True) else w_non_transfer
+                 for m in meta_train],
+                dtype=np.float32,
+            )
+        else:
+            class_w = np.ones(n_total, dtype=np.float32)
+
+        confidence_w = np.array(
             [m.get("confidence", 1.0) for m in meta_train], dtype=np.float32,
         )
+        raw_weights = class_w * confidence_w
         mean_w = raw_weights.mean()
         if mean_w > 0:
             sample_weights = raw_weights / mean_w
             _log.info(
-                "Sample weights: min=%.3f, max=%.3f, mean=%.3f",
+                "Sample weights (class×confidence): min=%.3f, max=%.3f, mean=%.3f",
                 sample_weights.min(), sample_weights.max(), sample_weights.mean(),
             )
         else:
