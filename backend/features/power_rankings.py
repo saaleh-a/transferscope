@@ -31,6 +31,14 @@ import pandas as pd
 from backend.data import cache, clubelo_client, elo_router, worldfootballelo_client
 from backend.utils.league_registry import LEAGUES, LeagueInfo
 
+# Prefer rapidfuzz for token_sort_ratio (faster, no GPL license issues).
+# Falls back to SequenceMatcher (stdlib difflib) if rapidfuzz is not installed.
+try:
+    from rapidfuzz import fuzz as _rfuzz
+    _RAPIDFUZZ_AVAILABLE = True
+except ImportError:
+    _RAPIDFUZZ_AVAILABLE = False
+
 
 _ONE_DAY = 86400
 
@@ -106,7 +114,51 @@ _OPTA_ELO_MAX = 2100.0
 
 # Whether to prefer Opta for current-day rankings.  Set to False to disable
 # the Opta path entirely (e.g. if the scraper is broken).
-_USE_OPTA_FOR_INFERENCE = True
+# Disabled: dataviz.theanalyst.com is a React SPA — scraping returns empty HTML.
+_USE_OPTA_FOR_INFERENCE = False
+
+# ── ClubElo per-team JSON API (replacement for Opta inference path) ───────────
+# http://api.club-elo.com/api/getTeamStats/?team={name} returns JSON with Elo.
+# Cached per-team per-day to avoid hammering the API per-player during build.
+_CLUBELO_JSON_BASE = "http://api.club-elo.com"
+_CLUBELO_JSON_TTL = 86400  # 24 h
+
+try:
+    from curl_cffi.requests import Session as _CurlSessionCls
+    _clubelo_http = _CurlSessionCls(impersonate="chrome110")
+except Exception:
+    import requests as _clubelo_http  # type: ignore
+
+
+def _fetch_clubelo_team_elo(team_name: str) -> Optional[float]:
+    """Fetch current Elo for a single team via the club-elo.com JSON API.
+
+    Endpoint: GET http://api.club-elo.com/api/getTeamStats/?team={team_name}
+    Response: JSON object with an ``Elo`` field (float, ~1000-2100 scale).
+
+    Results are cached per team per day so we never hit the endpoint more than
+    once per team per training run.  Returns ``None`` on any failure.
+    """
+    cache_key = cache.make_key(
+        "clubelo_json_elo", team_name, date.today().isoformat()
+    )
+    cached = cache.get(cache_key, max_age=_CLUBELO_JSON_TTL)
+    if cached is not None:
+        return float(cached)
+
+    url = f"{_CLUBELO_JSON_BASE}/api/getTeamStats/?team={team_name}"
+    try:
+        resp = _clubelo_http.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            elo = data.get("Elo") or data.get("elo") or data.get("ELO")
+            if elo is not None:
+                elo_float = float(elo)
+                cache.set(cache_key, elo_float)
+                return elo_float
+    except Exception as exc:
+        _log.debug("ClubElo JSON fetch failed for '%s': %s", team_name, exc)
+    return None
 
 
 def _opta_score_to_raw_elo(opta_score: float) -> float:
@@ -1318,7 +1370,14 @@ def get_team_ranking(
     # 3. Build normalized lookup and try fuzzy match
     match = _fuzzy_find_team(effective_name, teams)
     if match is not None:
-        _log.info("Fuzzy matched '%s' -> '%s'", team_name, match)
+        try:
+            _log.info("Fuzzy matched '%s' -> '%s'", team_name, match)
+        except UnicodeEncodeError:
+            _log.info(
+                "Fuzzy matched '%s' -> '%s'",
+                team_name.encode("ascii", "replace").decode("ascii"),
+                match.encode("ascii", "replace").decode("ascii"),
+            )
         ranking = teams[match]
         ranking.match_type = "fuzzy"
         return _resolve_league_for_ranking(ranking, tournament_id, league_snapshots)
@@ -2149,6 +2208,8 @@ def _fuzzy_find_team(
     #    Guard: require the shorter name to be at least 6 chars AND
     #    represent >= 45% of the longer name.  This prevents
     #    "paris" (5 chars, 29% of "parissaintgermain") from matching.
+    #    Additional guard: require token overlap so "angers" ⊂ "rangers"
+    #    does not produce a false match (no shared significant tokens).
     best_sub: Optional[str] = None
     best_sub_len = 0
     for norm, orig in candidates.items():
@@ -2159,6 +2220,8 @@ def _fuzzy_find_team(
             continue
         ratio = len(shorter) / len(longer)
         if ratio < 0.45:
+            continue
+        if not _has_token_overlap(query, orig):
             continue
         if len(shorter) > best_sub_len:
             best_sub = orig
@@ -2188,32 +2251,46 @@ def _fuzzy_find_team(
         if best_word_match is not None and best_word_overlap >= 5:
             return best_word_match
 
-    # 5. SequenceMatcher fuzzy matching — works for any team, any league
-    #    Handles "ManCity" ↔ "manchestercity", "Flamengo" ↔ "Flamengo RJ",
-    #    "São Paulo" ↔ "SaoPaulo", etc.
+    # 5. token_sort_ratio fuzzy matching on ORIGINAL names.
+    #    Comparing original (non-normalised) strings preserves word structure
+    #    so that multi-word names like "Angers SCO" score much lower against
+    #    "Rangers FC" (~52) than against "Angers" (~100).  Using normalised
+    #    names collapsed both to "angerso"/"rangers" giving a misleadingly
+    #    high SequenceMatcher ratio of 0.857 which caused false matches.
+    #
+    #    Minimum accepted score: 80 (fuzz 0-100 scale).
+    #    Token-overlap bypass: only for score >= 95 (handles abbreviation
+    #    pairs like "Man United" ↔ "Manchester United" that share no 4-char
+    #    token after normalisation but are unambiguous at high similarity).
+    _MIN_FUZZY_SCORE = 80
+
     best_match: Optional[str] = None
-    best_ratio = 0.0
-    for norm, orig in candidates.items():
-        ratio = SequenceMatcher(None, q, norm).ratio()
-        if ratio > best_ratio:
-            best_ratio = ratio
+    best_score = 0
+    for orig in teams:
+        if _RAPIDFUZZ_AVAILABLE:
+            score = _rfuzz.token_sort_ratio(query, orig)
+        else:
+            # Graceful fallback to SequenceMatcher on normalised names.
+            norm = _normalize_team_name(orig)
+            score = int(SequenceMatcher(None, q, norm).ratio() * 100)
+        if score > best_score:
+            best_score = score
             best_match = orig
 
-    if best_ratio >= _FUZZY_THRESHOLD:
-        # Fix C — Significant-token overlap gate.
-        # Before accepting any fuzzy match, verify at least one significant
-        # token overlaps.  If no overlap, only allow the match when
-        # similarity >= _HIGH_SIMILARITY_BYPASS (handles abbreviation pairs
-        # like "Manchester United" ↔ "Man United" where both collapse to
-        # short tokens).
+    if best_match is not None and best_score >= _MIN_FUZZY_SCORE:
         if not _has_token_overlap(query, best_match):
-            if best_ratio < _HIGH_SIMILARITY_BYPASS:
-                _log.debug(
-                    "Fuzzy match rejected (no significant token overlap): "
-                    "'%s' -> '%s' (ratio=%.3f)",
-                    query, best_match, best_ratio,
+            if best_score < 95:
+                _log.warning(
+                    "Fuzzy match rejected (no token overlap): "
+                    "'%s' -> '%s' (score=%d)",
+                    query, best_match, best_score,
                 )
                 return None
         return best_match
 
+    if best_match is not None:
+        _log.warning(
+            "No fuzzy match for '%s' (best='%s', score=%d < %d) — returning None",
+            query, best_match, best_score, _MIN_FUZZY_SCORE,
+        )
     return None
