@@ -2117,7 +2117,6 @@ _OPTA_DL_ALIASES: Dict[Tuple[str, str], str] = {
     # France — league title sponsorship names
     ("ligue 1 uber eats", "france"): "FRA1",
     ("ligue 1 mcdonald's", "france"): "FRA1",
-    ("ligue 1 mcdonald's", "france"): "FRA1",
     # Italy — league title sponsorship names
     ("serie a tim", "italy"): "ITA1",
     ("serie a enilive", "italy"): "ITA1",
