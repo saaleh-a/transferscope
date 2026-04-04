@@ -819,6 +819,108 @@ _CLUBELO_TO_SOFASCORE: Dict[str, str] = {
     "GaziantepFK": "Gaziantep FK",
     "Eyupspor": "Eyüpspor",
     "Pendikspor": "Pendikspor",
+    # ── ClubElo API names (space-containing, as returned by api.clubelo.com) ──
+    # The keys above were built for old soccerdata format (no spaces).
+    # These entries cover the actual HTTP API names so the lookup always hits.
+    # England
+    "Man City": "Manchester City",
+    "Man United": "Manchester United",
+    "West Ham": "West Ham United",
+    "West Brom": "West Bromwich Albion",
+    "Forest": "Nottingham Forest",
+    "Sheffield United": "Sheffield United",
+    "Sheffield Weds": "Sheffield Wednesday",
+    "Aston Villa": "Aston Villa",
+    "Crystal Palace": "Crystal Palace",
+    "Ipswich": "Ipswich Town",
+    "Derby": "Derby County",
+    "Birmingham": "Birmingham City",
+    "Middlesbrough": "Middlesbrough",
+    # France
+    "Paris SG": "Paris Saint-Germain",
+    "Paris FC": "Paris FC",
+    "Saint-Etienne": "AS Saint-Étienne",
+    "Le Havre": "Le Havre AC",
+    # Germany
+    "RB Leipzig": "RB Leipzig",
+    "Union Berlin": "1. FC Union Berlin",
+    "St Pauli": "FC St. Pauli",
+    "Koeln": "1. FC Köln",
+    "Hertha": "Hertha BSC",
+    # Spain
+    "Real Madrid": "Real Madrid",
+    "Bilbao": "Athletic Club",
+    "Sociedad": "Real Sociedad",
+    "Celta": "Celta Vigo",
+    "Rayo Vallecano": "Rayo Vallecano",
+    "Sociedad B": "Real Sociedad B",
+    # Norway
+    "Bodoe Glimt": "FK Bodø/Glimt",
+    # Belgium
+    "St Gillis": "Royale Union Saint-Gilloise",
+    "St Truiden": "Sint-Truidense VV",
+    "Cercle Brugge": "Cercle Brugge KSV",
+    # Netherlands
+    "Alkmaar": "AZ Alkmaar",
+    "Nijmegen": "NEC Nijmegen",
+    "Sparta Rotterdam": "Sparta Rotterdam",
+    "Go Ahead Eagles": "Go Ahead Eagles",
+    "Sittard": "Fortuna Sittard",
+    # Serbia
+    "Crvena Zvezda": "FK Crvena zvezda",
+    "Red Star": "FK Crvena zvezda",
+    "Novi Sad": "FK Vojvodina",
+    "Backa Topola": "FK TSC Bačka Topola",
+    # Russia
+    "Lok Moskva": "Lokomotiv Moscow",
+    "CSKA Moskva": "CSKA Moscow",
+    "Spartak Moskva": "Spartak Moscow",
+    "Dynamo Moskva": "FC Dynamo Moscow",
+    "Kryliya Sovetov": "Krylia Sovetov Samara",
+    "FC Krasnodar": "FK Krasnodar",
+    "Nizhny Novgorod": "FC Nizhny Novgorod",
+    # Ukraine
+    "Dynamo Kyiv": "Dynamo Kyiv",
+    # Denmark
+    "FC Kobenhavn": "FC Copenhagen",
+    "Aarhus": "Aarhus GF",
+    "Nordsjaelland": "FC Nordsjælland",
+    # Czech Republic
+    "Slavia Praha": "Slavia Prague",
+    "Sparta Praha": "Sparta Prague",
+    "Bohemians Praha": "Bohemians 1905",
+    # Turkey
+    "Bueyueksehir": "İstanbul Başakşehir FK",
+    "Kayseri": "Kayserispor",
+    # Azerbaijan
+    "Karabakh Agdam": "FK Qarabağ",
+    # Scotland
+    "St Mirren": "St Mirren FC",
+    "Dundee United": "Dundee United FC",
+    # Portugal
+    "Gil Vicente": "Gil Vicente FC",
+    "Santa Clara": "CS Santa Clara",
+    "Rio Ave": "Rio Ave FC",
+    "Famalicao": "FC Famalicão",
+    # Sweden
+    "Mjaellby": "Mjällby AIF",
+    # Poland
+    "Plock": "Wisła Płock",
+    "Katowice": "GKS Katowice",
+    "Lubin": "Zagłębie Lubin",
+    "Gornik": "Górnik Zabrze",
+    "Nieciecza": "Bruk-Bet Termalica Nieciecza",
+    # Romania
+    "Rapid Bucuresti": "Rapid București",
+    "Dinamo Bucuresti": "Dinamo București",
+    "Universitatea Cluj": "Universitatea Cluj",
+    "Craiova": "Universitatea Craiova",
+    # Israel
+    "M Tel Aviv": "Maccabi Tel Aviv FC",
+    "H Tel Aviv": "Hapoel Tel Aviv FC",
+    "H Petach Tikva": "Hapoel Petach Tikva FC",
+    "Beer-Sheva": "Hapoel Be'er Sheva FC",
+    "Aris Limassol": "Aris Limassol FC",
 }
 
 # Build reverse lookup (Sofascore → ClubElo) for history queries
