@@ -1559,13 +1559,18 @@ def _opta_fallback_ranking(
     # ── Step 1: find team in Opta ────────────────────────────────────────────
     opta_team = None
 
-    # Exact match — check canonical name, short_name, and club_name
-    for t in opta_teams:
+    # Exact match — collect ALL matches and pick the highest-ranked one
+    # (rank=1 is best).  This prevents low-quality clubs with the same name
+    # (e.g. "Arsenal Guadeloupe", rank=6446) from shadowing the real club
+    # (e.g. "Arsenal" London, rank=1).
+    exact_matches = [
+        t for t in opta_teams
         if (t.team == team_name
-                or (t.short_name and t.short_name == team_name)
-                or (t.club_name and t.club_name == team_name)):
-            opta_team = t
-            break
+            or (t.short_name and t.short_name == team_name)
+            or (t.club_name and t.club_name == team_name))
+    ]
+    if exact_matches:
+        opta_team = min(exact_matches, key=lambda t: t.rank)
 
     # Case-insensitive if exact failed (includes short_name / club_name)
     if opta_team is None:
@@ -1574,18 +1579,19 @@ def _opta_fallback_ranking(
         alias_map = _get_opta_alias_map()
         canonical_name = alias_map.get(name_lower)
         if canonical_name:
-            for t in opta_teams:
-                if t.team == canonical_name:
-                    opta_team = t
-                    break
+            alias_matches = [t for t in opta_teams if t.team == canonical_name]
+            if alias_matches:
+                opta_team = min(alias_matches, key=lambda t: t.rank)
     if opta_team is None:
         name_lower = team_name.lower()
-        for t in opta_teams:
+        ci_matches = [
+            t for t in opta_teams
             if (t.team.lower() == name_lower
-                    or (t.short_name and t.short_name.lower() == name_lower)
-                    or (t.club_name and t.club_name.lower() == name_lower)):
-                opta_team = t
-                break
+                or (t.short_name and t.short_name.lower() == name_lower)
+                or (t.club_name and t.club_name.lower() == name_lower))
+        ]
+        if ci_matches:
+            opta_team = min(ci_matches, key=lambda t: t.rank)
 
     # Fuzzy if still no match
     if opta_team is None:
@@ -1602,7 +1608,8 @@ def _opta_fallback_ranking(
     if opta_team is not None:
         raw_elo = _opta_score_to_raw_elo(opta_team.rating)
         # Determine league code — prefer league_snapshots resolution via
-        # tournament_id, fall back to "UNK".
+        # tournament_id; fall back to fuzzy match on opta_team.domestic_league;
+        # last resort "UNK".
         league_code = "UNK"
         league_mean = 50.0
         if tournament_id is not None:
@@ -1612,6 +1619,21 @@ def _opta_fallback_ranking(
                     if code in league_snapshots:
                         league_mean = league_snapshots[code].mean_normalized
                     break
+        # If tournament_id didn't resolve a league, try matching
+        # opta_team.domestic_league against our LEAGUES display names.
+        if league_code == "UNK" and opta_team.domestic_league:
+            dl_lower = opta_team.domestic_league.lower()
+            best_lc_score = 0.0
+            for code, li in LEAGUES.items():
+                if _RAPIDFUZZ_AVAILABLE:
+                    sc = float(_rfuzz.token_sort_ratio(dl_lower, li.name.lower()))
+                else:
+                    sc = SequenceMatcher(None, dl_lower, li.name.lower()).ratio() * 100.0
+                if sc > best_lc_score and sc >= 70.0:
+                    best_lc_score = sc
+                    league_code = code
+            if league_code != "UNK" and league_code in league_snapshots:
+                league_mean = league_snapshots[league_code].mean_normalized
         ranking = TeamRanking(
             team_name=team_name,
             league_code=league_code,
