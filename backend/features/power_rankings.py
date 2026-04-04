@@ -1320,15 +1320,12 @@ def _compute_rankings_from_opta() -> (
         code = _OPTA_COUNTRY_LEAGUE_TO_CODE.get((country, league_name))
         if not code:
             # Also try with the LEAGUES registry: if the league name matches a
-            # registry entry's name, use that code.
+            # registry entry's name (optionally restricted by country), use
+            # that code.
             for lcode, linfo in LEAGUES.items():
                 if linfo.name and linfo.name.lower() == league_name:
                     code = lcode
                     break
-                if linfo.country and linfo.country.lower() == country:
-                    if linfo.name and linfo.name.lower() == league_name:
-                        code = lcode
-                        break
         if code and n_teams > 0:
             official_counts[code] = n_teams
 
