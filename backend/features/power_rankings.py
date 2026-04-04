@@ -1282,12 +1282,6 @@ def _compute_rankings_from_opta() -> (
         # while "Premier League"+"Wales" maps to WAL1.  This picks up teams
         # that ClubElo doesn't cover (e.g. newly promoted clubs) without the
         # false-positive risk of name-only matching.
-        # Opta (country, domestic_league) exact lookup → "UNK".
-        # The exact (country, league) lookup fills in teams ClubElo misses
-        # (e.g. Bundesliga has 18 clubs but ClubElo only tracks ~10).
-        # Using BOTH fields prevents pollution: "Premier League" in Wales,
-        # Belarus, Armenia etc. never matches ENG1 because their country
-        # doesn't equal "england".
         league_code = clubelo_league_map.get(team_name)
         if league_code is None:
             ce_canonical = clubelo_lower_index.get(team_name.lower())
