@@ -1859,6 +1859,31 @@ def train_neural_network(
     # (e.g. successful_passes 30-80 vs expected_goals 0-1)
     target_scalers: Dict[str, StandardScaler] = {}
 
+    # ── Data quality filter ──────────────────────────────────────────────────
+    # Remove training samples where pre-transfer xG is missing (zero) for
+    # non-GK players.  Sofascore tracks shots for almost all leagues but only
+    # tracks xG for the top ~30 leagues.  When pre_xG = 0 the "delta" label
+    # becomes y_delta = post_xG − 0 = absolute post_xG (not a real delta).
+    # This corrupts the gradient for all attacking metrics for ~17% of samples.
+    # Goalkeepers legitimately score no xG so we exempt position == "G".
+    XG_COL = CORE_METRICS.index("expected_goals")
+    if meta_train:
+        gk_mask = np.array([m.get("position", "?") == "G" for m in meta_train])
+        # Drop non-GK samples where pre-transfer xG is 0 (missing, not real)
+        drop_mask = (X_train[:, XG_COL] == 0) & ~gk_mask
+        n_dropped = int(drop_mask.sum())
+        if n_dropped:
+            keep = ~drop_mask
+            _log.info(
+                "Data quality filter: dropping %d / %d training samples "
+                "with missing pre-transfer xG (non-GK, xG=0 from league without xG tracking)",
+                n_dropped, len(X_train),
+            )
+            X_train = X_train[keep]
+            y_train = y_train[keep]
+            meta_train = [m for m, k in zip(meta_train, keep) if k]
+            X_train_scaled = scaler.transform(X_train)   # re-scale filtered set
+
     # Compute deltas: train model to predict (post - pre) instead of absolute
     # post-transfer values.  Pre-transfer per-90 is already an excellent
     # predictor of post-transfer per-90, so the model only needs to learn
@@ -2197,30 +2222,44 @@ def run_pipeline(
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
-    # Force UTF-8 encoding on stream handlers to prevent UnicodeEncodeError
-    # on Windows (cp1252 default can't encode non-ASCII chars like → or
-    # accented player/team names from Turkish, Polish, etc. leagues).
-    for handler in logging.root.handlers:
-        if isinstance(handler, logging.StreamHandler) and hasattr(handler, "stream"):
-            stream = handler.stream
-            if hasattr(stream, "reconfigure"):
+    # ── Bulletproof Unicode safety for Windows cp1252 consoles ───────────────
+    # reconfigure() fails silently on Windows Store Python / Windows console
+    # streams that don't support it.  Instead we patch every handler's emit()
+    # so that UnicodeEncodeError is caught at the last moment and non-ASCII
+    # chars are replaced with '?'.  Works regardless of the stream type.
+    def _make_unicode_safe(handler: logging.Handler) -> None:
+        _orig_emit = handler.emit
+
+        def _safe_emit(record: logging.LogRecord) -> None:
+            try:
+                _orig_emit(record)
+            except UnicodeEncodeError:
+                # Re-encode message and args to ASCII with replacement
+                safe = logging.makeLogRecord(record.__dict__)
+                safe.msg = str(record.msg).encode("ascii", "replace").decode("ascii")
+                if record.args:
+                    if isinstance(record.args, dict):
+                        safe.args = {
+                            k: str(v).encode("ascii", "replace").decode("ascii")
+                            if isinstance(v, str) else v
+                            for k, v in record.args.items()
+                        }
+                    else:
+                        args = record.args if isinstance(record.args, tuple) else (record.args,)
+                        safe.args = tuple(
+                            str(a).encode("ascii", "replace").decode("ascii")
+                            if isinstance(a, str) else a
+                            for a in args
+                        )
                 try:
-                    stream.reconfigure(encoding="utf-8", errors="replace")
-                except (OSError, ValueError) as exc:
-                    _log.debug("Could not reconfigure stream to UTF-8: %s", exc)
-            elif hasattr(stream, "fileno"):
-                try:
-                    new_stream = open(
-                        stream.fileno(),
-                        mode="w",
-                        encoding="utf-8",
-                        buffering=1,
-                        closefd=False,
-                    )
-                    handler.stream.flush()
-                    handler.stream = new_stream
-                except (OSError, ValueError) as exc:
-                    _log.debug("Could not reconfigure stream to UTF-8: %s", exc)
+                    _orig_emit(safe)
+                except Exception:
+                    pass
+
+        handler.emit = _safe_emit  # type: ignore[method-assign]
+
+    for _h in logging.root.handlers:
+        _make_unicode_safe(_h)
 
     _report("Starting", "TransferScope Training Pipeline")
 

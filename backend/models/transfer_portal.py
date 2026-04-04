@@ -66,7 +66,7 @@ DELTA_CLIP_FLOOR = 0.5
 # (zero delta).  Prevents systematic overshoot when the model is uncertain.
 # Applied *before* clipping so that the shrunken delta is what gets compared
 # against the clip threshold — the two guards compose naturally.
-DELTA_SHRINKAGE = 0.75
+DELTA_SHRINKAGE = 0.50
 
 # ── Target group definitions ─────────────────────────────────────────────────
 
