@@ -11,8 +11,6 @@ from unittest.mock import MagicMock, patch
 from backend.data.opta_client import (
     OptaLeagueRanking,
     OptaTeamRanking,
-    _parse_float,
-    _parse_int,
 )
 
 
@@ -48,42 +46,6 @@ def _make_opta_league(
     )
 
 
-# ── Unit tests: parse helpers ─────────────────────────────────────────────────
-
-class TestParseHelpers(unittest.TestCase):
-    """Test the _parse_float and _parse_int utility functions."""
-
-    def test_parse_float_normal(self):
-        self.assertAlmostEqual(_parse_float("95.2"), 95.2)
-
-    def test_parse_float_with_comma(self):
-        self.assertAlmostEqual(_parse_float("1,234.5"), 1234.5)
-
-    def test_parse_float_empty(self):
-        self.assertAlmostEqual(_parse_float(""), 0.0)
-
-    def test_parse_float_invalid(self):
-        self.assertAlmostEqual(_parse_float("N/A"), 0.0)
-
-    def test_parse_float_whitespace(self):
-        self.assertAlmostEqual(_parse_float("  42.0  "), 42.0)
-
-    def test_parse_int_normal(self):
-        self.assertEqual(_parse_int("42"), 42)
-
-    def test_parse_int_with_hash(self):
-        self.assertEqual(_parse_int("#42"), 42)
-
-    def test_parse_int_with_comma(self):
-        self.assertEqual(_parse_int("1,234"), 1234)
-
-    def test_parse_int_empty(self):
-        self.assertEqual(_parse_int(""), 0)
-
-    def test_parse_int_invalid(self):
-        self.assertEqual(_parse_int("abc"), 0)
-
-
 # ── Unit tests: dataclass construction ────────────────────────────────────────
 
 class TestOptaDataclasses(unittest.TestCase):
@@ -108,10 +70,10 @@ class TestOptaDataclasses(unittest.TestCase):
 class TestOptaCaching(unittest.TestCase):
     """Test that get_team_rankings / get_league_rankings use the cache."""
 
-    @patch("backend.data.opta_client._scrape_team_rankings")
+    @patch("backend.data.opta_client._load_team_rankings_from_bundle")
     @patch("backend.data.opta_client.cache")
-    def test_team_rankings_cache_hit(self, mock_cache, mock_scrape):
-        """When cache has data, scraper should not be called."""
+    def test_team_rankings_cache_hit(self, mock_cache, mock_load):
+        """When cache has data, loader should not be called."""
         from backend.data.opta_client import get_team_rankings
 
         mock_cache.make_key.return_value = "opta_team_rankings:2026-04-02"
@@ -119,40 +81,40 @@ class TestOptaCaching(unittest.TestCase):
 
         result = get_team_rankings()
         self.assertEqual(len(result), 1)
-        mock_scrape.assert_not_called()
+        mock_load.assert_not_called()
 
-    @patch("backend.data.opta_client._scrape_team_rankings")
+    @patch("backend.data.opta_client._load_team_rankings_from_bundle")
     @patch("backend.data.opta_client.cache")
-    def test_team_rankings_cache_miss(self, mock_cache, mock_scrape):
-        """When cache is empty, scraper should be called and result cached."""
+    def test_team_rankings_cache_miss(self, mock_cache, mock_load):
+        """When cache is empty, loader should be called and result cached."""
         from backend.data.opta_client import get_team_rankings
 
         mock_cache.make_key.return_value = "opta_team_rankings:2026-04-02"
         mock_cache.get.return_value = None
-        mock_scrape.return_value = [_make_opta_team()]
+        mock_load.return_value = [_make_opta_team()]
 
         result = get_team_rankings()
         self.assertEqual(len(result), 1)
-        mock_scrape.assert_called_once()
+        mock_load.assert_called_once()
         mock_cache.set.assert_called_once()
 
-    @patch("backend.data.opta_client._scrape_team_rankings")
+    @patch("backend.data.opta_client._load_team_rankings_from_bundle")
     @patch("backend.data.opta_client.cache")
-    def test_force_refresh_bypasses_cache(self, mock_cache, mock_scrape):
+    def test_force_refresh_bypasses_cache(self, mock_cache, mock_load):
         """force_refresh=True should bypass cache."""
         from backend.data.opta_client import get_team_rankings
 
         mock_cache.make_key.return_value = "opta_team_rankings:2026-04-02"
-        mock_scrape.return_value = [_make_opta_team()]
+        mock_load.return_value = [_make_opta_team()]
 
         result = get_team_rankings(force_refresh=True)
         self.assertEqual(len(result), 1)
         # cache.get should NOT have been called
         mock_cache.get.assert_not_called()
 
-    @patch("backend.data.opta_client._scrape_league_rankings")
+    @patch("backend.data.opta_client._load_league_rankings_from_meta")
     @patch("backend.data.opta_client.cache")
-    def test_league_rankings_cache_hit(self, mock_cache, mock_scrape):
+    def test_league_rankings_cache_hit(self, mock_cache, mock_load):
         from backend.data.opta_client import get_league_rankings
 
         mock_cache.make_key.return_value = "opta_league_rankings:2026-04-02"
@@ -160,7 +122,7 @@ class TestOptaCaching(unittest.TestCase):
 
         result = get_league_rankings()
         self.assertEqual(len(result), 1)
-        mock_scrape.assert_not_called()
+        mock_load.assert_not_called()
 
 
 # ── Unit tests: dict helpers ──────────────────────────────────────────────────
@@ -603,6 +565,206 @@ class TestDynamicAliasesExcludeClubElo(unittest.TestCase):
                 "key_clubelo value should not appear in aliases")
         finally:
             pr._dynamic_aliases_cache = old_cache
+
+
+# ── Tests: league name collision fix ──────────────────────────────────────────
+
+class TestLeagueNameCollision(unittest.TestCase):
+    """Verify that _get_opta_league_map keeps the highest-rated entry when
+    multiple leagues share the same name (e.g. "Premier League" exists in
+    England, Ukraine, Kazakhstan etc.).
+    """
+
+    def setUp(self):
+        """Reset module-level caches before each test."""
+        import backend.features.power_rankings as pr
+        pr._opta_league_map = None
+        pr._opta_league_country_map = None
+        pr._opta_league_team_counts = None
+
+    def tearDown(self):
+        import backend.features.power_rankings as pr
+        pr._opta_league_map = None
+        pr._opta_league_country_map = None
+        pr._opta_league_team_counts = None
+
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_keeps_highest_rated_for_duplicate_name(self, mock_leagues):
+        """'Premier League' should resolve to England's rating, not Kazakhstan's."""
+        from backend.features.power_rankings import _get_opta_league_map
+
+        mock_leagues.return_value = [
+            # Sorted by rating DESC (as the real function returns)
+            OptaLeagueRanking(rank=1, league="Premier League", rating=86.0,
+                              ranking_change_7d="0", country="England",
+                              number_of_teams=20),
+            OptaLeagueRanking(rank=50, league="Premier League", rating=53.0,
+                              ranking_change_7d="0", country="Ukraine",
+                              number_of_teams=16),
+            OptaLeagueRanking(rank=80, league="Premier League", rating=40.0,
+                              ranking_change_7d="0", country="Kazakhstan",
+                              number_of_teams=14),
+        ]
+
+        league_map = _get_opta_league_map()
+        # Name-only lookup should return the highest-rated (England's)
+        self.assertAlmostEqual(league_map["premier league"], 86.0)
+
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_country_qualified_map_built(self, mock_leagues):
+        """Country-qualified map should have separate entries per country."""
+        import backend.features.power_rankings as pr
+        from backend.features.power_rankings import _get_opta_league_map
+
+        mock_leagues.return_value = [
+            OptaLeagueRanking(rank=1, league="Premier League", rating=86.0,
+                              ranking_change_7d="0", country="England",
+                              number_of_teams=20),
+            OptaLeagueRanking(rank=50, league="Premier League", rating=53.0,
+                              ranking_change_7d="0", country="Ukraine",
+                              number_of_teams=16),
+        ]
+
+        _get_opta_league_map()  # triggers build
+        country_map = pr._opta_league_country_map
+        self.assertIsNotNone(country_map)
+        self.assertAlmostEqual(country_map[("england", "premier league")], 86.0)
+        self.assertAlmostEqual(country_map[("ukraine", "premier league")], 53.0)
+
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_team_counts_populated(self, mock_leagues):
+        """Official team counts from league-meta.json should be stored."""
+        import backend.features.power_rankings as pr
+        from backend.features.power_rankings import _get_opta_league_map
+
+        mock_leagues.return_value = [
+            OptaLeagueRanking(rank=1, league="Premier League", rating=86.0,
+                              ranking_change_7d="0", country="England",
+                              number_of_teams=20),
+            OptaLeagueRanking(rank=2, league="La Liga", rating=86.2,
+                              ranking_change_7d="0", country="Spain",
+                              number_of_teams=20),
+        ]
+
+        _get_opta_league_map()
+        counts = pr._opta_league_team_counts
+        self.assertIsNotNone(counts)
+        self.assertEqual(counts[("england", "premier league")], 20)
+        self.assertEqual(counts[("spain", "la liga")], 20)
+
+
+class TestTeamLeagueMapCountryAware(unittest.TestCase):
+    """Verify that _get_opta_alias_map uses country-qualified lookup to
+    build the team→league rating map.
+    """
+
+    def setUp(self):
+        import backend.features.power_rankings as pr
+        pr._opta_league_map = None
+        pr._opta_league_country_map = None
+        pr._opta_league_team_counts = None
+        pr._opta_alias_map = None
+        pr._opta_team_league_map = None
+
+    def tearDown(self):
+        import backend.features.power_rankings as pr
+        pr._opta_league_map = None
+        pr._opta_league_country_map = None
+        pr._opta_league_team_counts = None
+        pr._opta_alias_map = None
+        pr._opta_team_league_map = None
+
+    @patch("backend.data.opta_client.get_team_rankings")
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_team_gets_correct_league_rating_despite_name_collision(
+        self, mock_leagues, mock_teams
+    ):
+        """Arsenal (England) should get EPL's rating (86.0), not Ukraine's (53.0)."""
+        from backend.features.power_rankings import _get_opta_team_league_map
+
+        mock_leagues.return_value = [
+            OptaLeagueRanking(rank=1, league="Premier League", rating=86.0,
+                              ranking_change_7d="0", country="England",
+                              number_of_teams=20),
+            OptaLeagueRanking(rank=50, league="Premier League", rating=53.0,
+                              ranking_change_7d="0", country="Ukraine",
+                              number_of_teams=16),
+        ]
+        mock_teams.return_value = [
+            OptaTeamRanking(
+                rank=1, team="Arsenal", rating=91.0,
+                ranking_change_7d="+1", opta_id="ars1",
+                domestic_league="Premier League", country="England",
+            ),
+            OptaTeamRanking(
+                rank=200, team="Shakhtar Donetsk", rating=60.0,
+                ranking_change_7d="0", opta_id="sd1",
+                domestic_league="Premier League", country="Ukraine",
+            ),
+        ]
+
+        team_map = _get_opta_team_league_map()
+        # Arsenal should get England's Premier League rating
+        self.assertAlmostEqual(team_map["arsenal"], 86.0)
+        # Shakhtar should get Ukraine's Premier League rating
+        self.assertAlmostEqual(team_map["shakhtar donetsk"], 53.0)
+
+
+class TestOfficialTeamCountInSnapshot(unittest.TestCase):
+    """Verify that league snapshots use official team counts from league-meta.json
+    when available, preventing inflated counts (e.g. 22 for EPL instead of 20).
+    """
+
+    @patch("backend.features.power_rankings.clubelo_client")
+    @patch("backend.features.power_rankings._get_clubelo_sofascore_map")
+    @patch("backend.data.opta_client.get_team_rankings")
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_official_count_caps_inflated_team_list(
+        self, mock_opta_leagues, mock_opta_teams, mock_ce_map, mock_ce_client
+    ):
+        """If Opta data has 22 EPL teams but league-meta says 20, snapshot should show 20."""
+        import backend.features.power_rankings as pr
+        from backend.features.power_rankings import _compute_rankings_from_opta
+
+        # Reset caches
+        pr._opta_league_map = None
+        pr._opta_league_country_map = None
+        pr._opta_league_team_counts = None
+
+        # Build 22 teams all tagged as English Premier League
+        teams = []
+        for i in range(22):
+            teams.append(OptaTeamRanking(
+                rank=i + 1,
+                team=f"Team {i}",
+                rating=90.0 - i,
+                ranking_change_7d="0",
+                opta_id=f"t{i}",
+                domestic_league="Premier League",
+                country="England",
+            ))
+        mock_opta_teams.return_value = teams
+
+        # League-meta says EPL has 20 teams
+        mock_opta_leagues.return_value = [
+            OptaLeagueRanking(rank=1, league="Premier League", rating=86.0,
+                              ranking_change_7d="0", country="England",
+                              number_of_teams=20),
+        ]
+        mock_ce_map.return_value = {}
+        mock_ce_client.get_all_by_date.return_value = None
+
+        try:
+            result = _compute_rankings_from_opta()
+            self.assertIsNotNone(result)
+            _, league_snapshots = result
+            eng1 = league_snapshots.get("ENG1")
+            self.assertIsNotNone(eng1)
+            self.assertEqual(eng1.team_count, 20)
+        finally:
+            pr._opta_league_map = None
+            pr._opta_league_country_map = None
+            pr._opta_league_team_counts = None
 
 
 if __name__ == "__main__":

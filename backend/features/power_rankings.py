@@ -127,7 +127,16 @@ _rankings_in_process_cache: Dict[str, tuple] = {}
 # {league_name_lower: rating (0-100)}.  Populated lazily on first call to
 # get_league_opta_rating().  Avoids re-fetching league-meta.json on every
 # build_training_sample() call across a training run.
+# NOTE: Keeps only the *highest-rated* entry when multiple leagues share the
+# same name (e.g. "Premier League" exists in England, Ukraine, Kazakhstan).
 _opta_league_map: Optional[Dict[str, float]] = None
+
+# Country-qualified Opta league map: {(country_lower, league_lower): rating}
+# Used for precise lookup when the team's country is known.
+_opta_league_country_map: Optional[Dict[tuple, float]] = None
+
+# League-meta.json official team counts: {(country_lower, league_lower): n}
+_opta_league_team_counts: Optional[Dict[tuple, int]] = None
 
 # ── Opta team alias map (short_name / club_name → canonical team name) ────────
 # Built lazily from the Opta team list.  Allows resolving "Man City" or "MCFC"
@@ -1299,12 +1308,52 @@ def _compute_rankings_from_opta() -> (
     for team_name, (opta_rating, raw_elo, code) in all_teams_data.items():
         league_teams.setdefault(code, []).append((team_name, raw_elo, opta_rating))
 
+    # Resolve official team counts from league-meta.json.
+    # Maps league_code → official numberOfTeams (e.g. ENG1 → 20).
+    # Uses _OPTA_COUNTRY_LEAGUE_TO_CODE to map (country, league) from
+    # league-meta.json to league codes, then checks opta_league_team_counts.
+    _get_opta_league_map()  # ensure _opta_league_team_counts is populated
+    official_counts: Dict[str, int] = {}
+    league_meta_counts = _opta_league_team_counts or {}
+    for (country, league_name), n_teams in league_meta_counts.items():
+        # Try exact (country, league_name) → code via _OPTA_COUNTRY_LEAGUE_TO_CODE
+        code = _OPTA_COUNTRY_LEAGUE_TO_CODE.get((country, league_name))
+        if not code:
+            # Also try with the LEAGUES registry: if the league name matches a
+            # registry entry's name, use that code.
+            for lcode, linfo in LEAGUES.items():
+                if linfo.name and linfo.name.lower() == league_name:
+                    code = lcode
+                    break
+                if linfo.country and linfo.country.lower() == country:
+                    if linfo.name and linfo.name.lower() == league_name:
+                        code = lcode
+                        break
+        if code and n_teams > 0:
+            official_counts[code] = n_teams
+
     today = date.today()
     league_snapshots: Dict[str, LeagueSnapshot] = {}
     for code, members in league_teams.items():
         raw_elos = np.array([e for _, e, _ in members])
         norms = np.array([n for _, _, n in members])
         info = LEAGUES.get(code)
+
+        # Use official team count from league-meta.json when available;
+        # fall back to the computed count.
+        official_n = official_counts.get(code)
+        if official_n is not None and official_n < len(members):
+            # Too many teams matched — keep only the top N by Opta rating
+            # (they are the actual league members; extras are likely recently
+            # relegated or duplicate-named teams).
+            members_sorted = sorted(members, key=lambda m: m[2], reverse=True)
+            members = members_sorted[:official_n]
+            raw_elos = np.array([e for _, e, _ in members])
+            norms = np.array([n for _, _, n in members])
+
+        computed_count = len(members)
+        team_count = official_n if official_n is not None else computed_count
+
         league_snapshots[code] = LeagueSnapshot(
             league_code=code,
             league_name=info.name if info else code,
@@ -1317,7 +1366,7 @@ def _compute_rankings_from_opta() -> (
             p75=float(np.percentile(norms, 75)) if len(norms) > 1 else float(norms[0]),
             p90=float(np.percentile(norms, 90)) if len(norms) > 1 else float(norms[0]),
             mean_normalized=float(np.mean(norms)),
-            team_count=len(members),
+            team_count=team_count,
         )
 
     # Build team rankings
@@ -1571,23 +1620,49 @@ def _resolve_league_for_ranking(
 def _get_opta_league_map() -> Dict[str, float]:
     """Return {league_name_lower: rating} from Opta league rankings.
 
+    When multiple leagues share the same ``leagueName`` (e.g. "Premier League"
+    exists in England, Ukraine, Kazakhstan etc.) we keep only the **highest-
+    rated** entry so that name-only lookups resolve to the strongest league.
+
+    Also builds the country-qualified map ``_opta_league_country_map``
+    ``{(country_lower, league_lower): rating}`` and the official team count
+    map ``_opta_league_team_counts`` for precise lookups.
+
     Populated lazily on first call; the underlying opta_client result is
     already cached for 24 h so this adds only a tiny dict-build overhead.
     """
-    global _opta_league_map
+    global _opta_league_map, _opta_league_country_map, _opta_league_team_counts
     if _opta_league_map is not None:
         return _opta_league_map
     try:
         from backend.data import opta_client
-        _opta_league_map = {
-            lr.league.lower(): lr.rating
-            for lr in opta_client.get_league_rankings()
-            if lr.league
-        }
-        _log.debug("Built Opta league map: %d leagues", len(_opta_league_map))
+        _opta_league_map = {}
+        _opta_league_country_map = {}
+        _opta_league_team_counts = {}
+        # Leagues are sorted by rating descending (strongest first), so the
+        # first occurrence of each name is the highest-rated → keep it.
+        for lr in opta_client.get_league_rankings():
+            if not lr.league:
+                continue
+            key = lr.league.lower()
+            if key not in _opta_league_map:
+                _opta_league_map[key] = lr.rating
+            # Country-qualified map: always store (no collisions on tuples)
+            if lr.country:
+                ckey = (lr.country.lower(), key)
+                _opta_league_country_map[ckey] = lr.rating
+                if lr.number_of_teams > 0:
+                    _opta_league_team_counts[ckey] = lr.number_of_teams
+        _log.debug(
+            "Built Opta league map: %d names, %d country-qualified, %d with team counts",
+            len(_opta_league_map), len(_opta_league_country_map),
+            len(_opta_league_team_counts),
+        )
     except Exception as exc:
         _log.warning("Failed to build Opta league map: %s — using empty dict", exc)
         _opta_league_map = {}
+        _opta_league_country_map = {}
+        _opta_league_team_counts = {}
     return _opta_league_map
 
 
@@ -1607,6 +1682,8 @@ def _get_opta_alias_map() -> Dict[str, str]:
     try:
         from backend.data import opta_client
         league_map = _get_opta_league_map()
+        # Country-qualified map populated as a side effect of _get_opta_league_map
+        country_map = _opta_league_country_map or {}
         _opta_alias_map = {}
         _opta_team_league_map = {}
         n_aliases = 0
@@ -1621,7 +1698,15 @@ def _get_opta_alias_map() -> Dict[str, str]:
                     n_aliases += 1
             # ── team → league rating flat index ──────────────────────────────
             if t.domestic_league:
-                rating = league_map.get(t.domestic_league.lower())
+                # Priority: country-qualified lookup (no name collisions),
+                # then fall back to name-only (highest-rated kept).
+                rating = None
+                if t.country:
+                    rating = country_map.get(
+                        (t.country.lower(), t.domestic_league.lower())
+                    )
+                if rating is None:
+                    rating = league_map.get(t.domestic_league.lower())
                 if rating is not None:
                     _opta_team_league_map[canonical.lower()] = rating
                     if t.short_name:
