@@ -1193,6 +1193,7 @@ def _compute_rankings_from_opta() -> (
     clubelo_raw: Dict[str, float] = {}  # canonical_name → raw elo
     clubelo_league_map: Dict[str, str] = {}  # canonical_name → league_code
     clubelo_raw_name_to_canonical: Dict[str, str] = {}  # raw ClubElo name → canonical
+    clubelo_name_map: Dict[str, str] = {}  # populated inside try; used for Opta name normalization
     try:
         clubelo_name_map = _get_clubelo_sofascore_map()
         ce_df = clubelo_client.get_all_by_date(date.today())
@@ -1246,6 +1247,11 @@ def _compute_rankings_from_opta() -> (
 
     for opta_team in opta_teams:
         team_name = opta_team.team
+        # Normalise Opta team name via the ClubElo alias map so that
+        # alternate spellings from Opta (e.g. "Wolves", "Leeds") are
+        # collapsed to the canonical form ("Wolverhampton Wanderers",
+        # "Leeds United") before the rank-dedup check below.
+        team_name = clubelo_name_map.get(team_name, team_name)
         opta_rating = opta_team.rating
 
         # Skip if we already have a better-ranked team with this exact name.
