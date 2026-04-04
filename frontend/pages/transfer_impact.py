@@ -184,8 +184,13 @@ def render():
                      rating=player_stats.get("rating"))
 
     # ── Power Rankings ───────────────────────────────────────────────────
+    # Pass tournament_id so that UNK league codes can be resolved via
+    # _resolve_league_for_ranking() when domestic_league fuzzy match also
+    # fails (e.g. completely unknown leagues).
     with st.spinner("Computing Power Rankings..."):
-        source_ranking = power_rankings.get_team_ranking(current_team)
+        source_ranking = power_rankings.get_team_ranking(
+            current_team, tournament_id=tournament_id
+        )
         target_ranking = power_rankings.get_team_ranking(target_club_display)
 
     if source_ranking is None:

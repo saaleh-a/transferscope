@@ -1097,14 +1097,31 @@ def _compute_rankings_from_opta() -> (
         if raw_elo is None:
             raw_elo = _opta_score_to_raw_elo(opta_rating)
 
-        # League code: try exact, then case-insensitive, else "UNK"
+        # League code: try ClubElo exact → ClubElo case-insensitive →
+        # Opta domestic_league fuzzy match → "UNK".
+        # Using domestic_league means the ~13 k Opta-only teams (not in
+        # ClubElo) still get classified into real leagues, dramatically
+        # shrinking the "UNK" bucket and improving league averages.
         league_code = clubelo_league_map.get(team_name)
         if league_code is None:
             ce_canonical = clubelo_lower_index.get(team_name.lower())
             if ce_canonical is not None:
                 league_code = clubelo_league_map.get(ce_canonical, "UNK")
-            else:
-                league_code = "UNK"
+        if (league_code is None or league_code == "UNK") and opta_team.domestic_league:
+            dl_lower = opta_team.domestic_league.lower()
+            best_lc_score = 0.0
+            resolved = "UNK"
+            for code, li in LEAGUES.items():
+                if _RAPIDFUZZ_AVAILABLE:
+                    sc = float(_rfuzz.token_sort_ratio(dl_lower, li.name.lower()))
+                else:
+                    sc = SequenceMatcher(None, dl_lower, li.name.lower()).ratio() * 100.0
+                if sc > best_lc_score and sc >= 70.0:
+                    best_lc_score = sc
+                    resolved = code
+            league_code = resolved
+        if not league_code:
+            league_code = "UNK"
 
         all_teams_data[team_name] = (opta_rating, raw_elo, league_code)
         all_teams_rank[team_name] = opta_team.rank
