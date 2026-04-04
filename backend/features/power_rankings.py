@@ -134,6 +134,17 @@ _opta_league_map: Optional[Dict[str, float]] = None
 # to "Manchester City" without fuzzy matching overhead.
 _opta_alias_map: Optional[Dict[str, str]] = None
 
+# ── Opta team→league rating flat index ───────────────────────────────────────
+# {team_name_lower: league_rating}.  Avoids iterating 14k Opta teams on every
+# get_league_opta_rating() call during training (was O(14k) per sample).
+# Populated lazily alongside _opta_alias_map; same lifetime.
+_opta_team_league_map: Optional[Dict[str, float]] = None
+
+# ── LEAGUES code → Opta rating resolved cache ─────────────────────────────────
+# Pre-resolved on first call to get_league_opta_rating(); avoids running the
+# fuzzy SequenceMatcher loop over 446 leagues on every training sample.
+_league_code_opta_rating_cache: Dict[str, float] = {}
+
 # ── ClubElo canonical name aliases ───────────────────────────────────────────
 # Maps incoming Sofascore/Opta display names → names closer to ClubElo's
 # canonical form so the existing exact + fuzzy pipeline resolves them cleanly.
@@ -1393,30 +1404,60 @@ def _get_opta_alias_map() -> Dict[str, str]:
     Includes ``short_name`` and ``club_name`` fields from every Opta team,
     mapped back to the canonical ``team`` field used in the team rankings dict.
     Only aliases that differ from the canonical name are included.
+
+    Also populates ``_opta_team_league_map`` in the same pass to avoid a
+    second full iteration of the 14k-entry Opta team list.
     """
-    global _opta_alias_map
+    global _opta_alias_map, _opta_team_league_map
     if _opta_alias_map is not None:
         return _opta_alias_map
     try:
         from backend.data import opta_client
+        league_map = _get_opta_league_map()
         _opta_alias_map = {}
+        _opta_team_league_map = {}
         n_aliases = 0
         n_teams = 0
         for t in opta_client.get_team_rankings():
             n_teams += 1
             canonical = t.team
+            # ── alias map ────────────────────────────────────────────────────
             for alt in (t.short_name, t.club_name):
                 if alt and alt.lower() != canonical.lower():
                     _opta_alias_map[alt.lower()] = canonical
                     n_aliases += 1
+            # ── team → league rating flat index ──────────────────────────────
+            if t.domestic_league:
+                rating = league_map.get(t.domestic_league.lower())
+                if rating is not None:
+                    _opta_team_league_map[canonical.lower()] = rating
+                    if t.short_name:
+                        _opta_team_league_map[t.short_name.lower()] = rating
+                    if t.club_name:
+                        _opta_team_league_map[t.club_name.lower()] = rating
         _log.info(
-            "Built Opta alias map: %d short_name/club_name aliases from %d teams",
-            n_aliases, n_teams,
+            "Built Opta alias map: %d aliases from %d teams; "
+            "%d team→league rating entries",
+            n_aliases, n_teams, len(_opta_team_league_map),
         )
     except Exception as exc:
-        _log.warning("Failed to build Opta alias map: %s — using empty dict", exc)
+        _log.warning("Failed to build Opta alias/league maps: %s — using empty dicts", exc)
         _opta_alias_map = {}
+        _opta_team_league_map = {}
     return _opta_alias_map
+
+
+def _get_opta_team_league_map() -> Dict[str, float]:
+    """Return {team_name_lower: league_rating} — O(1) per lookup during training.
+
+    Built in the same pass as ``_get_opta_alias_map()`` so there is never
+    more than one full iteration of the Opta team list per process lifetime.
+    """
+    global _opta_team_league_map
+    if _opta_team_league_map is not None:
+        return _opta_team_league_map
+    _get_opta_alias_map()  # populates _opta_team_league_map as a side effect
+    return _opta_team_league_map or {}
 
 
 def get_league_opta_rating(
@@ -1442,42 +1483,46 @@ def get_league_opta_rating(
     Safe to call during training (leakage risk accepted per task spec): Opta
     league ratings are relatively stable season-to-season.
     """
-    league_map = _get_opta_league_map()
-
-    # ── Priority 1: team_name → domestic_league from Opta team object ────────
+    # ── Priority 1: team_name → league rating (O(1) dict lookup) ────────────
+    # _get_opta_team_league_map() is built once per process from the Opta team
+    # list and maps every team/short_name/club_name to its league rating.
     if team_name:
-        try:
-            from backend.data import opta_client
-            name_lower = team_name.lower()
+        team_league_map = _get_opta_team_league_map()
+        name_lower = team_name.lower()
+        rating = team_league_map.get(name_lower)
+        if rating is None:
+            # Try alias resolution (short_name / club_name)
             alias_map = _get_opta_alias_map()
-            # Resolve via alias if needed (short_name, club_name)
-            canonical = alias_map.get(name_lower, team_name)
-            for t in opta_client.get_team_rankings():
-                if t.team.lower() == canonical.lower() and t.domestic_league:
-                    rating = league_map.get(t.domestic_league.lower())
-                    if rating is not None:
-                        return rating
-        except Exception as exc:
-            _log.debug("Opta team lookup failed for '%s': %s", team_name, exc)
+            canonical = alias_map.get(name_lower)
+            if canonical:
+                rating = team_league_map.get(canonical.lower())
+        if rating is not None:
+            return rating
 
-    # ── Priority 2: league_code → registry name → Opta league fuzzy match ────
+    # ── Priority 2: league_code → registry name → Opta league match ──────────
+    # Results are cached in _league_code_opta_rating_cache so the fuzzy
+    # SequenceMatcher loop only runs ONCE per league_code per process.
     if league_code:
+        if league_code in _league_code_opta_rating_cache:
+            return _league_code_opta_rating_cache[league_code]
         info = LEAGUES.get(league_code)
         if info and info.name:
+            league_map = _get_opta_league_map()
             # Exact match
             rating = league_map.get(info.name.lower())
+            if rating is None:
+                # Fuzzy match — runs at most once per league_code
+                best_score = 0.0
+                for key, r in league_map.items():
+                    score = SequenceMatcher(None, info.name.lower(), key).ratio()
+                    if score > best_score and score >= 0.70:
+                        best_score = score
+                        rating = r
             if rating is not None:
+                _league_code_opta_rating_cache[league_code] = rating
                 return rating
-            # Fuzzy match for slight naming differences
-            best_score = 0.0
-            best_rating = None
-            for key, r in league_map.items():
-                score = SequenceMatcher(None, info.name.lower(), key).ratio()
-                if score > best_score and score >= 0.70:
-                    best_score = score
-                    best_rating = r
-            if best_rating is not None:
-                return best_rating
+        # Cache the miss too so we don't re-run on every sample
+        _league_code_opta_rating_cache[league_code] = 50.0
 
     _log.debug(
         "No Opta league rating for code=%s, team=%s — returning 50.0",
