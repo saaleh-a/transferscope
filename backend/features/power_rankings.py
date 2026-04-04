@@ -1071,10 +1071,21 @@ def _compute_rankings_from_opta() -> (
 
     all_teams_data: Dict[str, Tuple[float, float, str]] = {}
     # team_name -> (opta_rating, raw_elo, league_code)
+    all_teams_rank: Dict[str, int] = {}
+    # team_name -> best (lowest) Opta rank seen so far for that name.
+    # When multiple Opta entries share the same contestantName (e.g. four
+    # clubs all called "Arsenal"), we keep only the highest-quality one
+    # (rank=1 = strongest) so that Arsenal London (rank~1, rating~100)
+    # is never overwritten by Arsenal Guadeloupe (rank=6446, rating=51.6).
 
     for opta_team in opta_teams:
         team_name = opta_team.team
         opta_rating = opta_team.rating
+
+        # Skip if we already have a better-ranked team with this exact name.
+        existing_rank = all_teams_rank.get(team_name, float("inf"))
+        if opta_team.rank >= existing_rank:
+            continue
 
         # raw_elo: prefer ClubElo actual Elo, fall back to rescale.
         # Try exact match first, then case-insensitive.
@@ -1096,6 +1107,7 @@ def _compute_rankings_from_opta() -> (
                 league_code = "UNK"
 
         all_teams_data[team_name] = (opta_rating, raw_elo, league_code)
+        all_teams_rank[team_name] = opta_team.rank
 
     if not all_teams_data:
         return None

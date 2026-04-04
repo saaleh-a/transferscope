@@ -627,8 +627,10 @@ def render():
 
     src_league = source_ranking.league_code if source_ranking else None
     tgt_league = target_ranking.league_code if target_ranking else None
+    # Exclude "UNK" — it's a catch-all bucket for ~13 k unresolved teams and
+    # is meaningless as a "league" in the comparison table.
     comparison_codes = list(dict.fromkeys(
-        [c for c in [src_league, tgt_league] if c]
+        [c for c in [src_league, tgt_league] if c and c != "UNK"]
     ))
     # Always include the big five for context
     for big5 in ["ENG1", "ESP1", "GER1", "ITA1", "FRA1"]:
