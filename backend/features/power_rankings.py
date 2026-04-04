@@ -246,6 +246,60 @@ def _opta_score_to_raw_elo(opta_score: float) -> float:
 # This mapping canonicalizes ClubElo names at data-load time so that the
 # ``teams`` dict keys match the names that come from the Sofascore dropdowns.
 # Fuzzy matching is kept as a safety net for any unmapped teams.
+# Exact (country.casefold(), domestic_league.casefold()) → league_code
+# Built from actual Opta API field values (confirmed by inspection).
+# Using both fields prevents "Premier League" (Wales/Belarus/Armenia) from
+# polluting ENG1.  Keys are .casefold() so accent-variants match naturally.
+_OPTA_COUNTRY_LEAGUE_TO_CODE: Dict[str, str] = {
+    # ── Tier 1 ───────────────────────────────────────────────────────────
+    ("england",       "premier league"):    "ENG1",
+    ("spain",         "primera división"):  "ESP1",
+    ("spain",         "primera division"):  "ESP1",  # no accent fallback
+    ("germany",       "bundesliga"):        "GER1",
+    ("italy",         "serie a"):           "ITA1",
+    ("france",        "ligue 1"):           "FRA1",
+    ("netherlands",   "eredivisie"):        "NED1",
+    ("portugal",      "primeira liga"):     "POR1",
+    ("belgium",       "first division a"):  "BEL1",
+    ("türkiye",       "süper lig"):         "TUR1",
+    ("turkey",        "süper lig"):         "TUR1",  # in case country varies
+    ("turkey",        "super lig"):         "TUR1",
+    ("scotland",      "premiership"):       "SCO1",
+    ("austria",       "bundesliga"):        "AUT1",
+    ("switzerland",   "super league"):      "SUI1",
+    ("greece",        "super league 1"):    "GRE1",
+    ("czechia",       "czech liga"):        "CZE1",
+    ("czech republic","first league"):      "CZE1",
+    ("denmark",       "superliga"):         "DEN1",
+    ("croatia",       "hnl"):               "CRO1",
+    ("croatia",       "1. hnl"):            "CRO1",
+    ("serbia",        "super liga"):        "SER1",
+    ("norway",        "eliteserien"):       "NOR1",
+    ("sweden",        "allsvenskan"):       "SWE1",
+    ("poland",        "ekstraklasa"):       "POL1",
+    ("romania",       "liga i"):            "ROM1",
+    ("ukraine",       "premier league"):    "UKR1",
+    ("russia",        "premier league"):    "RUS1",
+    ("bulgaria",      "first league"):      "BUL1",
+    ("hungary",       "nb i"):              "HUN1",
+    ("cyprus",        "1. division"):       "CYP1",
+    ("finland",       "veikkausliiga"):     "FIN1",
+    ("slovakia",      "1. liga"):           "SVK1",
+    ("slovenia",      "1. snl"):            "SVN1",
+    ("israel",        "premier league"):    "ISR1",
+    ("kazakhstan",    "premier league"):    "KAZ1",
+    ("azerbaijan",    "premyer liqa"):      "AZE1",
+    # ── Tier 2 ───────────────────────────────────────────────────────────
+    ("england",       "championship"):      "ENG2",
+    ("spain",         "segunda división"):  "ESP2",
+    ("spain",         "segunda division"):  "ESP2",
+    ("germany",       "2. bundesliga"):     "GER2",
+    ("italy",         "serie b"):           "ITA2",
+    ("france",        "ligue 2"):           "FRA2",
+    ("netherlands",   "eerste divisie"):    "NED2",
+    ("portugal",      "segunda liga"):      "POR2",
+}
+
 _CLUBELO_TO_SOFASCORE: Dict[str, str] = {
     # England
     "ManCity": "Manchester City",
@@ -1209,20 +1263,21 @@ def _compute_rankings_from_opta() -> (
         if raw_elo is None:
             raw_elo = _opta_score_to_raw_elo(opta_rating)
 
-        # League code: ClubElo exact → ClubElo case-insensitive → "UNK".
-        # We deliberately do NOT fuzzy-match domestic_league here because
-        # Opta has 14k+ teams and generic league names like "Premier League"
-        # appear in dozens of countries (Malta, Wales, etc.) — fuzzy matching
-        # at 70%+ pulls hundreds of weak teams into ENG1, collapsing the PL
-        # average from ~84 to ~56 with 679 "members".  League snapshots must
-        # stay ClubElo-quality.  domestic_league resolution is only done for
-        # individual team lookups in _opta_fallback_ranking() and
-        # _resolve_league_for_ranking(), where it only affects one team at a time.
+        # League code: ClubElo exact → ClubElo case-insensitive →
+        # Opta (country, domestic_league) exact lookup → "UNK".
+        # The exact (country, league) lookup fills in teams ClubElo misses
+        # (e.g. Bundesliga has 18 clubs but ClubElo only tracks ~10).
+        # Using BOTH fields prevents pollution: "Premier League" in Wales,
+        # Belarus, Armenia etc. never matches ENG1 because their country
+        # doesn't equal "england".
         league_code = clubelo_league_map.get(team_name)
         if league_code is None:
             ce_canonical = clubelo_lower_index.get(team_name.lower())
             if ce_canonical is not None:
                 league_code = clubelo_league_map.get(ce_canonical, "UNK")
+        if (not league_code or league_code == "UNK") and opta_team.domestic_league and opta_team.country:
+            key = (opta_team.country.casefold(), opta_team.domestic_league.casefold())
+            league_code = _OPTA_COUNTRY_LEAGUE_TO_CODE.get(key, "UNK")
         if not league_code:
             league_code = "UNK"
 
