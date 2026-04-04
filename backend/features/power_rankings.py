@@ -1036,6 +1036,7 @@ def _compute_rankings_from_opta() -> (
     # Collect all ClubElo data (single fetch, reused for raw_elo + league mapping).
     clubelo_raw: Dict[str, float] = {}  # canonical_name → raw elo
     clubelo_league_map: Dict[str, str] = {}  # canonical_name → league_code
+    clubelo_raw_name_to_canonical: Dict[str, str] = {}  # raw ClubElo name → canonical
     try:
         clubelo_name_map = _get_clubelo_sofascore_map()
         ce_df = clubelo_client.get_all_by_date(date.today())
@@ -1044,6 +1045,7 @@ def _compute_rankings_from_opta() -> (
                 elo_val = float(ce_df.loc[raw_name, "elo"])
                 canonical = clubelo_name_map.get(str(raw_name), str(raw_name))
                 clubelo_raw[canonical] = elo_val
+                clubelo_raw_name_to_canonical[str(raw_name)] = canonical
                 # Also build league code mapping
                 ce_league = ce_df.loc[raw_name, "league"]
                 league_code = _clubelo_to_code(ce_league)
@@ -1062,12 +1064,20 @@ def _compute_rankings_from_opta() -> (
         _log.warning("ClubElo fetch for raw_elo/league overlay failed: %s", exc)
 
     # Build a reverse lookup: opta_name → canonical ClubElo name.
-    # This handles cases where Opta uses "Man City" but ClubElo canonical
-    # is "Manchester City" (or vice versa).  We also index by lowercase for
-    # case-insensitive matching.
-    clubelo_lower_index: Dict[str, str] = {}  # lower(canonical) → canonical
+    # Index by BOTH canonical name AND original ClubElo raw name so that:
+    #   - "Arsenal F.C." (canonical, after REEP mapping) is found, AND
+    #   - "Arsenal" (ClubElo raw name) is ALSO found when Opta provides "Arsenal"
+    # Without the raw-name index, REEP-mapped teams like Arsenal, Bayern etc.
+    # would all get league_code="UNK" because the Opta name matches the raw
+    # ClubElo name, not the canonical "Arsenal F.C." form.
+    clubelo_lower_index: Dict[str, str] = {}  # lower(name) → canonical
     for canonical in clubelo_raw:
         clubelo_lower_index[canonical.lower()] = canonical
+    # Add raw ClubElo names as additional keys (e.g. "arsenal" → "Arsenal F.C.")
+    for raw_name, canonical in clubelo_raw_name_to_canonical.items():
+        raw_lower = raw_name.lower()
+        if raw_lower not in clubelo_lower_index:
+            clubelo_lower_index[raw_lower] = canonical
 
     all_teams_data: Dict[str, Tuple[float, float, str]] = {}
     # team_name -> (opta_rating, raw_elo, league_code)
