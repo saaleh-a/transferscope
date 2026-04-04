@@ -28,6 +28,11 @@ from backend.data import cache
 
 _log = logging.getLogger(__name__)
 
+# ── Request counter (timing instrumentation) ─────────────────────────────────
+# Incremented on every live HTTP call (not cache hits).  Read by training
+# pipeline every 500 samples to measure Sofascore network pressure.
+http_call_count: int = 0
+
 # ── Metric definitions (unchanged — canonical names are source-agnostic) ─────
 
 CORE_METRICS: list[str] = [
@@ -265,6 +270,8 @@ def _get(path: str) -> Optional[dict]:
             # request rate low enough to avoid triggering Cloudflare/rate-limits.
             if attempt == 0:
                 _inter_request_delay()
+            global http_call_count
+            http_call_count += 1
             resp = _http.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
             if resp.status_code in _RETRYABLE_STATUS_CODES:
                 _had_transient_failure = True

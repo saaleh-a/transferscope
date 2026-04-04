@@ -586,13 +586,10 @@ def build_training_sample(
             _ranking_date = date.fromisoformat(record.transfer_date[:10])
         except (ValueError, TypeError):
             pass
-    try:
-        team_rankings, league_snapshots = power_rankings.compute_daily_rankings(
-            _ranking_date
-        )
-    except Exception as exc:
-        _log.warning("Power rankings failed: %s, using defaults", exc)
-        team_rankings, league_snapshots = {}, {}
+    # No need to call compute_daily_rankings() explicitly here — the
+    # coverage pre-check in build_full_dataset() already warmed the
+    # in-process cache for this date.  get_team_ranking() calls below
+    # hit that cache directly (O(1) diskcache skip).
 
     from_ranking = power_rankings.get_team_ranking(
         record.from_club_name,
@@ -1390,9 +1387,20 @@ def build_full_dataset(
 
     _OPTA_TYPES = frozenset({"opta", "opta_league_avg"})
 
+    _log.info(f"TIMER: dataset build loop start — {datetime.now().strftime('%H:%M:%S')}")
     for i, record in enumerate(transfer_records):
         if (i + 1) % 50 == 0 or i == 0:
             _log.info("Building sample %d / %d ...", i + 1, total)
+        if (i + 1) % 500 == 0:
+            from backend.data import sofascore_client as _sc
+            from backend.data import clubelo_client as _cc
+            _log.info(
+                "SAMPLE %d — Sofascore HTTP calls: %d | ClubElo cache hits: %d / misses: %d",
+                i + 1,
+                _sc.http_call_count,
+                _cc.cache_hits,
+                _cc.cache_misses,
+            )
 
         # ── Coverage pre-check ───────────────────────────────────────────────
         # Resolve the transfer date for date-accurate ranking lookups.
@@ -1507,6 +1515,7 @@ def build_full_dataset(
         print(f"    {reason}: {count}")
     print(f"  X shape: {X.shape}")
     print(f"  y shape: {y.shape}")
+    _log.info(f"TIMER: dataset build loop end (after Dataset Summary) — {datetime.now().strftime('%H:%M:%S')}")
 
     return X, y, metadata
 
@@ -1985,6 +1994,7 @@ def train_neural_network(
     # Save model
     save_dir = model.save()
     print(f"\nModel saved to: {save_dir}")
+    _log.info(f"TIMER: model saved — {datetime.now().strftime('%H:%M:%S')}")
 
     # Compare trained model vs heuristic baseline on validation set
     print(f"\nModel vs Heuristic Baseline (Validation Set):")
@@ -2310,6 +2320,7 @@ def run_pipeline(
         train_adjustment_models(X_train, y_train, meta_train)
 
         # Step 6: Train neural network
+        _log.info(f"TIMER: neural network training start — {datetime.now().strftime('%H:%M:%S')}")
         _report("Training neural network", "4-group multi-head TensorFlow model")
         train_neural_network(X_train, y_train, X_val, y_val, meta_train=meta_train)
     else:
@@ -2320,8 +2331,10 @@ def run_pipeline(
         _report("Running backtest", f"{len(meta_test)} test samples")
         from backend.models.backtester import run_backtest, show_example_predictions
 
+        _log.info(f"TIMER: backtest start — {datetime.now().strftime('%H:%M:%S')}")
         run_backtest(X_test, y_test, meta_test, meta_train=meta_train)
         show_example_predictions(meta_test, n=10)
+        _log.info(f"TIMER: backtest end — {datetime.now().strftime('%H:%M:%S')}")
     else:
         _report("Backtesting", "No test data available")
 

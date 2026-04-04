@@ -23,6 +23,11 @@ from backend.data import cache
 _log = logging.getLogger(__name__)
 
 _ONE_DAY = 86400  # seconds
+
+# ── Cache counters (timing instrumentation) ───────────────────────────────────
+# Read by the training pipeline every 500 samples to measure cache efficiency.
+cache_hits: int = 0
+cache_misses: int = 0
 _API_BASE = "http://api.clubelo.com"
 _HTTP_TIMEOUT = 15
 
@@ -225,8 +230,11 @@ def get_all_by_date(
 
     key = cache.make_key("clubelo_date", date_str)
     cached = cache.get(key, max_age=_ONE_DAY)
+    global cache_hits, cache_misses
     if cached is not None:
+        cache_hits += 1
         return cached
+    cache_misses += 1
 
     # Primary: soccerdata
     df = _try_soccerdata(date_str)
