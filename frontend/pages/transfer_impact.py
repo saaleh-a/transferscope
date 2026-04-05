@@ -299,8 +299,8 @@ def render():
             _player_height_cm = float(_reep_data["height_cm"])
         if _reep_data.get("date_of_birth"):
             try:
-                from datetime import datetime
-                _dob = datetime.strptime(str(_reep_data["date_of_birth"])[:10], "%Y-%m-%d").date()
+                import datetime as _dt
+                _dob = _dt.datetime.strptime(str(_reep_data["date_of_birth"])[:10], "%Y-%m-%d").date()
                 _player_age = (date.today() - _dob).days / 365.25
             except Exception:
                 pass

@@ -446,16 +446,15 @@ def render():
     _player_height_cm = 0.0
     _player_age = 0.0
     try:
-        from datetime import date as _date_cls
         from backend.data import reep_registry
         _reep_data = reep_registry.enrich_player(player_id)
         if _reep_data.get("height_cm"):
             _player_height_cm = float(_reep_data["height_cm"])
         if _reep_data.get("date_of_birth"):
             try:
-                from datetime import datetime as _dt_cls
-                _dob = _dt_cls.strptime(str(_reep_data["date_of_birth"])[:10], "%Y-%m-%d").date()
-                _player_age = (_date_cls.today() - _dob).days / 365.25
+                import datetime as _dt
+                _dob = _dt.datetime.strptime(str(_reep_data["date_of_birth"])[:10], "%Y-%m-%d").date()
+                _player_age = (_dt.date.today() - _dob).days / 365.25
             except Exception:
                 pass
     except Exception:
