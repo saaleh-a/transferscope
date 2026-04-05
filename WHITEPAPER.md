@@ -55,20 +55,21 @@ Data Acquisition → Feature Engineering → Prediction Models → User Interfac
 
 ### 2.1 Data Acquisition
 
-Six external sources provide the raw data:
+Seven external sources provide the raw data:
 
 | Source | What It Provides | Coverage |
 |---|---|---|
 | **Sofascore REST API** | Player stats (per-90), team rosters, transfer histories, season lists, team search | Global — any league on sofascore.com |
-| **ClubElo** (via `soccerdata`) | Daily Elo ratings for ~600 European clubs | Top 10+ European leagues |
-| **WorldFootballElo** (HTTP scrape) | Daily Elo ratings for global clubs | South America, MLS, Asia, Africa |
+| **Opta Power Rankings** (via `curl_cffi`) | Team ratings (0-100), league averages, league sizes | ~14K teams worldwide — primary source for inference |
+| **ClubElo** (via `soccerdata`) | Daily Elo ratings for ~600 European clubs | Top 10+ European leagues — used for training/historical |
+| **WorldFootballElo** (HTTP scrape) | Daily Elo ratings for global clubs | South America, MLS, Asia, Africa — used for training/historical |
 | **REEP Register** (CSV download) | Team name aliases (~45K clubs worldwide) | Dynamic cross-provider name resolution |
 | **StatsBomb Open Data** (via `statsbombpy`) | Spatial data — shot locations, pass networks, heatmaps | Shot maps, pass networks, heatmaps in Transfer Impact |
 | **football-data.co.uk** (CSV download) | Match-level results for league profiling | Coefficient calibration for style/opposition weights |
 
-All API calls are routed through a `diskcache` SQLite cache layer with configurable time-to-live. Player stats expire after 1 day; Elo ratings refresh daily; search results persist for 7 days.
+All API calls are routed through a `diskcache` SQLite cache layer with configurable time-to-live. Player stats expire after 1 day; Opta rankings refresh weekly; ClubElo/WorldFootballElo ratings refresh daily; search results persist for 7 days.
 
-> **In plain English:** We pull data from three places: Sofascore gives us the player numbers (goals, assists, passes, etc.), ClubElo tells us how strong European clubs are, and WorldFootballElo covers the rest of the world. We save results locally so the app doesn't slow down by re-downloading the same data every time.
+> **In plain English:** We pull data from multiple places: Sofascore gives us the player numbers (goals, assists, passes, etc.), Opta gives us the official team and league strength rankings for today's predictions, and ClubElo/WorldFootballElo provide historical strength data for training the model. We save results locally so the app doesn't slow down by re-downloading the same data every time.
 
 ### 2.2 Feature Engineering
 
@@ -90,14 +91,14 @@ This produces a Red / Amber / Green confidence indicator: Red (< 300 minutes), A
 > - 🟡 **Amber** = some data, prediction is reasonable but not certain
 > - 🔴 **Red** = very little data, prediction leans heavily on assumptions
 
-**Dynamic Power Rankings.** Rather than using a static league tier table ("Premier League = Tier 1, Eredivisie = Tier 3"), TransferScope computes Power Rankings dynamically:
+**Dynamic Power Rankings.** Rather than using a static league tier table ("Premier League = Tier 1, Eredivisie = Tier 3"), TransferScope computes Power Rankings dynamically using a **hybrid approach**:
 
-1. Collect all club Elo ratings from ClubElo (Europe) and WorldFootballElo (global)
-2. Derive league strength as the mean Elo of all teams in that league on a given date
-3. Normalize all clubs to a 0–100 scale globally
-4. Compute each team's **relative ability** = team score − league mean score
+- **Inference (today's date):** Opta Power Rankings (0-100 scale) are the primary source. Official league averages (`seasonAverageRating`) and team counts (`leagueSize`) come directly from Opta's `league-meta.json`, ensuring correct values regardless of team name matching. ClubElo provides the raw Elo (on the ~1000-2100 scale the model was trained on) for teams it covers; teams not in ClubElo get a linear rescale from Opta's 0-100.
+- **Training (historical dates):** ClubElo + WorldFootballElo, since Opta has no historical archive. League averages are computed as the mean of all teams in each league on the transfer date.
 
-> **In plain English:** Instead of hard-coding "the Premier League is better than the Eredivisie," we calculate it fresh every day from actual results. This means if the Portuguese league has a strong year, its Power Ranking goes up automatically. Every team gets a score from 0 to 100. Then we calculate how much better or worse each team is compared to their own league average — a mid-table Premier League team and the top Argentine team might be equally strong globally, even though one dominates their league and the other doesn't.
+In both cases, each team's **relative ability** = team score − league mean score.
+
+> **In plain English:** For today's predictions, we use Opta's official rankings — the same system used by professional broadcasters. Their data includes official league averages and team counts, so we don't have to guess or compute them ourselves. For training the model on past transfers, we use historical Elo data since Opta doesn't have an archive. Either way, we calculate how much better or worse each team is compared to their own league average.
 
 The full feature vector contains 46 features: 13 player per-90, 4 ability scores (team and league, current and target), 13 team-position per-90 (current), 13 team-position per-90 (target), and 3 interaction features (ability_gap, gap_squared, league_gap).
 
@@ -195,7 +196,7 @@ The original paper focused on predicting individual transfers. TransferScope add
 > **In plain English:** The paper told you how to predict *one* transfer. We turned it into a tool that can search *thousands* of players, group them by playing style, and find the best fits — prioritizing players who not only have similar numbers but play a similar type of game. We also solved the rate-limiting problem that was causing 0 results by adding brief pauses between league scans and starting with the most reliable league first.
 
 ### 4.2 Dynamic Data Sources
-The original paper used static datasets. TransferScope pulls live data from Sofascore, ClubElo, and WorldFootballElo, with intelligent caching. Power Rankings update daily. Player stats refresh automatically. The system never goes stale.
+The original paper used static datasets. TransferScope pulls live data from Sofascore, Opta, ClubElo, and WorldFootballElo, with intelligent caching. Opta Power Rankings update weekly; ClubElo/WorldFootballElo ratings update daily. Player stats refresh automatically. The system never goes stale.
 
 ### 4.3 Transfer History Integration
 Sofascore's transfer history endpoint provides the raw data needed to auto-train the adjustment models. The `build_training_data_from_transfers()` function pairs consecutive transfers to generate training rows, eliminating the need for manual dataset construction.
@@ -205,8 +206,13 @@ Sofascore's transfer history endpoint provides the raw data needed to auto-train
 ### 4.4 Season Selection
 Users can analyze historical seasons (e.g. "2023/24") by selecting from the seasons API. This enables retrospective validation: predict what a player's stats would have been, then compare to what actually happened.
 
-### 4.5 Global Elo Coverage
-The paper's Power Rankings relied on a single Elo source. TransferScope uses a dual-source approach — ClubElo for European clubs (more granular) and WorldFootballElo for the rest of the world — with an intelligent router that selects the best source per club.
+### 4.5 Global Power Rankings Coverage
+The paper's Power Rankings relied on a single Elo source. TransferScope uses a **triple-source hybrid approach**:
+- **Opta Power Rankings** for inference (today's date) — official 0-100 ratings with league averages and team counts from `league-meta.json`, fetched via `curl_cffi` direct JSON extraction from the JS bundle (no Selenium/browser needed)
+- **ClubElo** for European clubs on historical dates (higher granularity for training)
+- **WorldFootballElo** for non-European clubs on historical dates
+
+League code resolution uses Opta's `domestic_league_name` + `country` compound key (e.g. "Premier League" + "England" → ENG1) to avoid ambiguity, with ClubElo as fallback.
 
 ### 4.6 Real League Context for Visualizations
 Swarm plots in the Transfer Impact page are populated with actual league-wide per-90 distributions from Sofascore, not synthetic data. This shows exactly where a player sits among their peers.
@@ -246,7 +252,7 @@ Each of the 4 TensorFlow model groups receives only the features relevant to its
 > **In plain English:** Each specialist brain only looks at the data that matters for its job. The shooting expert doesn't waste time looking at long ball accuracy. This makes each model more focused and less likely to be confused by irrelevant information.
 
 ### 4.13 Robust Team Name Resolution
-Matching team names across three different data sources (ClubElo, WorldFootballElo, Sofascore) requires handling abbreviations, accents, and regional naming differences. TransferScope uses a 3-step lookup: exact match → accent-normalized match → fuzzy matching with a 5-priority cascade (including 502 extreme abbreviation aliases covering Europe, MLS, Saudi Pro League, and J-League, plus 531 ClubElo-to-Sofascore canonicalization entries). The SequenceMatcher similarity threshold is set at 0.70 to reject false positives where short common suffixes (like "City") drive enough similarity to match unrelated teams (e.g. "Orlando City SC" must not match "Man City"). At runtime, `_build_dynamic_aliases()` augments these with ~45,000 additional team name variants from the REEP open data register, providing near-universal coverage without manual maintenance.
+Matching team names across four data sources (Opta, ClubElo, WorldFootballElo, Sofascore) requires handling abbreviations, accents, and regional naming differences. TransferScope uses a 3-step lookup: exact match → accent-normalized match → fuzzy matching with a 5-priority cascade (including 502 extreme abbreviation aliases covering Europe, MLS, Saudi Pro League, and J-League, plus 531 ClubElo-to-Sofascore canonicalization entries). The SequenceMatcher similarity threshold is set at 0.70 to reject false positives where short common suffixes (like "City") drive enough similarity to match unrelated teams (e.g. "Orlando City SC" must not match "Man City"). At runtime, `_build_dynamic_aliases()` augments these with ~45,000 additional team name variants from the REEP open data register, providing near-universal coverage without manual maintenance.
 
 > **In plain English:** "PSG" and "Paris Saint-Germain" and "Paris SG" are all the same team. "Bayern München" and "Bayern Munich" are the same. The system knows 502 abbreviation pairs (including MLS teams, Saudi, and Japanese clubs) and can fuzzy-match team names that are close but not identical. At runtime, it also downloads a comprehensive open-source database of ~45,000 clubs to automatically discover additional name variants. This means data from different sources always connects correctly, without false positives like "Orlando City" matching "Manchester City."
 
@@ -282,8 +288,8 @@ Shot maps, pass networks, and heatmaps from StatsBomb open data provide spatial 
 | Layer | Technology | What it does |
 |---|---|---|
 | Player statistics | Sofascore REST API | Gets the actual numbers — goals, passes, etc. |
-| European Elo ratings | ClubElo via `soccerdata` | Tells us how strong European teams are |
-| Global Elo ratings | WorldFootballElo via HTTP | Same, but for non-European teams |
+| Power Rankings (inference) | Opta Power Rankings via `curl_cffi` | Official team and league strength ratings for today |
+| Power Rankings (training) | ClubElo + WorldFootballElo | Historical team strength for training the model |
 | Feature engineering | pandas, numpy | Crunches raw data into model-ready inputs |
 | Adjustment models | scikit-learn Ridge/LinearRegression | Simple "rule of thumb" adjustments for league/team changes |
 | Neural network | TensorFlow / Keras | The main prediction brain — learns complex patterns |
@@ -339,10 +345,12 @@ TransferScope demonstrates that the methodology from Dinsdale & Gallagher (2022)
 
 1. Dinsdale, J. & Gallagher, J. (2022). *The Transfer Portal: Predicting the Impact of a Player Transfer on the Receiving Club.* https://doi.org/10.48550/arXiv.2201.11533
 
-2. ClubElo — http://clubelo.com — European club Elo rating system.
+2. Opta Power Rankings — https://dataviz.theanalyst.com/opta-power-rankings/ — Official team and league Power Rankings by Stats Perform.
 
-3. World Football Elo Ratings — http://eloratings.net — Global club Elo ratings.
+3. ClubElo — http://clubelo.com — European club Elo rating system.
 
-4. Sofascore — https://www.sofascore.com — Player statistics and match data.
+4. World Football Elo Ratings — http://eloratings.net — Global club Elo ratings.
 
-5. Elo, A.E. (1978). *The Rating of Chessplayers, Past and Present.* Arco Publishing.
+5. Sofascore — https://www.sofascore.com — Player statistics and match data.
+
+6. Elo, A.E. (1978). *The Rating of Chessplayers, Past and Present.* Arco Publishing.

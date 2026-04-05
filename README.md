@@ -44,7 +44,7 @@ Paste a transfer rumour. Get an instant HOT / TEPID / NOT verdict backed by pred
 ## How It Works (The Short Version)
 
 ```
-1. COLLECT DATA         →  Player stats from Sofascore, club strength ratings from Elo systems, spatial data from StatsBomb
+1. COLLECT DATA         →  Player stats from Sofascore, club strength ratings from Opta Power Rankings (inference) / ClubElo + WorldFootballElo (training), spatial data from StatsBomb
 2. CRUNCH NUMBERS        →  Rolling averages, league quality scores, team strength comparisons
 3. PREDICT              →  Neural network + adjustment models predict stats at the new club
 4. SHOW RESULTS         →  Charts, tables, and verdicts in a dark-themed web app
