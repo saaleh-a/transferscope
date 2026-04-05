@@ -85,11 +85,8 @@ class OptaLeagueRanking:
     league: str
     rating: float                   # seasonAverageRating, same 0-100 scale
     ranking_change_7d: Optional[str]
-    # Extra fields from league-meta.json for downstream use.
-    number_of_teams: int = 0        # leagueSize — official team count
-    country_name: str = ""          # countryName
-    top5_rating: float = 0.0        # top5Rating
-    top10_rating: float = 0.0       # top10Rating
+    country: str = ""               # country the league belongs to
+    number_of_teams: int = 0        # official team count for the league
 
 
 # ── Internal fetchers ─────────────────────────────────────────────────────────
@@ -281,10 +278,8 @@ def _load_league_rankings_from_meta() -> List[OptaLeagueRanking]:
                 league=e.get("leagueName", ""),
                 rating=float(e.get("seasonAverageRating") or 0),
                 ranking_change_7d=change,
-                number_of_teams=int(e.get("leagueSize") or 0),
-                country_name=e.get("countryName", ""),
-                top5_rating=float(e.get("top5Rating") or 0),
-                top10_rating=float(e.get("top10Rating") or 0),
+                country=str(e.get("country", "") or ""),
+                number_of_teams=int(float(e.get("numberOfTeams", 0) or 0)),
             ))
         except Exception as exc:
             _log.debug("Skipping malformed Opta league entry: %s — %s", e, exc)
