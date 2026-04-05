@@ -110,17 +110,45 @@ def _render_feature_importance():
         st.warning(f"Could not load model: {exc}")
         return
 
-    # Build a sample feature dict with realistic midfield values
-    sample_per90 = {m: 0.5 for m in CORE_METRICS}
-    sample_fd = build_feature_dict(
-        player_per90=sample_per90,
-        team_ability_current=60.0,
-        team_ability_target=65.0,
-        league_ability_current=50.0,
-        league_ability_target=55.0,
-        team_pos_current={m: 0.4 for m in CORE_METRICS},
-        team_pos_target={m: 0.5 for m in CORE_METRICS},
-    )
+    # Build a sample feature dict at the training-data mean so gradient-based
+    # importance is computed at a representative operating point.
+    # Use real scaler means when a trained scaler is available; otherwise
+    # fall back to realistic values that match training distributions.
+    from backend.models.transfer_portal import _feature_keys
+
+    all_keys = _feature_keys()
+    if model._scaler is not None and hasattr(model._scaler, "mean_"):
+        scaler_means = model._scaler.mean_
+        key_to_mean = {k: float(scaler_means[i]) for i, k in enumerate(all_keys)}
+        sample_per90 = {m: key_to_mean.get(m, 0.5) for m in CORE_METRICS}
+        sample_fd = build_feature_dict(
+            player_per90=sample_per90,
+            team_ability_current=key_to_mean.get("team_ability_current", 60.0),
+            team_ability_target=key_to_mean.get("team_ability_target", 65.0),
+            league_ability_current=key_to_mean.get("league_ability_current", 50.0),
+            league_ability_target=key_to_mean.get("league_ability_target", 55.0),
+            team_pos_current={m: key_to_mean.get(f"team_pos_current_{m}", 0.4) for m in CORE_METRICS},
+            team_pos_target={m: key_to_mean.get(f"team_pos_target_{m}", 0.5) for m in CORE_METRICS},
+            raw_elo_current=key_to_mean.get("raw_elo_current", 1700.0),
+            raw_elo_target=key_to_mean.get("raw_elo_target", 1700.0),
+            player_height_cm=key_to_mean.get("player_height_cm", 180.0),
+            player_age=key_to_mean.get("player_age", 25.0),
+        )
+    else:
+        sample_per90 = {m: 0.5 for m in CORE_METRICS}
+        sample_fd = build_feature_dict(
+            player_per90=sample_per90,
+            team_ability_current=60.0,
+            team_ability_target=65.0,
+            league_ability_current=50.0,
+            league_ability_target=55.0,
+            team_pos_current={m: 0.4 for m in CORE_METRICS},
+            team_pos_target={m: 0.5 for m in CORE_METRICS},
+            raw_elo_current=1700.0,
+            raw_elo_target=1700.0,
+            player_height_cm=180.0,
+            player_age=25.0,
+        )
 
     try:
         importance = model.compute_feature_importance(sample_fd)
