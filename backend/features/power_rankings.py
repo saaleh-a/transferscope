@@ -1193,10 +1193,17 @@ def _compute_rankings_from_opta() -> (
 
     opta_leagues = opta_client.get_league_rankings()
 
-    # Build a league-name → rating lookup for Opta league rankings.
+    # Build a league-name → (rating, number_of_teams) lookup for Opta league
+    # rankings.  These official values from league-meta.json are used for
+    # league snapshot ``mean_normalized`` and ``team_count`` when available,
+    # ensuring correctness regardless of how many teams from each league
+    # we actually matched by name.
     opta_league_ratings: Dict[str, float] = {}
+    opta_league_team_counts: Dict[str, int] = {}
     for lr in opta_leagues:
         opta_league_ratings[lr.league] = lr.rating
+        if lr.number_of_teams > 0:
+            opta_league_team_counts[lr.league] = lr.number_of_teams
 
     # Collect all ClubElo data (single fetch, reused for raw_elo + league mapping).
     clubelo_raw: Dict[str, float] = {}  # canonical_name → raw elo
@@ -1301,10 +1308,7 @@ def _compute_rankings_from_opta() -> (
         if league_code is None:
             ce_canonical = clubelo_lower_index.get(team_name.lower())
             if ce_canonical is not None:
-                league_code = clubelo_league_map.get(ce_canonical, "UNK")
-        if (not league_code or league_code == "UNK") and opta_team.domestic_league and opta_team.country:
-            key = (opta_team.country.casefold(), opta_team.domestic_league.casefold())
-            league_code = _OPTA_COUNTRY_LEAGUE_TO_CODE.get(key, "UNK")
+                league_code = clubelo_league_map.get(ce_canonical)
         if not league_code:
             league_code = "UNK"
 
@@ -1322,9 +1326,22 @@ def _compute_rankings_from_opta() -> (
     if not all_teams_data:
         return None
 
-    # Build league snapshots from the Opta ratings
+    # Build league snapshots from the Opta ratings.
+    # Track which Opta domestic_league names map to each league code so we
+    # can look up official seasonAverageRating and leagueSize from league-meta.
     league_teams: Dict[str, List[Tuple[str, float, float]]] = {}
     # league_code -> [(team_name, raw_elo, opta_rating)]
+    league_code_to_opta_name: Dict[str, str] = {}
+    # league_code -> Opta domesticLeagueName (for league-meta.json lookup)
+    for opta_team in opta_teams:
+        team_name = clubelo_name_map.get(opta_team.team, opta_team.team)
+        if team_name not in all_teams_data:
+            continue
+        _, _, code = all_teams_data[team_name]
+        if code != "UNK" and code not in league_code_to_opta_name:
+            if opta_team.domestic_league:
+                league_code_to_opta_name[code] = opta_team.domestic_league
+
     for team_name, (opta_rating, raw_elo, code) in all_teams_data.items():
         league_teams.setdefault(code, []).append((team_name, raw_elo, opta_rating))
 

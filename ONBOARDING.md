@@ -42,6 +42,7 @@ transferscope/
 ├── backend/
 │   ├── data/
 │   │   ├── sofascore_client.py         # (1567 lines) Sofascore REST API — player search, stats, transfers, match logs
+│   │   ├── opta_client.py             # (~360 lines) Opta Power Rankings — curl_cffi + regex JSON extraction from JS bundle
 │   │   ├── clubelo_client.py           # (308 lines) ClubElo wrapper — European club Elo (soccerdata + HTTP fallback)
 │   │   ├── worldfootballelo_client.py  # (149 lines) eloratings.net scraper — non-European Elo
 │   │   ├── elo_router.py              # (77 lines) Routes team to best Elo source, 0-100 normalization
@@ -102,8 +103,9 @@ transferscope/
 ┌──────────────────────────────▼──────────────────────────────────────┐
 │  DATA LAYER (backend/data/)                                         │
 │  sofascore_client → HTTP GET → Sofascore API → parse → per-90 dict  │
-│  clubelo_client   → soccerdata/HTTP → European Elo ratings          │
-│  worldfootballelo → HTML scrape → non-European Elo ratings          │
+│  opta_client      → curl_cffi → Opta Power Rankings (inference)     │
+│  clubelo_client   → soccerdata/HTTP → European Elo (training/hist)  │
+│  worldfootballelo → HTML scrape → non-European Elo (training/hist)  │
 │  elo_router       → pick best source → raw Elo float                │
 │  reep_registry    → CSV download → ~45K team aliases                │
 │  statsbomb        → statsbombpy → spatial features (shots, passes)  │
@@ -194,7 +196,7 @@ inject_css()  # writes 516 lines of CSS into the page (dark theme, custom fonts)
 if "cache_warmed" not in st.session_state:    # only run once
     def _warmup():
         from backend.features import power_rankings
-        power_rankings.compute_daily_rankings()   # fetches ClubElo + WorldElo, normalizes
+        power_rankings.compute_daily_rankings()   # fetches Opta (inference) or ClubElo + WorldElo (training), normalizes
     threading.Thread(target=_warmup, daemon=True).start()  # background so page loads fast
     st.session_state["cache_warmed"] = True
 ```
@@ -291,12 +293,52 @@ return result  # {"name": "Saka", "per90": {"expected_goals": 0.31, ...}, "minut
 ### Module: `backend/features/power_rankings.py` (Context Engine)
 
 #### What this does
-Collects Elo ratings from two sources (ClubElo for Europe, WorldFootballElo for everywhere else), normalizes all clubs to a 0-100 scale, and computes league means and team relative abilities.
+Computes Power Rankings using a **hybrid approach**: Opta Power Rankings for inference (today's predictions), ClubElo + WorldFootballElo for training (historical dates). Normalizes all clubs to a 0-100 scale and computes league means and team relative abilities.
 
 #### Why it exists
 The paper's prediction model needs to know *how good* a team is relative to its league. A player moving from a 40-ranked team to a 75-ranked team will see different per-90 changes than one staying at the same level. This module quantifies that context.
 
 #### Step-by-step execution flow (for `compute_daily_rankings`)
+
+**If query_date is today (inference mode):**
+
+1. **Fetch Opta Power Rankings via `opta_client.py`:**
+```python
+opta_teams = opta_client.get_team_rankings()
+# Returns ~14K OptaTeamRanking objects with native 0-100 ratings
+# Each has: team, rating, domestic_league, country, opta_id
+opta_leagues = opta_client.get_league_rankings()
+# Returns OptaLeagueRanking objects from league-meta.json
+# Each has: league, rating (seasonAverageRating), number_of_teams (leagueSize)
+```
+
+2. **Resolve league codes using Opta metadata:**
+```python
+# Use compound key (country, domestic_league_name) to resolve unambiguously
+# "Premier League" + "England" → ENG1, "Premier League" + "Wales" → WAL1
+key = (opta_team.country.casefold(), opta_team.domestic_league.casefold())
+league_code = _OPTA_COUNTRY_LEAGUE_TO_CODE.get(key)
+# Falls back to ClubElo league assignment, then "UNK"
+```
+
+3. **Use official league averages from league-meta.json:**
+```python
+# Official values — no computation needed
+mean_normalized = opta_league_ratings[opta_league_name]  # seasonAverageRating
+team_count = opta_league_team_counts[opta_league_name]   # leagueSize
+# Result: Premier League avg = 72.3, team_count = 20 (always correct)
+```
+
+4. **Provide raw_elo for model compatibility:**
+```python
+# ClubElo provides raw_elo for teams it covers (~600 European clubs)
+# Teams not in ClubElo: linear rescale from Opta 0-100 → 1000-2100
+raw_elo = opta_score / 100.0 * (_OPTA_ELO_MAX - _OPTA_ELO_MIN) + _OPTA_ELO_MIN
+```
+
+5. **Cache for 7 days** (Opta updates roughly weekly).
+
+**If query_date is historical (training mode):**
 
 1. **Fetch European club Elos from ClubElo:**
 ```python
@@ -341,7 +383,9 @@ relative_ability = normalized_score - league_mean_normalized
 # Ipswich:  35 - 65 = -30 (much worse than PL average)
 ```
 
-6. **Fuzzy team name resolution** (when Sofascore says "Tottenham Hotspur" but ClubElo says "Tottenham"):
+6. **Cache for 1 day.**
+
+**Fuzzy team name resolution** (when Sofascore says "Tottenham Hotspur" but ClubElo says "Tottenham"):
 ```python
 def _fuzzy_find_team(query, teams_dict):
     # Priority cascade:
@@ -353,9 +397,11 @@ def _fuzzy_find_team(query, teams_dict):
 ```
 
 #### Glossary
-- **Elo rating**: A numerical strength rating. Higher = stronger. ClubElo typically ranges from ~1100 to ~2100.
+- **Elo rating**: A numerical strength rating. Higher = stronger. ClubElo typically ranges from ~1100 to ~2100. Opta uses a 0-100 scale natively.
 - **Relative ability**: How much better or worse a team is compared to its own league average. Key input to the prediction model.
 - **League snapshot**: Summary statistics for all teams in a league on a given date.
+- **seasonAverageRating**: Official league average from Opta's league-meta.json — used for inference instead of computing from matched teams.
+- **leagueSize**: Official number of teams in a league from Opta's league-meta.json.
 
 ---
 
@@ -532,6 +578,7 @@ confidence = "red" if weight < 0.3 else "amber" if weight <= 0.7 else "green"
 | File | Functions | Tested | Untested | Coverage |
 |---|---|---|---|---|
 | `backend/data/sofascore_client.py` | 12 public | 12 | 0 | ~100% |
+| `backend/data/opta_client.py` | 4 public | 4 | 0 | ~100% |
 | `backend/data/clubelo_client.py` | 6 public | 6 | 0 | ~100% |
 | `backend/data/worldfootballelo_client.py` | 3 public | 3 | 0 | ~100% |
 | `backend/data/elo_router.py` | 4 public | 4 | 0 | ~100% |
@@ -645,11 +692,11 @@ The #1 highest-risk untested function (`paper_heuristic_predict`) now has compre
 
 2. **There are two prediction paths, and most users see the heuristic.** `TransferPortalModel.predict()` checks `is_trained()` first. If no `.keras` files exist in `data/models/` (which is the default — training requires running the full pipeline with live Sofascore data), it silently falls back to `paper_heuristic_predict()`. The heuristic is not a placeholder — it faithfully implements the paper's methodology with calibrated coefficients. Any change to prediction logic must consider both paths.
 
-3. **Team name resolution is a 5-priority fuzzy cascade.** Data comes from 3 sources (Sofascore, ClubElo, WorldFootballElo) that all use different team names. "ManCity" (ClubElo) must match "Manchester City" (Sofascore). The resolution in `power_rankings.py` uses: exact match → accent-normalized → extreme abbreviation lookup (502 entries covering 51 leagues) → substring containment → SequenceMatcher ratio. False positive prevention (e.g., "Orlando City SC" must NOT match "Man City") is enforced by minimum overlap ratios. 531 ClubElo entries are mapped. If you add a new data source, you may need to add team name mappings — though REEP dynamic aliases provide ~45K automatic mappings at runtime.
+3. **Team name resolution is a 5-priority fuzzy cascade.** Data comes from 4 sources (Sofascore, Opta, ClubElo, WorldFootballElo) that all use different team names. "ManCity" (ClubElo) must match "Manchester City" (Sofascore). The resolution in `power_rankings.py` uses: exact match → accent-normalized → extreme abbreviation lookup (502 entries covering 51 leagues) → substring containment → SequenceMatcher ratio. False positive prevention (e.g., "Orlando City SC" must NOT match "Man City") is enforced by minimum overlap ratios. 531 ClubElo entries are mapped. For inference, Opta's `domestic_league_name` + `country` compound key resolves league codes unambiguously. REEP dynamic aliases provide ~45K automatic mappings at runtime.
 
 ### Where Bugs Are Most Likely to Occur and Why
 
-1. **Team name mismatches between data sources.** ClubElo, WorldFootballElo, and Sofascore all use different conventions. A new team promotion, a name change, or a missing mapping in `_CLUBELO_TO_SOFASCORE` silently causes `get_team_ranking()` to return `None`, which cascades to `change_relative_ability=0` and flat predictions. Symptom: all metrics show ≈0% change.
+1. **Team name mismatches between data sources.** Opta, ClubElo, WorldFootballElo, and Sofascore all use different conventions. For inference (today's date), Opta's compound key (country + domestic_league_name) resolves league codes correctly. For historical dates, a new team promotion, a name change, or a missing mapping in `_CLUBELO_TO_SOFASCORE` silently causes `get_team_ranking()` to return `None`, which cascades to `change_relative_ability=0` and flat predictions. Symptom: all metrics show ≈0% change.
 
 2. **Sofascore API field name changes.** Sofascore is an unofficial API. They periodically rename fields (e.g., `expectedGoals` → `xG`). The `_SOFASCORE_KEY_MAP` has 3-5 aliases per metric, but a new rename breaks silently — the metric returns `None`, which becomes `0.0` in the per-90 dict. Symptom: a specific metric drops to 0 for all players.
 

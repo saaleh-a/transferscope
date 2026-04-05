@@ -75,36 +75,42 @@ Sofascore returns **raw totals** (e.g. 15 goals in 2,000 minutes), not per-90 va
 
 > **In plain English:** For clubs outside Europe (Brazilian, Argentine, MLS teams, etc.), we use a different source that covers the whole world. It works the same way — every team has a strength score based on their results.
 
-### 2.4 Elo Router
+### 2.4 Opta Power Rankings (Inference)
 
-**Technical:** `backend/data/elo_router.py` determines which source to query for a given club. Logic:
+**Technical:** `backend/data/opta_client.py` fetches Opta Power Rankings directly from The Analyst's dataviz SPA. The React app bundles its entire dataset into `index.js` (~17 MB) as `JSON.parse(...)` calls, and serves league metadata as a plain `league-meta.json` file. The client uses `curl_cffi` (for Cloudflare TLS fingerprint bypass) with `requests` fallback — no Selenium or headless browser needed. Regex-based extraction (`_extract_all_json_parse`) finds all `JSON.parse(...)` blocks positionally (resilient to minified variable name changes between deploys), with a legacy marker-based fallback. Returns `OptaTeamRanking` (rank, team, rating 0-100, opta_id, domestic_league, domestic_league_id, country, confederation) and `OptaLeagueRanking` (rank, league, seasonAverageRating, leagueSize, countryName, top5Rating, top10Rating). Cached with 7-day TTL since Opta updates roughly weekly.
+
+> **In plain English:** For today's predictions, we use Opta's official Power Rankings — the same system used by professional broadcasters. Instead of opening a browser to scrape a website (slow and fragile), we directly download the data file that the website itself uses and extract the team ratings from it. Each team gets a score from 0 to 100, and each league gets an official average rating and team count. We save this for a week since it only updates weekly.
+
+### 2.5 Elo Router (Training/Historical)
+
+**Technical:** `backend/data/elo_router.py` determines which source to query for a given club on historical dates. Logic:
 1. Check if the club is in ClubElo (European). If yes, use ClubElo (higher granularity).
 2. If not, check WorldFootballElo.
 3. If neither covers the club, return `None`.
 
-Also provides `normalize_elo(raw, global_min, global_max)` which converts any raw Elo to the 0–100 scale.
+Also provides `normalize_elo(raw, global_min, global_max)` which converts any raw Elo to the 0–100 scale. Used for training and backtesting on historical dates where Opta data is unavailable.
 
-> **In plain English:** When we need to know how strong a club is, the router figures out which database to ask. For Arsenal, it asks ClubElo. For Flamengo, it asks WorldFootballElo. It's like a receptionist directing your call to the right department.
+> **In plain English:** For historical predictions (training the model on past transfers), we can't use Opta — they don't have an archive. So the router figures out which historical database to ask. For Arsenal in 2022, it asks ClubElo. For Flamengo in 2022, it asks WorldFootballElo. It's like a receptionist directing your call to the right department.
 
-### 2.5 REEP Register — Dynamic Team Aliases
+### 2.6 REEP Register — Dynamic Team Aliases
 
 **Technical:** `backend/data/reep_registry.py` downloads the REEP open football data register's `teams.csv` (~45,000 clubs worldwide) and `people.csv` (~430,000 players). Functions include `get_teams_df()`, `build_clubelo_sofascore_map()`, `clubelo_to_sofascore_name()`, and `sofascore_team_aliases()`. Used by `power_rankings._build_dynamic_aliases()` to cross-link provider name columns (`name`, `key_clubelo`, `key_fbref`, `key_transfermarkt`) into bidirectional aliases at runtime. Cached for 7 days. Graceful degradation — if unavailable, falls back to hardcoded `_EXTREME_ABBREVS` (502 entries) and `_CLUBELO_TO_SOFASCORE` (531 entries).
 
 > **In plain English:** Instead of manually maintaining a list of every team name variant (there are thousands worldwide), the system downloads a comprehensive open-source register of ~45,000 clubs and automatically links up all their different names across different data providers. If this download fails, the system falls back to the ~1,000 hand-curated name mappings that are built into the code.
 
-### 2.6 StatsBomb Open Data
+### 2.7 StatsBomb Open Data
 
 **Technical:** `backend/data/statsbomb_client.py` accesses StatsBomb's free open-data repository via the `statsbombpy` package. Functions: `get_player_shots()`, `get_player_passes()`, `get_player_heatmap_data()`, `compute_spatial_features()`. Rendered by `frontend/components/pitch_viz.py` using the `mplsoccer` library. Integrated into the Transfer Impact page for spatial visualization.
 
 > **In plain English:** StatsBomb provides detailed spatial data — where on the pitch shots were taken from, where passes went, where the player spent most of their time. This is shown as shot maps, pass networks, and heatmaps on the Transfer Impact page, giving scouts visual context beyond raw numbers.
 
-### 2.7 football-data.co.uk — Coefficient Calibration
+### 2.8 football-data.co.uk — Coefficient Calibration
 
 **Technical:** `backend/data/footballdata_client.py` fetches match-level CSV data from football-data.co.uk for multiple leagues. Used by `adjustment_models.calibrate_style_coefficients()` to empirically refine `_LEAGUE_STYLE_COEFF` and `_OPP_QUALITY_SENS` coefficients via cross-league CV analysis, producing a 60/40 blend of data-derived and default values.
 
 > **In plain English:** Instead of just guessing how much each league's playing style differs, the system can download real match data and statistically measure those differences. This calibration step produces more accurate coefficients for predicting how stats change when a player moves between leagues with different playing styles.
 
-### 2.8 Caching
+### 2.9 Caching
 
 **Technical:** `backend/data/cache.py` wraps `diskcache` (SQLite-backed). All external API calls go through `cache.get(key, max_age)` / `cache.set(key, value)`. Namespaced by data source (e.g. `sofascore_search`, `clubelo`, `worldelo`). TTLs range from 1 day (stats) to 7 days (search results).
 
@@ -235,6 +241,36 @@ TransferScope computes Power Rankings **dynamically** from actual Elo data.
 
 Implemented in `backend/features/power_rankings.py` → `compute_daily_rankings()`:
 
+**Hybrid approach:** The system uses different data sources depending on context:
+- **Inference (today's date):** Opta Power Rankings (primary) with ClubElo raw_elo overlay
+- **Training / backtesting (historical dates):** ClubElo + WorldFootballElo (Opta has no historical API)
+
+#### Inference Path (Opta)
+
+**Step 1 — Fetch Opta team and league rankings.**
+`opta_client.py` fetches the JS bundle and `league-meta.json` from The Analyst's dataviz SPA. Returns 0-100 ratings for all ranked teams worldwide, plus official league metadata.
+
+**Step 2 — Resolve league codes.**
+Each team's league is resolved using Opta's `domestic_league_name` + `country` fields (e.g. "Premier League" + "England" → ENG1). This compound key is safe for exact matching: "Premier League" + "Wales" maps to WAL1, not ENG1. Falls back to ClubElo league assignment, then "UNK".
+
+**Step 3 — Use official league averages.**
+League means come from **official** `seasonAverageRating` in `league-meta.json`, and team counts from **official** `leagueSize`. This avoids incorrect counts (e.g. Premier League showing 22 teams instead of 20 when not all teams match by name).
+
+> **In plain English:** For today's predictions, we use Opta's official league averages — the same numbers broadcasters use. We don't have to guess how many teams are in the Premier League or compute the average ourselves. Opta tells us directly: 20 teams, average rating 72.3.
+
+**Step 4 — Compute relative ability.**
+```python
+relative_ability = team_normalized_score - league_mean_normalized
+```
+
+**Step 5 — Provide raw_elo for model compatibility.**
+ClubElo provides `raw_elo` (on the ~1000-2100 scale the model was trained on) for teams it covers. Teams not in ClubElo get a linear rescale from Opta's 0-100.
+
+**Step 6 — Cache for 7 days.**
+Opta data updates roughly weekly, so the cache TTL is 7 days.
+
+#### Training Path (Historical)
+
 **Step 1 — Collect all club Elo ratings.**
 Query ClubElo for European clubs and WorldFootballElo for non-European clubs. Merge into a single dictionary: `{club_name: (raw_elo, league_code)}`.
 
@@ -252,7 +288,7 @@ league_mean = mean(normalized_score for all teams in that league)
 ```
 Also compute standard deviation and percentile bands (10th, 25th, 50th, 75th, 90th) for each league. These power the swarm plots.
 
-> **In plain English:** A league's quality is simply the average of all its teams' scores. The Premier League might average 72, while the Ecuadorian Serie A might average 31. This is calculated fresh every day from actual team ratings, not opinions.
+> **In plain English:** A league's quality is simply the average of all its teams' scores. The Premier League might average 72, while the Ecuadorian Serie A might average 31. This is calculated fresh from actual team ratings, not opinions.
 
 **Step 4 — Compute relative ability.**
 ```python
@@ -275,7 +311,7 @@ change_RA = target_relative_ability - source_relative_ability
 
 ### 6.4 Team Name Resolution
 
-Matching team names across ClubElo, WorldFootballElo, and Sofascore is non-trivial — each source uses different naming conventions (e.g. "ManCity" vs "Manchester City" vs "Man City"). `get_team_ranking()` uses a 3-step lookup:
+Matching team names across Opta, ClubElo, WorldFootballElo, and Sofascore is non-trivial — each source uses different naming conventions (e.g. "ManCity" vs "Manchester City" vs "Man City"). `get_team_ranking()` uses a 3-step lookup:
 
 1. **Exact match** in the rankings dictionary
 2. **Accent-normalized exact match** via `_strip_accents()` (NFKD Unicode decomposition — ü→u, é→e, etc.)

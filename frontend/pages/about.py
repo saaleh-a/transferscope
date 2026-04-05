@@ -173,7 +173,7 @@ silently drop valid candidates. Missing fields show as "—" in the results tabl
 **✅ What the model USES:**
 - Current season per-90 stats (Sofascore)
 - Team-position averages (tactical style proxy)
-- Team & league Elo ratings (Power Rankings)
+- Team & league strength ratings (Opta Power Rankings for inference, ClubElo/WorldFootballElo for training)
 - Player match rating (Sofascore 0-10)
 - Rolling window confidence (minutes played)
 """
@@ -214,14 +214,15 @@ silently drop valid candidates. Missing fields show as "—" in the results tabl
         st.markdown(f"**{continent}** ({len(leagues)} leagues)")
         rows = []
         for code, info in sorted(leagues, key=lambda x: x[1].name):
-            elo_source = "ClubElo" if info.clubelo_league else (
+            historical_source = "ClubElo" if info.clubelo_league else (
                 "WorldFootballElo" if info.worldelo_slug else "None"
             )
             rows.append({
                 "Code": code,
                 "League": info.name,
                 "Country": info.country,
-                "Elo Source": elo_source,
+                "Inference Source": "Opta",
+                "Training Source": historical_source,
             })
 
         import pandas as pd
@@ -241,7 +242,10 @@ silently drop valid candidates. Missing fields show as "—" in the results tabl
 
 If a club can't be found in Power Rankings, the system defaults to a score of 50.0
 and shows a warning. Predictions will still work but may be less accurate because the
-model can't gauge the true team/league strength.
+model can't gauge the true team/league strength. For inference (today's predictions),
+Opta Power Rankings cover ~14K teams worldwide with official league averages from
+league-meta.json. For historical dates (training/backtesting), ClubElo covers ~600
+European clubs and WorldFootballElo covers non-European leagues.
 """
     )
 
@@ -369,9 +373,10 @@ change after a transfer, using:
 - Dual simulation methodology (predict at both clubs, compare)
 
 TransferScope is a faithful recreation of this paper's methodology, with additional
-improvements for robustness: dynamic Elo-based Power Rankings, per-metric opposition
-quality modelling, asymmetric damping, fuzzy team name matching (180+ aliases),
-K-means shortlist clustering with rate-limit protection, None-passthrough filter design,
-per-group feature subsets (4 specialist neural networks), and 208 automated tests.
+improvements for robustness: Opta Power Rankings for inference (with ClubElo/WorldFootballElo
+for historical training), per-metric opposition quality modelling, asymmetric damping,
+fuzzy team name matching (180+ aliases), K-means shortlist clustering with rate-limit
+protection, None-passthrough filter design, per-group feature subsets (4 specialist
+neural networks), and 200+ automated tests.
 """
     )
