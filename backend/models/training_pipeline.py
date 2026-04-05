@@ -639,6 +639,8 @@ def build_training_sample(
     try:
         from backend.data import reep_registry
         reep_data = reep_registry.enrich_player(record.player_id)
+        if reep_data.get("reep_id"):
+            _log.debug("REEP player %s → %s", record.player_id, reep_data["reep_id"])
         if reep_data.get("height_cm"):
             player_height_cm = float(reep_data["height_cm"])
         if reep_data.get("date_of_birth"):
@@ -1138,6 +1140,8 @@ def build_non_transfer_sample(
     try:
         from backend.data import reep_registry
         reep_data = reep_registry.enrich_player(record.player_id)
+        if reep_data.get("reep_id"):
+            _log.debug("REEP player %s → %s", record.player_id, reep_data["reep_id"])
         if reep_data.get("height_cm"):
             nt_height_cm = float(reep_data["height_cm"])
         if reep_data.get("date_of_birth"):
