@@ -87,6 +87,17 @@ def _make_mock_team_ranking(name, score=60.0, league_code="ENG1", league_mean=50
     )
 
 
+def _ranking_side_effect():
+    """Return a side_effect callable for get_team_ranking that accepts any
+    positional/keyword arguments and returns a valid TeamRanking.
+
+    Required because the REEP integration changed get_team_ranking to accept
+    query_date= and tournament_id= kwargs, which the old lambda name: mocks
+    did not handle.
+    """
+    return lambda name, *args, **kwargs: _make_mock_team_ranking(name)
+
+
 def _make_mock_league_snapshot(code="ENG1"):
     from backend.features.power_rankings import LeagueSnapshot
     from datetime import date
@@ -147,6 +158,7 @@ class TestBuildTrainingSample(unittest.TestCase):
 
         record = _make_mock_transfer_record()
 
+        mock_client.get_player_match_logs.return_value = []
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
 
         mock_pr.compute_daily_rankings.return_value = (
@@ -159,10 +171,11 @@ class TestBuildTrainingSample(unittest.TestCase):
                 "ESP1": _make_mock_league_snapshot("ESP1"),
             },
         )
-        mock_pr.get_team_ranking.side_effect = lambda name: {
+        mock_pr.get_team_ranking.side_effect = lambda name, *args, **kwargs: {
             "Old FC": _make_mock_team_ranking("Old FC", 65.0),
             "New FC": _make_mock_team_ranking("New FC", 55.0, "ESP1"),
         }.get(name)
+        mock_pr.get_league_opta_rating.return_value = 50.0
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
@@ -183,10 +196,12 @@ class TestBuildTrainingSample(unittest.TestCase):
 
         stats = _make_mock_season_stats(900)
         stats["per90"] = partial_per90
+        mock_client.get_player_match_logs.return_value = []
         mock_client.get_player_stats_for_season.return_value = stats
 
         mock_pr.compute_daily_rankings.return_value = ({}, {})
-        mock_pr.get_team_ranking.return_value = None
+        mock_pr.get_team_ranking.side_effect = _ranking_side_effect()
+        mock_pr.get_league_opta_rating.return_value = 50.0
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
@@ -274,7 +289,8 @@ class TestFullDatasetNoNans(unittest.TestCase):
 
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900)
         mock_pr.compute_daily_rankings.return_value = ({}, {})
-        mock_pr.get_team_ranking.return_value = None
+        mock_pr.get_team_ranking.side_effect = _ranking_side_effect()
+        mock_pr.get_league_opta_rating.return_value = 50.0
 
         records = [
             TransferRecord(
@@ -346,7 +362,8 @@ class TestFirst1000MinuteTargets(unittest.TestCase):
         # Fallback season stats (should not be used for labels if logs work)
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(1350, 0.7)
         mock_pr.compute_daily_rankings.return_value = ({}, {})
-        mock_pr.get_team_ranking.return_value = None
+        mock_pr.get_team_ranking.side_effect = _ranking_side_effect()
+        mock_pr.get_league_opta_rating.return_value = 50.0
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
@@ -367,7 +384,8 @@ class TestFirst1000MinuteTargets(unittest.TestCase):
         mock_client.get_player_match_logs.return_value = []
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.8)
         mock_pr.compute_daily_rankings.return_value = ({}, {})
-        mock_pr.get_team_ranking.return_value = None
+        mock_pr.get_team_ranking.side_effect = _ranking_side_effect()
+        mock_pr.get_league_opta_rating.return_value = 50.0
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
@@ -412,7 +430,7 @@ class TestNonTransferSamples(unittest.TestCase):
         mock_client.get_league_player_stats.return_value = []
 
         mock_pr.compute_daily_rankings.return_value = ({}, {})
-        mock_pr.get_team_ranking.return_value = None
+        mock_pr.get_team_ranking.side_effect = _ranking_side_effect()
 
         result = build_non_transfer_sample(record)
         self.assertIsNotNone(result)
@@ -452,7 +470,8 @@ class TestNonTransferSamples(unittest.TestCase):
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.5)
         mock_client.get_league_player_stats.return_value = []
         mock_pr.compute_daily_rankings.return_value = ({}, {})
-        mock_pr.get_team_ranking.return_value = None
+        mock_pr.get_team_ranking.side_effect = _ranking_side_effect()
+        mock_pr.get_league_opta_rating.return_value = 50.0
 
         transfer_records = [
             TransferRecord(
@@ -535,7 +554,8 @@ class TestNaiveLeagueExpectation(unittest.TestCase):
         mock_client.get_league_player_stats.return_value = league_players
 
         mock_pr.compute_daily_rankings.return_value = ({}, {})
-        mock_pr.get_team_ranking.return_value = None
+        mock_pr.get_team_ranking.side_effect = _ranking_side_effect()
+        mock_pr.get_league_opta_rating.return_value = 50.0
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
@@ -580,7 +600,8 @@ class TestErrorHandling(unittest.TestCase):
         mock_client.get_league_player_stats.return_value = []
 
         mock_pr.compute_daily_rankings.return_value = ({}, {})
-        mock_pr.get_team_ranking.return_value = None
+        mock_pr.get_team_ranking.side_effect = _ranking_side_effect()
+        mock_pr.get_league_opta_rating.return_value = 50.0
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
@@ -594,8 +615,10 @@ class TestErrorHandling(unittest.TestCase):
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
     @mock.patch("backend.models.training_pipeline.power_rankings")
-    def test_uses_midpoint_when_power_rankings_fail(self, mock_pr, mock_client):
-        """When power rankings fail, should use 50.0 midpoints."""
+    def test_returns_none_when_power_rankings_unavailable(self, mock_pr, mock_client):
+        """When power rankings return None for a club, sample is dropped (returns None).
+        Team ability data is required; the old midpoint fallback was removed in the
+        REEP integration because 50.0 midpoints gave no signal and corrupted training."""
         from backend.models.training_pipeline import build_training_sample
 
         record = _make_mock_transfer_record()
@@ -604,14 +627,10 @@ class TestErrorHandling(unittest.TestCase):
         mock_client.get_player_stats_for_season.return_value = _make_mock_season_stats(900, 0.5)
         mock_client.get_league_player_stats.return_value = []
 
-        mock_pr.compute_daily_rankings.side_effect = RuntimeError("Elo service down")
         mock_pr.get_team_ranking.return_value = None
 
         result = build_training_sample(record)
-        self.assertIsNotNone(result)
-        # Team abilities should be 50.0 (midpoint fallback)
-        self.assertAlmostEqual(result["team_ability_current"], 50.0)
-        self.assertAlmostEqual(result["team_ability_target"], 50.0)
+        self.assertIsNone(result)
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
     @mock.patch("backend.models.training_pipeline.power_rankings")
@@ -633,7 +652,8 @@ class TestErrorHandling(unittest.TestCase):
         mock_client.get_league_player_stats.return_value = []
 
         mock_pr.compute_daily_rankings.return_value = ({}, {})
-        mock_pr.get_team_ranking.return_value = None
+        mock_pr.get_team_ranking.side_effect = _ranking_side_effect()
+        mock_pr.get_league_opta_rating.return_value = 50.0
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)

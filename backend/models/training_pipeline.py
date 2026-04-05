@@ -1818,6 +1818,7 @@ def train_neural_network(
     X_val: np.ndarray,
     y_val: np.ndarray,
     meta_train: Optional[List[Dict[str, Any]]] = None,
+    meta_val: Optional[List[Dict[str, Any]]] = None,
 ) -> TransferPortalModel:
     """Train the 4-group TransferPortalModel neural network.
 
@@ -1887,6 +1888,26 @@ def train_neural_network(
             y_train = y_train[keep]
             meta_train = [m for m, k in zip(meta_train, keep) if k]
             X_train_scaled = scaler.transform(X_train)   # re-scale filtered set
+
+    # Apply the same quality filter to validation so early-stopping monitors a
+    # clean signal.  Without this, zero-xG non-GK samples in val produce
+    # corrupted delta labels (delta = absolute post_xG) which inflate val_loss
+    # and cause early stopping to fire too soon.
+    if meta_val:
+        gk_mask_val = np.array([m.get("position", "?") == "G" for m in meta_val])
+        drop_mask_val = (X_val[:, XG_COL] == 0) & ~gk_mask_val
+        n_dropped_val = int(drop_mask_val.sum())
+        if n_dropped_val:
+            keep_val = ~drop_mask_val
+            _log.info(
+                "Data quality filter (val): dropping %d / %d validation samples "
+                "with missing pre-transfer xG",
+                n_dropped_val, len(X_val),
+            )
+            X_val = X_val[keep_val]
+            y_val = y_val[keep_val]
+            meta_val = [m for m, k in zip(meta_val, keep_val) if k]
+            X_val_scaled = scaler.transform(X_val)
 
     # Compute deltas: train model to predict (post - pre) instead of absolute
     # post-transfer values.  Pre-transfer per-90 is already an excellent
@@ -2365,7 +2386,7 @@ def run_pipeline(
         # Step 6: Train neural network
         _log.info(f"TIMER: neural network training start — {datetime.now().strftime('%H:%M:%S')}")
         _report("Training neural network", "4-group multi-head TensorFlow model")
-        train_neural_network(X_train, y_train, X_val, y_val, meta_train=meta_train)
+        train_neural_network(X_train, y_train, X_val, y_val, meta_train=meta_train, meta_val=meta_val)
     else:
         _report("Skipping training", "--skip-training flag set")
 
