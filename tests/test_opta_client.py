@@ -798,5 +798,145 @@ class TestOptaLeagueFallbackInRankings(unittest.TestCase):
         self.assertEqual(team_rankings["Valletta FC"].league_code, "UNK")
 
 
+# ── Unit tests: regex-based JSON extraction ──────────────────────────────────
+
+class TestExtractAllJsonParse(unittest.TestCase):
+    """Test _extract_all_json_parse for positional blob extraction."""
+
+    def test_extracts_multiple_blobs(self):
+        from backend.data.opta_client import _extract_all_json_parse
+
+        js = (
+            'var f6=JSON.parse(`[{"rank":1,"contestantName":"Arsenal"}]`);'
+            'var C0=JSON.parse(`[{"rank":1,"contestantName":"Barcelona"}]`);'
+        )
+        blobs = _extract_all_json_parse(js)
+        self.assertEqual(len(blobs), 2)
+        self.assertIn("Arsenal", blobs[0])
+        self.assertIn("Barcelona", blobs[1])
+
+    def test_returns_empty_for_no_matches(self):
+        from backend.data.opta_client import _extract_all_json_parse
+
+        blobs = _extract_all_json_parse("var x = 42;")
+        self.assertEqual(len(blobs), 0)
+
+    def test_double_escaped_quotes_are_fixed(self):
+        from backend.data.opta_client import _extract_all_json_parse
+
+        # Simulate the actual bundle pattern: \\\" (3 bytes: backslash backslash dquote)
+        # which should be collapsed to \" (2 bytes: backslash dquote)
+        dbl_esc = chr(92) + chr(92) + chr(34)  # \\"
+        sgl_esc = chr(92) + chr(34)            # \"
+        js = f'var f6=JSON.parse(`[{{"name":"{dbl_esc}test{dbl_esc}"}}]`);'
+        blobs = _extract_all_json_parse(js)
+        self.assertEqual(len(blobs), 1)
+        self.assertNotIn(dbl_esc, blobs[0])
+        self.assertIn(sgl_esc, blobs[0])
+
+    def test_variable_name_independence(self):
+        """Extraction should work regardless of the minified variable name."""
+        from backend.data.opta_client import _extract_all_json_parse
+
+        # Use totally different variable names than f6/C0
+        js = 'var xyz=JSON.parse(`[{"rank":1}]`);var abc=JSON.parse(`[{"rank":2}]`);'
+        blobs = _extract_all_json_parse(js)
+        self.assertEqual(len(blobs), 2)
+
+
+# ── Unit tests: new OptaLeagueRanking fields ──────────────────────────────────
+
+class TestOptaLeagueRankingNewFields(unittest.TestCase):
+    """Test the newly added fields on OptaLeagueRanking."""
+
+    def test_number_of_teams_default(self):
+        lr = OptaLeagueRanking(rank=1, league="Test", rating=85.0, ranking_change_7d="0")
+        self.assertEqual(lr.number_of_teams, 0)
+
+    def test_number_of_teams_set(self):
+        lr = OptaLeagueRanking(
+            rank=1, league="Premier League", rating=86.0,
+            ranking_change_7d="0", number_of_teams=20,
+            country_name="England", top5_rating=94.0, top10_rating=92.0,
+        )
+        self.assertEqual(lr.number_of_teams, 20)
+        self.assertEqual(lr.country_name, "England")
+        self.assertAlmostEqual(lr.top5_rating, 94.0)
+        self.assertAlmostEqual(lr.top10_rating, 92.0)
+
+
+# ── Unit tests: new OptaTeamRanking fields ────────────────────────────────────
+
+class TestOptaTeamRankingNewFields(unittest.TestCase):
+    """Test the newly added domestic_league_id field."""
+
+    def test_domestic_league_id_default(self):
+        t = _make_opta_team()
+        self.assertEqual(t.domestic_league_id, "")
+
+    def test_domestic_league_id_set(self):
+        t = OptaTeamRanking(
+            rank=1, team="Arsenal", rating=93.0,
+            ranking_change_7d="+1", opta_id="abc",
+            domestic_league_id="dl123",
+        )
+        self.assertEqual(t.domestic_league_id, "dl123")
+
+
+# ── Unit tests: official league-meta values in snapshots ──────────────────────
+
+class TestOfficialLeagueMetaInSnapshots(unittest.TestCase):
+    """Test that league-meta.json official values override computed values."""
+
+    @patch("backend.features.power_rankings.clubelo_client")
+    @patch("backend.features.power_rankings._get_clubelo_sofascore_map")
+    @patch("backend.data.opta_client.get_team_rankings")
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_uses_official_avg_and_team_count(
+        self, mock_opta_leagues, mock_opta_teams, mock_ce_map, mock_ce_client
+    ):
+        """When league-meta.json has official values, they should be used."""
+        from backend.features.power_rankings import _compute_rankings_from_opta
+
+        # 3 teams with domestic_league="Premier League", country="England"
+        mock_opta_teams.return_value = [
+            OptaTeamRanking(
+                rank=1, team="Arsenal", rating=93.0,
+                ranking_change_7d="+1", opta_id="a1",
+                domestic_league="Premier League", country="England",
+            ),
+            OptaTeamRanking(
+                rank=2, team="Chelsea", rating=89.0,
+                ranking_change_7d="0", opta_id="c1",
+                domestic_league="Premier League", country="England",
+            ),
+            OptaTeamRanking(
+                rank=3, team="Fulham", rating=78.0,
+                ranking_change_7d="-1", opta_id="f1",
+                domestic_league="Premier League", country="England",
+            ),
+        ]
+        # league-meta says avg=86.0 and 20 teams
+        mock_opta_leagues.return_value = [
+            OptaLeagueRanking(
+                rank=1, league="Premier League", rating=86.0,
+                ranking_change_7d="0", number_of_teams=20,
+                country_name="England",
+            ),
+        ]
+        mock_ce_map.return_value = {}
+        mock_ce_client.get_all_by_date.return_value = None
+
+        result = _compute_rankings_from_opta()
+        self.assertIsNotNone(result)
+        _, league_snapshots = result
+
+        eng1 = league_snapshots.get("ENG1")
+        self.assertIsNotNone(eng1)
+        # Should use official values, not computed from 3 teams
+        self.assertAlmostEqual(eng1.mean_normalized, 86.0)
+        self.assertEqual(eng1.team_count, 20)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Dict, List, Optional
@@ -40,9 +41,10 @@ _INDEX_JS_URL = f"{_BASE_URL}/index.js"
 _LEAGUE_META_URL = f"{_BASE_URL}/league-meta.json"
 _WOMEN_LEAGUE_META_URL = f"{_BASE_URL}/women-league-meta.json"
 
-# The JS bundle is ~17 MB but only regenerated when rankings change (roughly
-# weekly).  Cache the *parsed* result for 24 h so we never re-parse in prod.
-_CACHE_TTL = 86_400  # 24 h in seconds
+# The JS bundle is ~17 MB and only regenerated when rankings change (roughly
+# weekly, Mon-Fri).  Cache the *parsed* result for 7 days to avoid re-fetching
+# the large bundle unnecessarily.
+_CACHE_TTL = 604_800  # 7 days in seconds
 _HTTP_TIMEOUT = 30   # seconds — large bundle needs generous timeout
 
 # ── HTTP session (curl_cffi preferred for TLS fingerprint bypass) ─────────────
@@ -69,6 +71,7 @@ class OptaTeamRanking:
     short_name: str = ""            # contestantShortName
     club_name: str = ""             # contestantClubName
     domestic_league: str = ""       # domesticLeagueName
+    domestic_league_id: str = ""    # domesticLeagueId
     country: str = ""
     confederation: str = ""
     season_avg_rating: float = 0.0  # seasonAverageRating
@@ -82,6 +85,11 @@ class OptaLeagueRanking:
     league: str
     rating: float                   # seasonAverageRating, same 0-100 scale
     ranking_change_7d: Optional[str]
+    # Extra fields from league-meta.json for downstream use.
+    number_of_teams: int = 0        # leagueSize — official team count
+    country_name: str = ""          # countryName
+    top5_rating: float = 0.0        # top5Rating
+    top10_rating: float = 0.0       # top10Rating
 
 
 # ── Internal fetchers ─────────────────────────────────────────────────────────
@@ -98,11 +106,13 @@ def _fetch_text(url: str) -> Optional[str]:
     return None
 
 
-def _extract_json_parse(js_text: str, marker: str) -> Optional[str]:
-    """Find ``<marker>=JSON.parse(\\`...\\`)`` in *js_text* and return the JSON
-    string, ready for ``json.loads()``.
+def _extract_json_parse(js_text: str, marker: Optional[str] = None) -> Optional[str]:
+    """Find ``JSON.parse(\\`...\\`)`` in *js_text* and return the JSON string.
 
-    Uses plain string search — no regex — so it's fast even on 17 MB of JS.
+    If *marker* is given (e.g. ``"f6"``), searches for that exact variable
+    assignment: ``<marker>=JSON.parse(...)``.  If *marker* is ``None``,
+    returns ``None`` — use :func:`_extract_all_json_parse` for positional
+    extraction.
 
     **Escape fix**: the ``comps`` field embeds Python-style list-of-dicts with
     competition names that were double-escaped during bundle generation.  Any
@@ -114,6 +124,8 @@ def _extract_json_parse(js_text: str, marker: str) -> Optional[str]:
 
     Returns ``None`` if the marker is not found.
     """
+    if marker is None:
+        return None
     needle = f"{marker}=JSON.parse(`"
     idx = js_text.find(needle)
     if idx < 0:
@@ -130,6 +142,31 @@ def _extract_json_parse(js_text: str, marker: str) -> Optional[str]:
     return raw.replace(_DBL_ESC, _SGL_ESC)
 
 
+def _extract_all_json_parse(js_text: str) -> List[str]:
+    """Extract ALL ``JSON.parse(\\`[...]\\`)`` blobs from the JS bundle.
+
+    Returns a list of raw JSON strings in the order they appear in the bundle.
+    The bundle typically contains 4 blobs:
+      [0] = men's team rankings
+      [1] = men's search index (not used)
+      [2] = women's team rankings
+      [3] = women's search index (not used)
+
+    Uses regex to avoid depending on minified variable names which change
+    between deploys.
+    """
+    # Match JSON.parse(`[...]`) — the array content between backticks.
+    pattern = r'JSON\.parse\(`(\[.*?\])`\)'
+    matches = re.findall(pattern, js_text, re.DOTALL)
+
+    result: List[str] = []
+    _DBL_ESC = chr(92) + chr(92) + chr(34)
+    _SGL_ESC = chr(92) + chr(34)
+    for raw in matches:
+        result.append(raw.replace(_DBL_ESC, _SGL_ESC))
+    return result
+
+
 def _parse_change(last_week: Optional[str], current: Optional[str]) -> str:
     """Convert lastWeekGlobalRank / currentGlobalRank to a ±N string."""
     try:
@@ -142,19 +179,32 @@ def _parse_change(last_week: Optional[str], current: Optional[str]) -> str:
 
 
 def _load_team_rankings_from_bundle() -> List[OptaTeamRanking]:
-    """Fetch index.js and extract the men's team ranking dataset (``f6``).
+    """Fetch index.js and extract the men's team ranking dataset.
 
-    Falls back to an empty list on any parse / network failure.
+    Extraction strategy:
+    1. Try regex-based ``_extract_all_json_parse`` which finds all
+       ``JSON.parse(\\`[...]\\`)`` blobs by position (index 0 = men's teams).
+       This is resilient to minified variable name changes between deploys.
+    2. Fall back to the legacy ``f6`` marker if regex fails.
+
+    Returns an empty list on any parse / network failure.
     """
     js = _fetch_text(_INDEX_JS_URL)
     if not js:
         return []
 
-    raw = _extract_json_parse(js, "f6")
+    # Strategy 1: positional regex extraction (preferred).
+    blobs = _extract_all_json_parse(js)
+    raw = blobs[0] if blobs else None
+
+    # Strategy 2: legacy marker-based extraction (fallback).
+    if not raw:
+        raw = _extract_json_parse(js, "f6")
+
     if not raw:
         _log.warning(
-            "Could not find 'f6=JSON.parse(...)' in Opta index.js — "
-            "the bundle variable name may have changed after a deploy"
+            "Could not extract team rankings from Opta index.js — "
+            "the bundle structure may have changed after a deploy"
         )
         return []
 
@@ -178,6 +228,7 @@ def _load_team_rankings_from_bundle() -> List[OptaTeamRanking]:
                 short_name=e.get("contestantShortName", ""),
                 club_name=e.get("contestantClubName", ""),
                 domestic_league=e.get("domesticLeagueName", ""),
+                domestic_league_id=e.get("domesticLeagueId", ""),
                 country=e.get("country", ""),
                 confederation=e.get("confederation", ""),
                 season_avg_rating=float(e.get("seasonAverageRating", 0)),
@@ -229,6 +280,10 @@ def _load_league_rankings_from_meta() -> List[OptaLeagueRanking]:
                 league=e.get("leagueName", ""),
                 rating=float(e.get("seasonAverageRating") or 0),
                 ranking_change_7d=change,
+                number_of_teams=int(e.get("leagueSize") or 0),
+                country_name=e.get("countryName", ""),
+                top5_rating=float(e.get("top5Rating") or 0),
+                top10_rating=float(e.get("top10Rating") or 0),
             ))
         except Exception as exc:
             _log.debug("Skipping malformed Opta league entry: %s — %s", e, exc)
@@ -246,9 +301,9 @@ def _load_league_rankings_from_meta() -> List[OptaLeagueRanking]:
 # ── Public API (cached) ───────────────────────────────────────────────────────
 
 def get_team_rankings(force_refresh: bool = False) -> List[OptaTeamRanking]:
-    """Return today's Opta team rankings, cached for 24 h.
+    """Return today's Opta team rankings, cached for 7 days.
 
-    Fetches ``index.js``, extracts the ``f6`` JSON blob, and parses it.
+    Fetches ``index.js``, extracts the team rankings JSON blob, and parses it.
     On failure returns ``[]`` so callers can fall back gracefully.
 
     Parameters
@@ -256,7 +311,7 @@ def get_team_rankings(force_refresh: bool = False) -> List[OptaTeamRanking]:
     force_refresh : bool
         Bypass the cache and re-fetch.
     """
-    key = cache.make_key("opta_team_rankings_v2", date.today().isoformat())
+    key = cache.make_key("opta_team_rankings_v3", date.today().isoformat())
     if not force_refresh:
         cached = cache.get(key, max_age=_CACHE_TTL)
         if cached is not None:
@@ -270,14 +325,14 @@ def get_team_rankings(force_refresh: bool = False) -> List[OptaTeamRanking]:
 
 
 def get_league_rankings(force_refresh: bool = False) -> List[OptaLeagueRanking]:
-    """Return today's Opta league rankings from ``league-meta.json``, cached 24 h.
+    """Return today's Opta league rankings from ``league-meta.json``, cached 7 days.
 
     Parameters
     ----------
     force_refresh : bool
         Bypass the cache and re-fetch.
     """
-    key = cache.make_key("opta_league_rankings_v2", date.today().isoformat())
+    key = cache.make_key("opta_league_rankings_v3", date.today().isoformat())
     if not force_refresh:
         cached = cache.get(key, max_age=_CACHE_TTL)
         if cached is not None:
