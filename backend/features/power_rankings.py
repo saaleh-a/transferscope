@@ -1184,10 +1184,17 @@ def _compute_rankings_from_opta() -> (
 
     opta_leagues = opta_client.get_league_rankings()
 
-    # Build a league-name → rating lookup for Opta league rankings.
+    # Build a league-name → (rating, number_of_teams) lookup for Opta league
+    # rankings.  These official values from league-meta.json are used for
+    # league snapshot ``mean_normalized`` and ``team_count`` when available,
+    # ensuring correctness regardless of how many teams from each league
+    # we actually matched by name.
     opta_league_ratings: Dict[str, float] = {}
+    opta_league_team_counts: Dict[str, int] = {}
     for lr in opta_leagues:
         opta_league_ratings[lr.league] = lr.rating
+        if lr.number_of_teams > 0:
+            opta_league_team_counts[lr.league] = lr.number_of_teams
 
     # Collect all ClubElo data (single fetch, reused for raw_elo + league mapping).
     clubelo_raw: Dict[str, float] = {}  # canonical_name → raw elo
@@ -1270,6 +1277,18 @@ def _compute_rankings_from_opta() -> (
             raw_elo = _opta_score_to_raw_elo(opta_rating)
 
         # League code: ClubElo exact → ClubElo case-insensitive →
+        # Opta (domestic_league + country) → "UNK".
+        #
+        # We deliberately do NOT fuzzy-match domestic_league here because
+        # Opta has 14k+ teams and generic league names like "Premier League"
+        # appear in dozens of countries (Malta, Wales, etc.) — fuzzy matching
+        # at 70%+ pulls hundreds of weak teams into ENG1.
+        #
+        # However, the compound key (domestic_league, country) is safe for
+        # exact matching: "Premier League"+"England" uniquely identifies ENG1,
+        # while "Premier League"+"Wales" maps to WAL1.  This picks up teams
+        # that ClubElo doesn't cover (e.g. newly promoted clubs) without the
+        # false-positive risk of name-only matching.
         # Opta (country, domestic_league) exact lookup → "UNK".
         # The exact (country, league) lookup fills in teams ClubElo misses
         # (e.g. Bundesliga has 18 clubs but ClubElo only tracks ~10).
@@ -1280,12 +1299,17 @@ def _compute_rankings_from_opta() -> (
         if league_code is None:
             ce_canonical = clubelo_lower_index.get(team_name.lower())
             if ce_canonical is not None:
-                league_code = clubelo_league_map.get(ce_canonical, "UNK")
-        if (not league_code or league_code == "UNK") and opta_team.domestic_league and opta_team.country:
-            key = (opta_team.country.casefold(), opta_team.domestic_league.casefold())
-            league_code = _OPTA_COUNTRY_LEAGUE_TO_CODE.get(key, "UNK")
+                league_code = clubelo_league_map.get(ce_canonical)
         if not league_code:
             league_code = "UNK"
+
+        # Fallback: use Opta's own metadata to resolve the league.
+        if league_code == "UNK":
+            opta_resolved = _resolve_opta_league_code(
+                opta_team.domestic_league, opta_team.country
+            )
+            if opta_resolved:
+                league_code = opta_resolved
 
         all_teams_data[team_name] = (opta_rating, raw_elo, league_code)
         all_teams_rank[team_name] = opta_team.rank
@@ -1293,9 +1317,22 @@ def _compute_rankings_from_opta() -> (
     if not all_teams_data:
         return None
 
-    # Build league snapshots from the Opta ratings
+    # Build league snapshots from the Opta ratings.
+    # Track which Opta domestic_league names map to each league code so we
+    # can look up official seasonAverageRating and leagueSize from league-meta.
     league_teams: Dict[str, List[Tuple[str, float, float]]] = {}
     # league_code -> [(team_name, raw_elo, opta_rating)]
+    league_code_to_opta_name: Dict[str, str] = {}
+    # league_code -> Opta domesticLeagueName (for league-meta.json lookup)
+    for opta_team in opta_teams:
+        team_name = clubelo_name_map.get(opta_team.team, opta_team.team)
+        if team_name not in all_teams_data:
+            continue
+        _, _, code = all_teams_data[team_name]
+        if code != "UNK" and code not in league_code_to_opta_name:
+            if opta_team.domestic_league:
+                league_code_to_opta_name[code] = opta_team.domestic_league
+
     for team_name, (opta_rating, raw_elo, code) in all_teams_data.items():
         league_teams.setdefault(code, []).append((team_name, raw_elo, opta_rating))
 
@@ -2139,6 +2176,74 @@ for _code, _info in LEAGUES.items():
         # Derive level from league code suffix (e.g. "ENG1" → 1, "ENG2" → 2)
         _level = int(_code[-1]) if _code[-1].isdigit() else 1
         _COUNTRY_LEVEL_TO_CODE.setdefault(_country, {})[_level] = _code
+
+
+# ── Opta (domestic_league, country) → league_code fallback ────────────────────
+# Used when ClubElo doesn't cover a team.  The compound key avoids the
+# ambiguity problem of bare league names: "Premier League" appears in
+# England, Wales, Ukraine, etc. — by requiring the country to match too,
+# only the correct league is selected.
+#
+# Built from the LEAGUES registry (exact name + country) plus a handful of
+# known Opta-specific aliases where ``domesticLeagueName`` differs from our
+# canonical ``LeagueInfo.name`` (e.g. "LaLiga" vs "La Liga").
+_OPTA_DL_COUNTRY_TO_CODE: Dict[Tuple[str, str], str] = {}
+for _code, _info in LEAGUES.items():
+    _OPTA_DL_COUNTRY_TO_CODE[(_info.name.lower(), _info.country.lower())] = _code
+
+# Known Opta domesticLeagueName variants that differ from our registry names.
+_OPTA_DL_ALIASES: Dict[Tuple[str, str], str] = {
+    # Spain — Opta uses the official rebrand "LaLiga"
+    ("laliga", "spain"): "ESP1",
+    ("laliga santander", "spain"): "ESP1",
+    ("laliga ea sports", "spain"): "ESP1",
+    ("laliga hypermotion", "spain"): "ESP2",
+    ("laliga 2", "spain"): "ESP2",
+    ("segunda división", "spain"): "ESP2",
+    # France — league title sponsorship names
+    ("ligue 1 uber eats", "france"): "FRA1",
+    ("ligue 1 mcdonald's", "france"): "FRA1",
+    # Italy — league title sponsorship names
+    ("serie a tim", "italy"): "ITA1",
+    ("serie a enilive", "italy"): "ITA1",
+    ("serie bkt", "italy"): "ITA2",
+    # Germany
+    ("1. bundesliga", "germany"): "GER1",
+    ("2. bundesliga", "germany"): "GER2",
+    # England
+    ("efl championship", "england"): "ENG2",
+    # Portugal — name variant
+    ("liga portugal", "portugal"): "POR1",
+    ("liga portugal betclic", "portugal"): "POR1",
+    # Netherlands
+    ("eredivisie", "netherlands"): "NED1",
+    # Belgium
+    ("first division a", "belgium"): "BEL1",
+    ("jupiler pro league", "belgium"): "BEL1",
+    # Turkey — country name variants
+    ("super lig", "turkey"): "TUR1",
+    ("süper lig", "turkey"): "TUR1",
+    ("super lig", "türkiye"): "TUR1",
+    ("süper lig", "türkiye"): "TUR1",
+    # Scotland
+    ("premiership", "scotland"): "SCO1",
+    ("scottish premiership", "scotland"): "SCO1",
+    # Switzerland
+    ("super league", "switzerland"): "SUI1",
+}
+_OPTA_DL_COUNTRY_TO_CODE.update(_OPTA_DL_ALIASES)
+
+
+def _resolve_opta_league_code(domestic_league: str, country: str) -> Optional[str]:
+    """Resolve a league code from Opta's ``domesticLeagueName`` + ``country``.
+
+    Returns the league code if the (name, country) pair matches a known
+    league in the registry or alias table, otherwise ``None``.
+    """
+    if not domestic_league or not country:
+        return None
+    key = (domestic_league.lower().strip(), country.lower().strip())
+    return _OPTA_DL_COUNTRY_TO_CODE.get(key)
 
 
 def _clubelo_to_code_from_country(

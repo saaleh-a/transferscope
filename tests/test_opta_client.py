@@ -605,5 +605,367 @@ class TestDynamicAliasesExcludeClubElo(unittest.TestCase):
             pr._dynamic_aliases_cache = old_cache
 
 
+# ── Tests: _resolve_opta_league_code and Opta league fallback ─────────────────
+
+class TestResolveOptaLeagueCode(unittest.TestCase):
+    """Test the (domestic_league, country) → league_code fallback."""
+
+    def test_exact_registry_name(self):
+        from backend.features.power_rankings import _resolve_opta_league_code
+        self.assertEqual(_resolve_opta_league_code("Premier League", "England"), "ENG1")
+        self.assertEqual(_resolve_opta_league_code("La Liga", "Spain"), "ESP1")
+        self.assertEqual(_resolve_opta_league_code("Bundesliga", "Germany"), "GER1")
+        self.assertEqual(_resolve_opta_league_code("Serie A", "Italy"), "ITA1")
+        self.assertEqual(_resolve_opta_league_code("Ligue 1", "France"), "FRA1")
+
+    def test_case_insensitive(self):
+        from backend.features.power_rankings import _resolve_opta_league_code
+        self.assertEqual(_resolve_opta_league_code("premier league", "england"), "ENG1")
+        self.assertEqual(_resolve_opta_league_code("PREMIER LEAGUE", "ENGLAND"), "ENG1")
+
+    def test_opta_aliases(self):
+        from backend.features.power_rankings import _resolve_opta_league_code
+        # LaLiga alias
+        self.assertEqual(_resolve_opta_league_code("LaLiga", "Spain"), "ESP1")
+        self.assertEqual(_resolve_opta_league_code("LaLiga EA Sports", "Spain"), "ESP1")
+        # Ligue 1 sponsorship variants
+        self.assertEqual(_resolve_opta_league_code("Ligue 1 Uber Eats", "France"), "FRA1")
+        # Serie A sponsorship variant
+        self.assertEqual(_resolve_opta_league_code("Serie A TIM", "Italy"), "ITA1")
+        # EFL Championship
+        self.assertEqual(_resolve_opta_league_code("EFL Championship", "England"), "ENG2")
+
+    def test_country_disambiguates(self):
+        """Same league name in different countries must map to different codes."""
+        from backend.features.power_rankings import _resolve_opta_league_code
+        self.assertEqual(_resolve_opta_league_code("Premier League", "England"), "ENG1")
+        # Welsh Premier League is a different league
+        self.assertEqual(_resolve_opta_league_code("Welsh Premier League", "Wales"), "WAL1")
+        # Ukrainian Premier League is separate
+        self.assertEqual(_resolve_opta_league_code("Ukrainian Premier League", "Ukraine"), "UKR1")
+
+    def test_unknown_league_returns_none(self):
+        from backend.features.power_rankings import _resolve_opta_league_code
+        self.assertIsNone(_resolve_opta_league_code("Nonexistent League", "Nowhere"))
+        self.assertIsNone(_resolve_opta_league_code("Premier League", "Malta"))
+
+    def test_empty_inputs(self):
+        from backend.features.power_rankings import _resolve_opta_league_code
+        self.assertIsNone(_resolve_opta_league_code("", "England"))
+        self.assertIsNone(_resolve_opta_league_code("Premier League", ""))
+        self.assertIsNone(_resolve_opta_league_code("", ""))
+
+    def test_second_divisions(self):
+        from backend.features.power_rankings import _resolve_opta_league_code
+        self.assertEqual(_resolve_opta_league_code("Championship", "England"), "ENG2")
+        self.assertEqual(_resolve_opta_league_code("La Liga 2", "Spain"), "ESP2")
+        self.assertEqual(_resolve_opta_league_code("2. Bundesliga", "Germany"), "GER2")
+        self.assertEqual(_resolve_opta_league_code("Serie B", "Italy"), "ITA2")
+        self.assertEqual(_resolve_opta_league_code("Ligue 2", "France"), "FRA2")
+
+
+class TestOptaLeagueFallbackInRankings(unittest.TestCase):
+    """Test that _compute_rankings_from_opta uses Opta fallback for league codes."""
+
+    @patch("backend.features.power_rankings.clubelo_client")
+    @patch("backend.features.power_rankings._get_clubelo_sofascore_map")
+    @patch("backend.data.opta_client.get_team_rankings")
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_opta_fallback_assigns_correct_league(
+        self, mock_opta_leagues, mock_opta_teams, mock_ce_map, mock_ce_client
+    ):
+        """Teams not in ClubElo should get league from Opta domestic_league + country."""
+        from backend.features.power_rankings import _compute_rankings_from_opta
+
+        # Two teams: one in ClubElo (Arsenal), one not (newly promoted team)
+        teams = [
+            OptaTeamRanking(
+                rank=1, team="Arsenal", rating=91.0, ranking_change_7d="+1",
+                opta_id="ars1", domestic_league="Premier League", country="England",
+            ),
+            OptaTeamRanking(
+                rank=15, team="Ipswich Town", rating=72.0, ranking_change_7d="0",
+                opta_id="ips1", domestic_league="Premier League", country="England",
+            ),
+            OptaTeamRanking(
+                rank=100, team="CD Leganés", rating=60.0, ranking_change_7d="-2",
+                opta_id="leg1", domestic_league="LaLiga", country="Spain",
+            ),
+        ]
+        mock_opta_teams.return_value = teams
+        mock_opta_leagues.return_value = []
+        mock_ce_map.return_value = {}
+        mock_ce_client.get_all_by_date.return_value = None
+
+        result = _compute_rankings_from_opta()
+        self.assertIsNotNone(result)
+        team_rankings, league_snapshots = result
+
+        # All three should have resolved league codes (not UNK)
+        self.assertEqual(team_rankings["Arsenal"].league_code, "ENG1")
+        self.assertEqual(team_rankings["Ipswich Town"].league_code, "ENG1")
+        self.assertEqual(team_rankings["CD Leganés"].league_code, "ESP1")
+
+        # ENG1 should have 2 teams, ESP1 should have 1
+        self.assertEqual(league_snapshots["ENG1"].team_count, 2)
+        self.assertEqual(league_snapshots["ESP1"].team_count, 1)
+
+    @patch("backend.features.power_rankings.clubelo_client")
+    @patch("backend.features.power_rankings._get_clubelo_sofascore_map")
+    @patch("backend.data.opta_client.get_team_rankings")
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_clubelo_takes_priority_over_opta_fallback(
+        self, mock_opta_leagues, mock_opta_teams, mock_ce_map, mock_ce_client
+    ):
+        """When ClubElo has league info, it should be used even if Opta has different."""
+        import pandas as pd
+        from backend.features.power_rankings import _compute_rankings_from_opta
+
+        teams = [
+            OptaTeamRanking(
+                rank=1, team="Arsenal", rating=91.0, ranking_change_7d="+1",
+                opta_id="ars1", domestic_league="Premier League", country="England",
+            ),
+        ]
+        mock_opta_teams.return_value = teams
+        mock_opta_leagues.return_value = []
+
+        # ClubElo covers Arsenal and maps it to ENG1
+        mock_ce_map.return_value = {"Arsenal": "Arsenal"}
+        ce_df = pd.DataFrame(
+            {"elo": [1950.0], "league": ["ENG-Premier League"]},
+            index=["Arsenal"],
+        )
+        mock_ce_client.get_all_by_date.return_value = ce_df
+
+        result = _compute_rankings_from_opta()
+        self.assertIsNotNone(result)
+        team_rankings, _ = result
+
+        # ClubElo league assignment should be used
+        self.assertEqual(team_rankings["Arsenal"].league_code, "ENG1")
+# ── Tests: league name collision fix ──────────────────────────────────────────
+
+class TestLeagueNameCollision(unittest.TestCase):
+    """Verify that _get_opta_league_map keeps the highest-rated entry when
+    multiple leagues share the same name (e.g. "Premier League" exists in
+    England, Ukraine, Kazakhstan etc.).
+    """
+
+    def setUp(self):
+        """Reset module-level caches before each test."""
+        import backend.features.power_rankings as pr
+        pr._opta_league_map = None
+        pr._opta_league_country_map = None
+        pr._opta_league_team_counts = None
+
+    def tearDown(self):
+        import backend.features.power_rankings as pr
+        pr._opta_league_map = None
+        pr._opta_league_country_map = None
+        pr._opta_league_team_counts = None
+
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_keeps_highest_rated_for_duplicate_name(self, mock_leagues):
+        """'Premier League' should resolve to England's rating, not Kazakhstan's."""
+        from backend.features.power_rankings import _get_opta_league_map
+
+        mock_leagues.return_value = [
+            # Sorted by rating DESC (as the real function returns)
+            OptaLeagueRanking(rank=1, league="Premier League", rating=86.0,
+                              ranking_change_7d="0", country="England",
+                              number_of_teams=20),
+            OptaLeagueRanking(rank=50, league="Premier League", rating=53.0,
+                              ranking_change_7d="0", country="Ukraine",
+                              number_of_teams=16),
+            OptaLeagueRanking(rank=80, league="Premier League", rating=40.0,
+                              ranking_change_7d="0", country="Kazakhstan",
+                              number_of_teams=14),
+        ]
+
+        league_map = _get_opta_league_map()
+        # Name-only lookup should return the highest-rated (England's)
+        self.assertAlmostEqual(league_map["premier league"], 86.0)
+
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_country_qualified_map_built(self, mock_leagues):
+        """Country-qualified map should have separate entries per country."""
+        import backend.features.power_rankings as pr
+        from backend.features.power_rankings import _get_opta_league_map
+
+        mock_leagues.return_value = [
+            OptaLeagueRanking(rank=1, league="Premier League", rating=86.0,
+                              ranking_change_7d="0", country="England",
+                              number_of_teams=20),
+            OptaLeagueRanking(rank=50, league="Premier League", rating=53.0,
+                              ranking_change_7d="0", country="Ukraine",
+                              number_of_teams=16),
+        ]
+
+        _get_opta_league_map()  # triggers build
+        country_map = pr._opta_league_country_map
+        self.assertIsNotNone(country_map)
+        self.assertAlmostEqual(country_map[("england", "premier league")], 86.0)
+        self.assertAlmostEqual(country_map[("ukraine", "premier league")], 53.0)
+
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_team_counts_populated(self, mock_leagues):
+        """Official team counts from league-meta.json should be stored."""
+        import backend.features.power_rankings as pr
+        from backend.features.power_rankings import _get_opta_league_map
+
+        mock_leagues.return_value = [
+            OptaLeagueRanking(rank=1, league="Premier League", rating=86.0,
+                              ranking_change_7d="0", country="England",
+                              number_of_teams=20),
+            OptaLeagueRanking(rank=2, league="La Liga", rating=86.2,
+                              ranking_change_7d="0", country="Spain",
+                              number_of_teams=20),
+        ]
+
+        _get_opta_league_map()
+        counts = pr._opta_league_team_counts
+        self.assertIsNotNone(counts)
+        self.assertEqual(counts[("england", "premier league")], 20)
+        self.assertEqual(counts[("spain", "la liga")], 20)
+
+
+class TestTeamLeagueMapCountryAware(unittest.TestCase):
+    """Verify that _get_opta_alias_map uses country-qualified lookup to
+    build the team→league rating map.
+    """
+
+    def setUp(self):
+        import backend.features.power_rankings as pr
+        pr._opta_league_map = None
+        pr._opta_league_country_map = None
+        pr._opta_league_team_counts = None
+        pr._opta_alias_map = None
+        pr._opta_team_league_map = None
+
+    def tearDown(self):
+        import backend.features.power_rankings as pr
+        pr._opta_league_map = None
+        pr._opta_league_country_map = None
+        pr._opta_league_team_counts = None
+        pr._opta_alias_map = None
+        pr._opta_team_league_map = None
+
+    @patch("backend.data.opta_client.get_team_rankings")
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_team_gets_correct_league_rating_despite_name_collision(
+        self, mock_leagues, mock_teams
+    ):
+        """Arsenal (England) should get EPL's rating (86.0), not Ukraine's (53.0)."""
+        from backend.features.power_rankings import _get_opta_team_league_map
+
+        mock_leagues.return_value = [
+            OptaLeagueRanking(rank=1, league="Premier League", rating=86.0,
+                              ranking_change_7d="0", country="England",
+                              number_of_teams=20),
+            OptaLeagueRanking(rank=50, league="Premier League", rating=53.0,
+                              ranking_change_7d="0", country="Ukraine",
+                              number_of_teams=16),
+        ]
+        mock_teams.return_value = [
+            OptaTeamRanking(
+                rank=1, team="Arsenal", rating=91.0,
+                ranking_change_7d="+1", opta_id="ars1",
+                domestic_league="Premier League", country="England",
+            ),
+            OptaTeamRanking(
+                rank=200, team="Shakhtar Donetsk", rating=60.0,
+                ranking_change_7d="0", opta_id="sd1",
+                domestic_league="Premier League", country="Ukraine",
+            ),
+        ]
+
+        team_map = _get_opta_team_league_map()
+        # Arsenal should get England's Premier League rating
+        self.assertAlmostEqual(team_map["arsenal"], 86.0)
+        # Shakhtar should get Ukraine's Premier League rating
+        self.assertAlmostEqual(team_map["shakhtar donetsk"], 53.0)
+
+
+class TestOfficialTeamCountInSnapshot(unittest.TestCase):
+    """Verify that league snapshots use official team counts from league-meta.json
+    when available, preventing inflated counts (e.g. 22 for EPL instead of 20).
+    """
+
+    @patch("backend.features.power_rankings.clubelo_client")
+    @patch("backend.features.power_rankings._get_clubelo_sofascore_map")
+    @patch("backend.data.opta_client.get_team_rankings")
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_unknown_opta_league_stays_unk(
+        self, mock_opta_leagues, mock_opta_teams, mock_ce_map, mock_ce_client
+    ):
+        """Teams with unrecognized domestic_league+country should stay UNK."""
+        from backend.features.power_rankings import _compute_rankings_from_opta
+
+        teams = [
+            OptaTeamRanking(
+                rank=5000, team="Valletta FC", rating=45.0, ranking_change_7d="0",
+                opta_id="val1", domestic_league="Premier League", country="Malta",
+            ),
+        ]
+        mock_opta_teams.return_value = teams
+        mock_opta_leagues.return_value = []
+        mock_ce_map.return_value = {}
+        mock_ce_client.get_all_by_date.return_value = None
+
+        result = _compute_rankings_from_opta()
+        self.assertIsNotNone(result)
+        team_rankings, _ = result
+
+        # Malta's Premier League is not in our registry — should stay UNK
+        self.assertEqual(team_rankings["Valletta FC"].league_code, "UNK")
+    def test_official_count_caps_inflated_team_list(
+        self, mock_opta_leagues, mock_opta_teams, mock_ce_map, mock_ce_client
+    ):
+        """If Opta data has 22 EPL teams but league-meta says 20, snapshot should show 20."""
+        import backend.features.power_rankings as pr
+        from backend.features.power_rankings import _compute_rankings_from_opta
+
+        # Reset caches
+        pr._opta_league_map = None
+        pr._opta_league_country_map = None
+        pr._opta_league_team_counts = None
+
+        # Build 22 teams all tagged as English Premier League
+        teams = []
+        for i in range(22):
+            teams.append(OptaTeamRanking(
+                rank=i + 1,
+                team=f"Team {i}",
+                rating=90.0 - i,
+                ranking_change_7d="0",
+                opta_id=f"t{i}",
+                domestic_league="Premier League",
+                country="England",
+            ))
+        mock_opta_teams.return_value = teams
+
+        # League-meta says EPL has 20 teams
+        mock_opta_leagues.return_value = [
+            OptaLeagueRanking(rank=1, league="Premier League", rating=86.0,
+                              ranking_change_7d="0", country="England",
+                              number_of_teams=20),
+        ]
+        mock_ce_map.return_value = {}
+        mock_ce_client.get_all_by_date.return_value = None
+
+        try:
+            result = _compute_rankings_from_opta()
+            self.assertIsNotNone(result)
+            _, league_snapshots = result
+            eng1 = league_snapshots.get("ENG1")
+            self.assertIsNotNone(eng1)
+            self.assertEqual(eng1.team_count, 20)
+        finally:
+            pr._opta_league_map = None
+            pr._opta_league_country_map = None
+            pr._opta_league_team_counts = None
+
+
 if __name__ == "__main__":
     unittest.main()

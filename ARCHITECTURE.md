@@ -13,8 +13,8 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 | Layer | Tool |
 |---|---|
 | Player stats | Sofascore REST API via `backend/data/sofascore_client.py` |
-| Power Rankings (Europe) | ClubElo via `soccerdata` Python package |
-| Power Rankings (Global fallback) | WorldFootballElo (`eloratings.net`) via direct HTTP scrape |
+| Power Rankings (Inference) | Opta Power Rankings via `curl_cffi` direct JSON extraction from JS bundle (`backend/data/opta_client.py`) |
+| Power Rankings (Training/Historical) | ClubElo via `soccerdata` + WorldFootballElo (`eloratings.net`) via direct HTTP scrape |
 | Feature engineering | pandas rolling windows |
 | Adjustment models | sklearn LinearRegression + paper-aligned heuristic (`paper_heuristic_predict`) |
 | Prediction model | TensorFlow multi-head neural network (4 model groups) — heuristic fallback when untrained |
@@ -45,6 +45,7 @@ transferscope/
 │   │   ├── clubelo_client.py           # ClubElo wrapper via soccerdata (Europe)
 │   │   ├── worldfootballelo_client.py  # WorldFootballElo scraper (global fallback)
 │   │   ├── elo_router.py               # Routes club to correct Elo source, merges scores
+│   │   ├── opta_client.py              # Opta Power Rankings — curl_cffi + JSON extraction from JS bundle
 │   │   ├── reep_registry.py            # REEP register — dynamic team alias building (~45K clubs)
 │   │   ├── statsbomb_client.py         # StatsBomb open-data — shots, passes, heatmaps, spatial features
 │   │   ├── whoscored_client.py        # WhoScored spatial data — fallback when StatsBomb misses
@@ -96,33 +97,58 @@ then scaled 0-100 daily so best team globally = 100, worst = 0.
 
 ### Our implementation (faithful recreation)
 
+**Hybrid data source:** For inference (today's date), Opta Power Rankings are the
+primary source. For training (historical dates), ClubElo + WorldFootballElo are
+used since Opta has no historical API.
+
 **Step 1 — Get raw team Elo scores**
 
-- European clubs: ClubElo via `soccerdata` (`sd.ClubElo().read_by_date(date)`)
-  Returns rank, club, country, level, Elo, date range for all European clubs.
-- Non-European clubs (South America, MLS, etc.): WorldFootballElo via HTTP scrape
-  Endpoint: `http://eloratings.net/{TeamName}` or date-based snapshot
-  Returns global Elo scores going back decades.
-- `elo_router.py` checks which source covers the club and fetches accordingly.
-  If a club exists in both sources, ClubElo takes priority (more granular for Europe).
+- **Inference (today):** Opta Power Rankings via `opta_client.py`.
+  Fetches the 17MB JS bundle from `https://dataviz.theanalyst.com/opta-power-rankings/index.js`
+  and `league-meta.json` using `curl_cffi` (Cloudflare TLS bypass) with `requests` fallback — no Selenium/browser needed.
+  Uses regex-based extraction (`_extract_all_json_parse`) to find `JSON.parse(...)` blocks positionally
+  (resilient to minified variable name changes between deploys), with legacy marker-based fallback.
+  Returns `OptaTeamRanking` (rank, team, rating 0-100, opta_id, domestic_league, domestic_league_id,
+  country, confederation, season_avg_rating) and `OptaLeagueRanking` (rank, league,
+  rating=seasonAverageRating, number_of_teams=leagueSize, country_name, top5_rating, top10_rating).
+  ClubElo provides `raw_elo` for teams it covers; teams not in ClubElo get a linear
+  rescale from Opta's 0-100 to ~1000-2100 range.
+  League code resolution priority: Opta (domestic_league_name + country from team data) → ClubElo fallback → "UNK".
+  Cached with 7-day TTL (Opta updates roughly weekly).
+- **Training (historical dates):** ClubElo + WorldFootballElo, same as before:
+  - European clubs: ClubElo via `soccerdata` (`sd.ClubElo().read_by_date(date)`)
+    Returns rank, club, country, level, Elo, date range for all European clubs.
+  - Non-European clubs (South America, MLS, etc.): WorldFootballElo via HTTP scrape
+    Endpoint: `http://eloratings.net/{TeamName}` or date-based snapshot
+    Returns global Elo scores going back decades.
+  - `elo_router.py` checks which source covers the club and fetches accordingly.
+    If a club exists in both sources, ClubElo takes priority (more granular for Europe).
 
 **Step 2 — Derive league Power Rankings dynamically**
 
 Do NOT use a static tier table. Instead:
-```
-league_elo = mean(team_elo for all teams in that league on transfer_date)
-```
-This is dynamic — league quality updates as team Elos update.
+- **Inference:** League means come from **official** `seasonAverageRating` in Opta's
+  `league-meta.json`, and team counts come from **official** `leagueSize`.
+  This avoids incorrect counts (e.g. Premier League showing 22 teams instead of 20
+  when not all teams match by name).
+- **Training (historical):**
+  ```
+  league_elo = mean(team_elo for all teams in that league on transfer_date)
+  ```
+  This is dynamic — league quality updates as team Elos update.
 Store per-league: mean, std, and percentile bands (10th, 25th, 50th, 75th, 90th)
-for each daily snapshot. These power the swarm plot league context.
+for each snapshot. These power the swarm plot league context.
 
 **Step 3 — Normalize 0-100 globally**
-```
-normalized_score = (raw_elo - global_min) / (global_max - global_min) * 100
-```
-Run daily across ALL clubs in both sources combined.
+- **Inference:** Opta ratings are already on a native 0-100 scale; no additional
+  normalization is needed.
+- **Training (historical):**
+  ```
+  normalized_score = (raw_elo - global_min) / (global_max - global_min) * 100
+  ```
+  Run daily across ALL clubs in both sources combined.
 Best team in the world on that date = 100. Worst = 0.
-Cache daily snapshots with max_age = 1 day.
+Cache snapshots with max_age = 7 days for Opta data, 1 day for historical Elo data.
 
 **Step 4 — Relative ability**
 ```
@@ -437,7 +463,10 @@ Available filters: age, market value, minutes played, position, league, club Pow
 
 - Sofascore not FotMob: team search, transfer history, season selector, league-wide stats, team-position averages
 - ClubElo + WorldFootballElo not static tier table: dynamic, global, faithful to paper
-- Dynamic league Elo from team mean: updates automatically, no manual maintenance
+- Dynamic league Elo from team mean: updates automatically, no manual maintenance (training/historical mode)
+- Opta Power Rankings for inference: primary source for today's date, 0-100 native scale, with ClubElo raw_elo overlay
+- `curl_cffi` over Selenium for Opta: direct JSON extraction from static JS bundle is faster, lighter, and more reliable than headless browser automation
+- Official league-meta.json values (seasonAverageRating, leagueSize) over computed means: prevents incorrect team counts (e.g. Premier League showing 22 teams instead of 20 when not all teams match by name)
 - Streamlit not FastAPI + React: speed of build, sufficient for personal tool
 - diskcache not Redis: local tool, SQLite is enough
 - All stats stored and displayed as per-90 — never raw totals in UI
