@@ -94,6 +94,7 @@ def _render_feature_importance():
     from backend.models.transfer_portal import (
         TransferPortalModel,
         build_feature_dict,
+        _feature_keys,
     )
 
     model = TransferPortalModel()
@@ -113,8 +114,6 @@ def _render_feature_importance():
     # Build a sample feature dict using real training-data means from the
     # fitted scaler so feature importance is computed at a representative
     # operating point (avoids extreme z-scores from arbitrary defaults).
-    from backend.models.transfer_portal import _feature_keys
-
     all_keys = _feature_keys()
     if model._scaler is not None:
         sample_fd = {k: float(model._scaler.mean_[i]) for i, k in enumerate(all_keys)}
