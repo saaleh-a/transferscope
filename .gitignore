@@ -5,7 +5,8 @@ __pycache__/
 .env
 .env.local
 venv/
-.vscode/
+.vscode/*
+!.vscode/mcp.json
 .idea/
 *.swp
 *.swo
