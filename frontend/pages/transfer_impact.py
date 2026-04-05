@@ -622,10 +622,20 @@ def render():
         rows.append(row)
     df_table = pd.DataFrame(rows)
     try:
-        styled = df_table.style.map(
-            lambda v: "color: #2DD4A8" if isinstance(v, (int, float)) and v > 0
-            else ("color: #F45B69" if isinstance(v, (int, float)) and v < 0 else ""),
-            subset=["Change %"],
+        styled = (
+            df_table.style
+            .format({
+                "Actual (per 90)": "{:.3f}",
+                "Simulated Current": "{:.3f}",
+                "Predicted (per 90)": "{:.3f}",
+                "± Std": "{:.3f}",
+                "Change %": "{:.1f}",
+            })
+            .map(
+                lambda v: "color: #2DD4A8" if isinstance(v, (int, float)) and v > 0
+                else ("color: #F45B69" if isinstance(v, (int, float)) and v < 0 else ""),
+                subset=["Change %"],
+            )
         )
     except (KeyError, ValueError, TypeError):
         styled = df_table
