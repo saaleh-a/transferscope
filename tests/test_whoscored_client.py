@@ -566,6 +566,7 @@ class TestReepWhoscoredBridge(unittest.TestCase):
 
         clear_memory_cache()
         mock_df.return_value = pd.DataFrame([{
+            "reep_id": "reep_p12345678",
             "key_sofascore": "12345",
             "nationality": "Argentina",
             "height_cm": 170.0,
@@ -579,6 +580,7 @@ class TestReepWhoscoredBridge(unittest.TestCase):
         self.assertEqual(result["whoscored_id"], 11119)
         self.assertEqual(result["nationality"], "Argentina")
         self.assertEqual(result["height_cm"], 170)
+        self.assertEqual(result["reep_id"], "reep_p12345678")
 
     @patch("backend.data.reep_registry.get_people_df")
     def test_missing_whoscored_id_returns_none(self, mock_df):
@@ -587,6 +589,7 @@ class TestReepWhoscoredBridge(unittest.TestCase):
 
         clear_memory_cache()
         mock_df.return_value = pd.DataFrame([{
+            "reep_id": "reep_p00000001",
             "key_sofascore": "12345",
             "nationality": "England",
             "height_cm": 180.0,
@@ -606,6 +609,7 @@ class TestReepWhoscoredBridge(unittest.TestCase):
 
         clear_memory_cache()
         mock_df.return_value = pd.DataFrame([{
+            "reep_id": "reep_p99999999",
             "key_sofascore": "99999",
             "nationality": "Brazil",
             "height_cm": 175.0,

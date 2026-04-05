@@ -144,6 +144,12 @@ class TestEnrichPlayer:
         assert info.get("position") == "forward"
         assert info.get("date_of_birth") is not None
 
+    def test_returns_reep_id_for_known_player(self):
+        """enrich_player() must include the stable reep_id."""
+        info = reep_registry.enrich_player(839956)
+        assert info.get("reep_id") is not None
+        assert info["reep_id"].startswith("reep_p")
+
     def test_returns_empty_for_unknown_player(self):
         assert reep_registry.enrich_player(999999999) == {}
 
@@ -225,6 +231,115 @@ class TestLookupPerson:
 
     def test_returns_none_for_unknown(self):
         assert reep_registry.lookup_person("reep_p_NONEXISTENT") is None
+
+
+class TestEnrichTeam:
+    """enrich_team() returns metadata from teams.csv by Sofascore team ID."""
+
+    def test_returns_metadata_for_known_team(self):
+        # Find a team with a valid sofascore ID dynamically
+        df = reep_registry.get_teams_df()
+        valid = df[
+            (df["key_sofascore"] != "") & df["key_sofascore"].str.match(r"^\d+$")
+        ]
+        if valid.empty:
+            pytest.skip("No sofascore IDs in teams.csv")
+        sid = int(valid.iloc[0]["key_sofascore"])
+        info = reep_registry.enrich_team(sid)
+        assert info.get("reep_id") is not None
+        assert info["reep_id"].startswith("reep_t")
+        assert info.get("name") is not None
+
+    def test_returns_empty_for_unknown_team(self):
+        assert reep_registry.enrich_team(999999999) == {}
+
+    def test_returns_empty_when_file_missing(self):
+        with patch.object(reep_registry, "_TEAMS_PATH", "/nonexistent/teams.csv"):
+            assert reep_registry.enrich_team(1) == {}
+
+    def test_uses_indexed_lookup(self):
+        """Second call should reuse the pre-built index."""
+        df = reep_registry.get_teams_df()
+        valid = df[
+            (df["key_sofascore"] != "") & df["key_sofascore"].str.match(r"^\d+$")
+        ]
+        if valid.empty:
+            pytest.skip("No sofascore IDs in teams.csv")
+        sid = int(valid.iloc[0]["key_sofascore"])
+        info1 = reep_registry.enrich_team(sid)
+        info2 = reep_registry.enrich_team(sid)
+        assert info1 == info2
+        assert info1 is not info2  # copies, not same object
+
+
+class TestLookupCompetition:
+    """lookup_competition() finds a competition by reep_id."""
+
+    def test_finds_known_competition(self):
+        df = reep_registry.get_competitions_df()
+        valid = df[df["reep_id"] != ""]
+        if valid.empty:
+            pytest.skip("No reep_id in competitions.csv")
+        rid = valid.iloc[0]["reep_id"]
+        result = reep_registry.lookup_competition(rid)
+        assert result is not None
+        assert result["reep_id"] == rid
+        assert result.get("name") is not None
+
+    def test_returns_none_for_unknown(self):
+        assert reep_registry.lookup_competition("reep_l_NONEXISTENT") is None
+
+
+class TestLookupSeason:
+    """lookup_season() finds a season by reep_id."""
+
+    def test_finds_known_season(self):
+        df = reep_registry.get_seasons_df()
+        valid = df[df["reep_id"] != ""]
+        if valid.empty:
+            pytest.skip("No reep_id in seasons.csv")
+        rid = valid.iloc[0]["reep_id"]
+        result = reep_registry.lookup_season(rid)
+        assert result is not None
+        assert result["reep_id"] == rid
+
+    def test_returns_none_for_unknown(self):
+        assert reep_registry.lookup_season("reep_s_NONEXISTENT") is None
+
+
+class TestGetCompetitionByProvider:
+    """get_competition_by_provider() finds a competition by provider key."""
+
+    def test_finds_by_fbref(self):
+        # fbref=9 → Premier League
+        result = reep_registry.get_competition_by_provider("key_fbref", "9")
+        assert result is not None
+        assert "Premier League" in result["name"]
+
+    def test_finds_by_opta(self):
+        # key_opta=8 → Premier League
+        result = reep_registry.get_competition_by_provider("key_opta", "8")
+        assert result is not None
+        assert "Premier League" in result["name"]
+
+    def test_returns_none_for_unknown_value(self):
+        assert reep_registry.get_competition_by_provider("key_fbref", "99999") is None
+
+    def test_returns_none_for_unknown_column(self):
+        assert reep_registry.get_competition_by_provider("key_nonexistent", "1") is None
+
+
+class TestGetSeasonsForCompetition:
+    """get_seasons_for_competition() returns linked seasons."""
+
+    def test_returns_list(self):
+        # Even if no seasons are linked, should return a list
+        result = reep_registry.get_seasons_for_competition("reep_lb3d230cb")
+        assert isinstance(result, list)
+
+    def test_returns_empty_for_unknown(self):
+        result = reep_registry.get_seasons_for_competition("reep_l_NONEXISTENT")
+        assert result == []
 
 
 # ── Data Quality Validation ──────────────────────────────────────────────────
