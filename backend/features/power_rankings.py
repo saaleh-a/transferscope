@@ -1269,37 +1269,36 @@ def _compute_rankings_from_opta() -> (
         if raw_elo is None:
             raw_elo = _opta_score_to_raw_elo(opta_rating)
 
-        # League code: ClubElo exact → ClubElo case-insensitive →
-        # Opta (domestic_league + country) → "UNK".
+        # League code: Opta (domestic_league, country) → ClubElo → "UNK".
         #
-        # We deliberately do NOT fuzzy-match domestic_league here because
-        # Opta has 14k+ teams and generic league names like "Premier League"
-        # appear in dozens of countries (Malta, Wales, etc.) — fuzzy matching
-        # at 70%+ pulls hundreds of weak teams into ENG1.
+        # Opta metadata takes priority for current-day rankings because it
+        # reflects current-season league assignments.  ClubElo can lag
+        # behind after promotions/relegations, causing recently-moved
+        # teams to appear in the wrong league (e.g. 22 teams counted in
+        # ENG1 instead of 20, dragging the league average down).
         #
-        # However, the compound key (domestic_league, country) is safe for
-        # exact matching: "Premier League"+"England" uniquely identifies ENG1,
-        # while "Premier League"+"Wales" maps to WAL1.  This picks up teams
-        # that ClubElo doesn't cover (e.g. newly promoted clubs) without the
-        # false-positive risk of name-only matching.
-        league_code = clubelo_league_map.get(team_name)
+        # The compound key (domestic_league, country) is safe for exact
+        # matching: "Premier League"+"England" uniquely identifies ENG1,
+        # while "Premier League"+"Wales" maps to WAL1.  We deliberately
+        # do NOT fuzzy-match domestic_league because Opta has 14k+ teams
+        # and generic league names appear in dozens of countries.
+        league_code = None
+        if opta_team.domestic_league and opta_team.country:
+            key = (opta_team.country.casefold(), opta_team.domestic_league.casefold())
+            league_code = _OPTA_COUNTRY_LEAGUE_TO_CODE.get(key)
+            if league_code is None:
+                league_code = _resolve_opta_league_code(
+                    opta_team.domestic_league, opta_team.country
+                )
+        # Fallback: ClubElo league assignment (exact → case-insensitive).
+        if league_code is None:
+            league_code = clubelo_league_map.get(team_name)
         if league_code is None:
             ce_canonical = clubelo_lower_index.get(team_name.lower())
             if ce_canonical is not None:
-                league_code = clubelo_league_map.get(ce_canonical, "UNK")
-        if (not league_code or league_code == "UNK") and opta_team.domestic_league and opta_team.country:
-            key = (opta_team.country.casefold(), opta_team.domestic_league.casefold())
-            league_code = _OPTA_COUNTRY_LEAGUE_TO_CODE.get(key, "UNK")
+                league_code = clubelo_league_map.get(ce_canonical)
         if not league_code:
             league_code = "UNK"
-
-        # Fallback: use Opta's own metadata to resolve the league.
-        if league_code == "UNK":
-            opta_resolved = _resolve_opta_league_code(
-                opta_team.domestic_league, opta_team.country
-            )
-            if opta_resolved:
-                league_code = opta_resolved
 
         all_teams_data[team_name] = (opta_rating, raw_elo, league_code)
         all_teams_rank[team_name] = opta_team.rank

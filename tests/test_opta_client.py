@@ -676,10 +676,15 @@ class TestOptaLeagueFallbackInRankings(unittest.TestCase):
     @patch("backend.features.power_rankings._get_clubelo_sofascore_map")
     @patch("backend.data.opta_client.get_team_rankings")
     @patch("backend.data.opta_client.get_league_rankings")
-    def test_clubelo_takes_priority_over_opta_fallback(
+    def test_opta_league_takes_priority_over_stale_clubelo(
         self, mock_opta_leagues, mock_opta_teams, mock_ce_map, mock_ce_client
     ):
-        """When ClubElo has league info, it should be used even if Opta has different."""
+        """Opta league metadata should override stale ClubElo assignments.
+
+        After relegation, ClubElo may still classify a team in ENG1 while
+        Opta correctly reports the team in the Championship (ENG2).  The
+        Opta (domestic_league, country) mapping must win.
+        """
         import pandas as pd
         from backend.features.power_rankings import _compute_rankings_from_opta
 
@@ -688,24 +693,81 @@ class TestOptaLeagueFallbackInRankings(unittest.TestCase):
                 rank=1, team="Arsenal", rating=91.0, ranking_change_7d="+1",
                 opta_id="ars1", domestic_league="Premier League", country="England",
             ),
+            # Relegated team — Opta says Championship, ClubElo still says ENG1
+            OptaTeamRanking(
+                rank=80, team="Leicester City", rating=68.0, ranking_change_7d="-2",
+                opta_id="lei1", domestic_league="Championship", country="England",
+            ),
         ]
         mock_opta_teams.return_value = teams
         mock_opta_leagues.return_value = []
 
-        # ClubElo covers Arsenal and maps it to ENG1
-        mock_ce_map.return_value = {"Arsenal": "Arsenal"}
+        # ClubElo still lists both teams as ENG-Premier League (stale data)
+        mock_ce_map.return_value = {
+            "Arsenal": "Arsenal",
+            "Leicester City": "Leicester City",
+        }
         ce_df = pd.DataFrame(
-            {"elo": [1950.0], "league": ["ENG-Premier League"]},
-            index=["Arsenal"],
+            {"elo": [1950.0, 1650.0], "league": ["ENG-Premier League", "ENG-Premier League"]},
+            index=["Arsenal", "Leicester City"],
         )
         mock_ce_client.get_all_by_date.return_value = ce_df
 
         result = _compute_rankings_from_opta()
         self.assertIsNotNone(result)
-        team_rankings, _ = result
+        team_rankings, league_snapshots = result
 
-        # ClubElo league assignment should be used
+        # Arsenal stays ENG1 (both Opta and ClubElo agree)
         self.assertEqual(team_rankings["Arsenal"].league_code, "ENG1")
+        # Leicester should be ENG2 per Opta, NOT ENG1 per stale ClubElo
+        self.assertEqual(team_rankings["Leicester City"].league_code, "ENG2")
+        # ENG1 should only have 1 team (Arsenal), not 2
+        self.assertEqual(league_snapshots["ENG1"].team_count, 1)
+        self.assertEqual(league_snapshots["ENG2"].team_count, 1)
+
+    @patch("backend.features.power_rankings.clubelo_client")
+    @patch("backend.features.power_rankings._get_clubelo_sofascore_map")
+    @patch("backend.data.opta_client.get_team_rankings")
+    @patch("backend.data.opta_client.get_league_rankings")
+    def test_clubelo_league_used_when_opta_unmapped(
+        self, mock_opta_leagues, mock_opta_teams, mock_ce_map, mock_ce_client
+    ):
+        """ClubElo league assignment should be used when Opta's league is not
+        in our registry (no mapping for the domestic_league+country pair)."""
+        import pandas as pd
+        from backend.features.power_rankings import _compute_rankings_from_opta
+
+        teams = [
+            OptaTeamRanking(
+                rank=500, team="Bohemian FC", rating=55.0, ranking_change_7d="0",
+                opta_id="boh1",
+                # Opta league name not in our _OPTA_COUNTRY_LEAGUE_TO_CODE
+                domestic_league="League of Ireland Premier",
+                country="Republic of Ireland",
+            ),
+        ]
+        mock_opta_teams.return_value = teams
+        mock_opta_leagues.return_value = []
+
+        # ClubElo maps it to IRL1 (if such a code existed)
+        mock_ce_map.return_value = {"Bohemian FC": "Bohemian FC"}
+        ce_df = pd.DataFrame(
+            {"elo": [1200.0], "league": ["IRL-Premier Division"]},
+            index=["Bohemian FC"],
+        )
+        mock_ce_client.get_all_by_date.return_value = ce_df
+
+        # Patch _clubelo_to_code to return IRL1 for this league
+        with patch(
+            "backend.features.power_rankings._clubelo_to_code",
+            side_effect=lambda x: "IRL1" if "IRL" in str(x) else None,
+        ):
+            result = _compute_rankings_from_opta()
+
+        self.assertIsNotNone(result)
+        team_rankings, _ = result
+        # Opta can't resolve league → should fall back to ClubElo's IRL1
+        self.assertEqual(team_rankings["Bohemian FC"].league_code, "IRL1")
 
     @patch("backend.features.power_rankings.clubelo_client")
     @patch("backend.features.power_rankings._get_clubelo_sofascore_map")
