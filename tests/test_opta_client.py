@@ -835,13 +835,17 @@ class TestExtractAllJsonParse(unittest.TestCase):
         self.assertIn(sgl_esc, blobs[0])
 
     def test_variable_name_independence(self):
-        """Extraction should work regardless of the minified variable name."""
+        """Extraction should work regardless of the minified variable name
+        and should preserve positional order."""
         from backend.data.opta_client import _extract_all_json_parse
 
         # Use totally different variable names than f6/C0
         js = 'var xyz=JSON.parse(`[{"rank":1}]`);var abc=JSON.parse(`[{"rank":2}]`);'
         blobs = _extract_all_json_parse(js)
         self.assertEqual(len(blobs), 2)
+        # Verify positional order is preserved
+        self.assertIn('"rank":1', blobs[0])
+        self.assertIn('"rank":2', blobs[1])
 
 
 # ── Unit tests: new OptaLeagueRanking fields ──────────────────────────────────

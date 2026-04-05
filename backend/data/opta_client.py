@@ -156,8 +156,9 @@ def _extract_all_json_parse(js_text: str) -> List[str]:
     between deploys.
     """
     # Match JSON.parse(`[...]`) — the array content between backticks.
-    pattern = r'JSON\.parse\(`(\[.*?\])`\)'
-    matches = re.findall(pattern, js_text, re.DOTALL)
+    # Use [^`]* instead of .*? to avoid backtracking on the ~17 MB bundle.
+    pattern = r'JSON\.parse\(`(\[[^`]*\])`\)'
+    matches = re.findall(pattern, js_text)
 
     result: List[str] = []
     _DBL_ESC = chr(92) + chr(92) + chr(34)
