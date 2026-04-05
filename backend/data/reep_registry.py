@@ -1,14 +1,22 @@
 """REEP Register — CSV-based entity resolution for teams and people.
 
-Uses the `withqwerty/reep` open-data register to map identifiers across
-data providers (Sofascore, ClubElo, Transfermarkt, FBref, etc.).
+Uses the `withqwerty/reep` open-data register (v2) to map identifiers
+across data providers (Sofascore, ClubElo, Transfermarkt, FBref, FotMob,
+SkillCorner, Impect, TheSportsDB, Understat, and 30+ more).
+
+Each entity has a stable ``reep_id`` primary key (e.g. ``reep_t03df16bf``
+for teams, ``reep_pbdf32f0e`` for people) that is decoupled from Wikidata,
+allowing REEP to house entities that only exist in provider-specific
+systems.
 
 Data files:
-    - data/reep/teams.csv  (~45,000 clubs, keyed by Wikidata QID)
-    - data/reep/people.csv (~430,000 players/coaches, keyed by Wikidata QID)
+    - data/reep/teams.csv        (~45,000 clubs)
+    - data/reep/people.csv       (~430,000 players/coaches)
+    - data/reep/competitions.csv (~200 competitions)
+    - data/reep/seasons.csv      (~1,200 seasons)
 
-Both files are bundled in the repository (tracked via Git LFS) and loaded
-from disk on first access, then cached in-memory for the process lifetime.
+All files are bundled in the repository and loaded from disk on first
+access, then cached in-memory for the process lifetime.
 
 Public API
 ----------
@@ -16,6 +24,14 @@ get_teams_df()
     Returns the full teams DataFrame (cached).
 get_people_df()
     Returns the full people DataFrame (cached).
+get_competitions_df()
+    Returns the full competitions DataFrame (cached).
+get_seasons_df()
+    Returns the full seasons DataFrame (cached).
+lookup_team(reep_id)
+    Look up a team row by its ``reep_id``.  Returns a dict or None.
+lookup_person(reep_id)
+    Look up a person row by their ``reep_id``.  Returns a dict or None.
 clubelo_to_sofascore_name(clubelo_key)
     Resolve a ClubElo slug (e.g. ``"Arsenal"``) to the Sofascore display
     name (e.g. ``"Arsenal"``).  Returns *None* on miss.
@@ -49,10 +65,14 @@ _DATA_DIR = os.path.join(
 )
 _TEAMS_PATH = os.path.join(_DATA_DIR, "teams.csv")
 _PEOPLE_PATH = os.path.join(_DATA_DIR, "people.csv")
+_COMPETITIONS_PATH = os.path.join(_DATA_DIR, "competitions.csv")
+_SEASONS_PATH = os.path.join(_DATA_DIR, "seasons.csv")
 
 # ── In-memory singletons (populated on first access) ────────────────────────
 _teams_df_mem: Optional[pd.DataFrame] = None
 _people_df_mem: Optional[pd.DataFrame] = None
+_competitions_df_mem: Optional[pd.DataFrame] = None
+_seasons_df_mem: Optional[pd.DataFrame] = None
 # Pre-indexed lookup: sofascore_player_id (str) → dict of row values.
 _people_index: Optional[Dict[str, Dict[str, Any]]] = None
 # Cached ClubElo → display-name mapping.
@@ -63,9 +83,12 @@ _clubelo_map_mem: Optional[Dict[str, str]] = None
 
 def clear_memory_cache() -> None:
     """Reset all in-memory caches.  Useful in tests."""
-    global _teams_df_mem, _people_df_mem, _people_index, _clubelo_map_mem
+    global _teams_df_mem, _people_df_mem, _competitions_df_mem, _seasons_df_mem
+    global _people_index, _clubelo_map_mem
     _teams_df_mem = None
     _people_df_mem = None
+    _competitions_df_mem = None
+    _seasons_df_mem = None
     _people_index = None
     _clubelo_map_mem = None
 
@@ -110,6 +133,52 @@ def get_people_df() -> Optional[pd.DataFrame]:
     if df is not None:
         _people_df_mem = df
     return df
+
+
+def get_competitions_df() -> Optional[pd.DataFrame]:
+    """Return the REEP competitions DataFrame (cached after first load)."""
+    global _competitions_df_mem
+    if _competitions_df_mem is not None:
+        return _competitions_df_mem
+    df = _load_csv(_COMPETITIONS_PATH)
+    if df is not None:
+        _competitions_df_mem = df
+    return df
+
+
+def get_seasons_df() -> Optional[pd.DataFrame]:
+    """Return the REEP seasons DataFrame (cached after first load)."""
+    global _seasons_df_mem
+    if _seasons_df_mem is not None:
+        return _seasons_df_mem
+    df = _load_csv(_SEASONS_PATH)
+    if df is not None:
+        _seasons_df_mem = df
+    return df
+
+
+def lookup_team(reep_id: str) -> Optional[Dict[str, Any]]:
+    """Look up a team by its stable ``reep_id``.  Returns a dict or None."""
+    df = get_teams_df()
+    if df is None or "reep_id" not in df.columns:
+        return None
+    rows = df[df["reep_id"] == reep_id]
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+
+def lookup_person(reep_id: str) -> Optional[Dict[str, Any]]:
+    """Look up a person by their stable ``reep_id``.  Returns a dict or None."""
+    df = get_people_df()
+    if df is None or "reep_id" not in df.columns:
+        return None
+    rows = df[df["reep_id"] == reep_id]
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    return {k: (v if v else None) for k, v in row.to_dict().items()}
 
 
 def build_clubelo_sofascore_map() -> Dict[str, str]:
