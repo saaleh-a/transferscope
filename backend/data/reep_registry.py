@@ -1,14 +1,22 @@
 """REEP Register — CSV-based entity resolution for teams and people.
 
-Uses the `withqwerty/reep` open-data register to map identifiers across
-data providers (Sofascore, ClubElo, Transfermarkt, FBref, etc.).
+Uses the `withqwerty/reep` open-data register (v2) to map identifiers
+across data providers (Sofascore, ClubElo, Transfermarkt, FBref, FotMob,
+SkillCorner, Impect, TheSportsDB, Understat, and 30+ more).
+
+Each entity has a stable ``reep_id`` primary key (e.g. ``reep_t03df16bf``
+for teams, ``reep_pbdf32f0e`` for people) that is decoupled from Wikidata,
+allowing REEP to house entities that only exist in provider-specific
+systems.
 
 Data files:
-    - data/reep/teams.csv  (~45,000 clubs, keyed by Wikidata QID)
-    - data/reep/people.csv (~430,000 players/coaches, keyed by Wikidata QID)
+    - data/reep/teams.csv        (~45,000 clubs)
+    - data/reep/people.csv       (~430,000 players/coaches)
+    - data/reep/competitions.csv (~200 competitions)
+    - data/reep/seasons.csv      (~1,200 seasons)
 
-Both files are bundled in the repository (tracked via Git LFS) and loaded
-from disk on first access, then cached in-memory for the process lifetime.
+All files are bundled in the repository and loaded from disk on first
+access, then cached in-memory for the process lifetime.
 
 Public API
 ----------
@@ -16,6 +24,18 @@ get_teams_df()
     Returns the full teams DataFrame (cached).
 get_people_df()
     Returns the full people DataFrame (cached).
+get_competitions_df()
+    Returns the full competitions DataFrame (cached).
+get_seasons_df()
+    Returns the full seasons DataFrame (cached).
+lookup_team(reep_id)
+    Look up a team row by its ``reep_id``.  Returns a dict or None.
+lookup_person(reep_id)
+    Look up a person row by their ``reep_id``.  Returns a dict or None.
+lookup_competition(reep_id)
+    Look up a competition row by its ``reep_id``.  Returns a dict or None.
+lookup_season(reep_id)
+    Look up a season row by its ``reep_id``.  Returns a dict or None.
 clubelo_to_sofascore_name(clubelo_key)
     Resolve a ClubElo slug (e.g. ``"Arsenal"``) to the Sofascore display
     name (e.g. ``"Arsenal"``).  Returns *None* on miss.
@@ -27,8 +47,17 @@ sofascore_team_aliases(sofascore_id)
     Returns a list of known name variants for a Sofascore team ID,
     useful for supplementing ``_EXTREME_ABBREVS``.
 enrich_player(sofascore_player_id)
-    Returns a dict with ``nationality``, ``height_cm``, ``date_of_birth``,
-    and ``position`` from REEP people.csv (or empty dict on miss).
+    Returns a dict with ``reep_id``, ``nationality``, ``height_cm``,
+    ``date_of_birth``, and ``position`` from REEP people.csv (or empty
+    dict on miss).
+enrich_team(sofascore_team_id)
+    Returns a dict with ``reep_id``, ``name``, ``key_clubelo``,
+    ``key_transfermarkt``, ``key_fbref``, ``country`` from REEP teams.csv
+    (or empty dict on miss).
+get_competition_by_provider(provider_column, provider_value)
+    Look up a competition by any provider key column (e.g. ``key_fbref``).
+get_seasons_for_competition(competition_reep_id)
+    Return all seasons linked to a competition reep_id.
 """
 
 from __future__ import annotations
@@ -49,12 +78,18 @@ _DATA_DIR = os.path.join(
 )
 _TEAMS_PATH = os.path.join(_DATA_DIR, "teams.csv")
 _PEOPLE_PATH = os.path.join(_DATA_DIR, "people.csv")
+_COMPETITIONS_PATH = os.path.join(_DATA_DIR, "competitions.csv")
+_SEASONS_PATH = os.path.join(_DATA_DIR, "seasons.csv")
 
 # ── In-memory singletons (populated on first access) ────────────────────────
 _teams_df_mem: Optional[pd.DataFrame] = None
 _people_df_mem: Optional[pd.DataFrame] = None
+_competitions_df_mem: Optional[pd.DataFrame] = None
+_seasons_df_mem: Optional[pd.DataFrame] = None
 # Pre-indexed lookup: sofascore_player_id (str) → dict of row values.
 _people_index: Optional[Dict[str, Dict[str, Any]]] = None
+# Pre-indexed lookup: sofascore_team_id (str) → dict of row values.
+_teams_index: Optional[Dict[str, Dict[str, Any]]] = None
 # Cached ClubElo → display-name mapping.
 _clubelo_map_mem: Optional[Dict[str, str]] = None
 
@@ -63,10 +98,14 @@ _clubelo_map_mem: Optional[Dict[str, str]] = None
 
 def clear_memory_cache() -> None:
     """Reset all in-memory caches.  Useful in tests."""
-    global _teams_df_mem, _people_df_mem, _people_index, _clubelo_map_mem
+    global _teams_df_mem, _people_df_mem, _competitions_df_mem, _seasons_df_mem
+    global _people_index, _teams_index, _clubelo_map_mem
     _teams_df_mem = None
     _people_df_mem = None
+    _competitions_df_mem = None
+    _seasons_df_mem = None
     _people_index = None
+    _teams_index = None
     _clubelo_map_mem = None
 
 
@@ -110,6 +149,52 @@ def get_people_df() -> Optional[pd.DataFrame]:
     if df is not None:
         _people_df_mem = df
     return df
+
+
+def get_competitions_df() -> Optional[pd.DataFrame]:
+    """Return the REEP competitions DataFrame (cached after first load)."""
+    global _competitions_df_mem
+    if _competitions_df_mem is not None:
+        return _competitions_df_mem
+    df = _load_csv(_COMPETITIONS_PATH)
+    if df is not None:
+        _competitions_df_mem = df
+    return df
+
+
+def get_seasons_df() -> Optional[pd.DataFrame]:
+    """Return the REEP seasons DataFrame (cached after first load)."""
+    global _seasons_df_mem
+    if _seasons_df_mem is not None:
+        return _seasons_df_mem
+    df = _load_csv(_SEASONS_PATH)
+    if df is not None:
+        _seasons_df_mem = df
+    return df
+
+
+def lookup_team(reep_id: str) -> Optional[Dict[str, Any]]:
+    """Look up a team by its stable ``reep_id``.  Returns a dict or None."""
+    df = get_teams_df()
+    if df is None or "reep_id" not in df.columns:
+        return None
+    rows = df[df["reep_id"] == reep_id]
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+
+def lookup_person(reep_id: str) -> Optional[Dict[str, Any]]:
+    """Look up a person by their stable ``reep_id``.  Returns a dict or None."""
+    df = get_people_df()
+    if df is None or "reep_id" not in df.columns:
+        return None
+    rows = df[df["reep_id"] == reep_id]
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    return {k: (v if v else None) for k, v in row.to_dict().items()}
 
 
 def build_clubelo_sofascore_map() -> Dict[str, str]:
@@ -185,8 +270,9 @@ def _build_people_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     subset["_sid"] = subset["_sid"].astype(int).astype(str)
 
     index: Dict[str, Dict[str, Any]] = {}
-    for sid, nat, hcm, dob, pos, ws in zip(
+    for sid, rid, nat, hcm, dob, pos, ws in zip(
         subset["_sid"],
+        subset["reep_id"],
         subset["nationality"],
         subset["height_cm"],
         subset["date_of_birth"],
@@ -194,6 +280,7 @@ def _build_people_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
         subset["key_whoscored"],
     ):
         index[sid] = {
+            "reep_id": rid if rid else None,
             "nationality": nat if nat else None,
             "height_cm": _safe_int(hcm) if hcm else None,
             "date_of_birth": dob if dob else None,
@@ -206,7 +293,7 @@ def _build_people_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
 def enrich_player(sofascore_player_id: int) -> Dict[str, Any]:
     """Return metadata from REEP people.csv for a Sofascore player ID.
 
-    Returns a dict with keys ``nationality``, ``height_cm``,
+    Returns a dict with keys ``reep_id``, ``nationality``, ``height_cm``,
     ``date_of_birth``, ``position``, ``whoscored_id`` (any may be
     *None*).  Returns an empty dict on miss or download failure.
 
@@ -232,3 +319,124 @@ def _safe_int(val: Any) -> Optional[int]:
         return int(float(val))
     except (ValueError, TypeError):
         return None
+
+
+# ── Team enrichment (by Sofascore team ID) ───────────────────────────────────
+
+
+def _build_teams_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+    """Build an O(1) lookup dict keyed by Sofascore team ID (str).
+
+    Skips rows where ``key_sofascore`` is missing or non-numeric.
+    """
+    subset = df[df["key_sofascore"] != ""].copy()
+    subset["_sid"] = pd.to_numeric(subset["key_sofascore"], errors="coerce")
+    subset = subset[subset["_sid"].notna()]
+    subset["_sid"] = subset["_sid"].astype(int).astype(str)
+
+    index: Dict[str, Dict[str, Any]] = {}
+    for sid, rid, name, ce, tm, fbref, country in zip(
+        subset["_sid"],
+        subset["reep_id"],
+        subset["name"],
+        subset["key_clubelo"],
+        subset["key_transfermarkt"],
+        subset["key_fbref"],
+        subset.get("country", pd.Series([""] * len(subset))),
+    ):
+        index[sid] = {
+            "reep_id": rid if rid else None,
+            "name": name if name else None,
+            "key_clubelo": ce if ce else None,
+            "key_transfermarkt": tm if tm else None,
+            "key_fbref": fbref if fbref else None,
+            "country": country if country else None,
+        }
+    return index
+
+
+def enrich_team(sofascore_team_id: int) -> Dict[str, Any]:
+    """Return metadata from REEP teams.csv for a Sofascore team ID.
+
+    Returns a dict with keys ``reep_id``, ``name``, ``key_clubelo``,
+    ``key_transfermarkt``, ``key_fbref``, ``country`` (any may be
+    *None*).  Returns an empty dict on miss or file-load failure.
+
+    Uses a pre-built in-memory index for O(1) lookups.
+    """
+    global _teams_index
+    if _teams_index is None:
+        df = get_teams_df()
+        if df is None:
+            return {}
+        _teams_index = _build_teams_index(df)
+
+    entry = _teams_index.get(str(sofascore_team_id))
+    if entry is None:
+        return {}
+    return dict(entry)
+
+
+# ── Competition & Season lookups ─────────────────────────────────────────────
+
+
+def lookup_competition(reep_id: str) -> Optional[Dict[str, Any]]:
+    """Look up a competition by its ``reep_id``.  Returns a dict or None."""
+    df = get_competitions_df()
+    if df is None or "reep_id" not in df.columns:
+        return None
+    rows = df[df["reep_id"] == reep_id]
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+
+def lookup_season(reep_id: str) -> Optional[Dict[str, Any]]:
+    """Look up a season by its ``reep_id``.  Returns a dict or None."""
+    df = get_seasons_df()
+    if df is None or "reep_id" not in df.columns:
+        return None
+    rows = df[df["reep_id"] == reep_id]
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+
+def get_competition_by_provider(
+    provider_column: str, provider_value: str
+) -> Optional[Dict[str, Any]]:
+    """Look up a competition by a provider-specific key.
+
+    Example::
+
+        get_competition_by_provider("key_fbref", "9")  # → Premier League
+
+    Returns a dict with all competition columns, or *None* on miss.
+    """
+    df = get_competitions_df()
+    if df is None or provider_column not in df.columns:
+        return None
+    rows = df[df[provider_column] == str(provider_value)]
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+
+def get_seasons_for_competition(
+    competition_reep_id: str,
+) -> List[Dict[str, Any]]:
+    """Return all seasons linked to a competition ``reep_id``.
+
+    Returns a list of season dicts (may be empty).
+    """
+    df = get_seasons_df()
+    if df is None or "competition_reep_id" not in df.columns:
+        return []
+    rows = df[df["competition_reep_id"] == competition_reep_id]
+    result: List[Dict[str, Any]] = []
+    for _, row in rows.iterrows():
+        result.append({k: (v if v else None) for k, v in row.to_dict().items()})
+    return result

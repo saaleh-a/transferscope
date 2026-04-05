@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "football-docs": {
+      "command": "npx",
+      "args": ["-y", "football-docs"]
+    }
+  }
+}

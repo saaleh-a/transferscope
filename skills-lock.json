@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "skills": {
+    "nutmeg": {
+      "source": "withqwerty/nutmeg",
+      "sourceType": "github",
+      "computedHash": "150da81bc06c82be797eadad52112eafbc9c928f73a8ade0a9aff8d6269cacd4"
+    },
+    "nutmeg-acquire": {
+      "source": "withqwerty/nutmeg",
+      "sourceType": "github",
+      "computedHash": "45a4713af71107e800c552c8880f6d21c9960f18108f3dc84811665f1237b3c9"
+    },
+    "nutmeg-analyse": {
+      "source": "withqwerty/nutmeg",
+      "sourceType": "github",
+      "computedHash": "5c87374ab066a9341c981cbfdc953da03d92f34d732fe371faa63bdc5f5273f2"
+    },
+    "nutmeg-brainstorm": {
+      "source": "withqwerty/nutmeg",
+      "sourceType": "github",
+      "computedHash": "ffc036462f40b64e6c763f3f74ef091fb078513879b8bf282c8ff9839c0f2fbe"
+    },
+    "nutmeg-compute": {
+      "source": "withqwerty/nutmeg",
+      "sourceType": "github",
+      "computedHash": "5e5540008ae256f3b93e4a3725acc641845a07239ab8ab0c6591ff2e422f9582"
+    },
+    "nutmeg-heal": {
+      "source": "withqwerty/nutmeg",
+      "sourceType": "github",
+      "computedHash": "881ef66bf48388344b85a13cb81679e370fec82c53d5bb47df0c33b9f24f2daf"
+    },
+    "nutmeg-learn": {
+      "source": "withqwerty/nutmeg",
+      "sourceType": "github",
+      "computedHash": "fe04794c9b3adcb3d508486e049a76be5ef8f8493967aea07077fe292cfa6585"
+    },
+    "nutmeg-review": {
+      "source": "withqwerty/nutmeg",
+      "sourceType": "github",
+      "computedHash": "4da3759fd060e163d9139ff28c97a3b360ba00f33f7bb8c260b3bc00df8b140f"
+    },
+    "nutmeg-store": {
+      "source": "withqwerty/nutmeg",
+      "sourceType": "github",
+      "computedHash": "3a0bd603660c883bed55de9b7399b5b5bb498c4bd79e1bbba49a3e2013eb5b03"
+    },
+    "nutmeg-wrangle": {
+      "source": "withqwerty/nutmeg",
+      "sourceType": "github",
+      "computedHash": "b3b1e3d8fe1daa9917ad532bf25f47db10a15253693d3be9de1eff4f60aed624"
+    }
+  }
+}

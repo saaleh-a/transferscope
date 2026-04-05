@@ -918,6 +918,20 @@ def build_feature_dict_from_player(
         target_team_name or None,
     )
 
+    # REEP team enrichment — resolve Sofascore club IDs to stable reep_ids
+    try:
+        from backend.data import reep_registry as _rr
+        if source_club_id:
+            src_team = _rr.enrich_team(source_club_id)
+            if src_team.get("reep_id"):
+                _log.debug("REEP source team %s → %s", source_club_id, src_team["reep_id"])
+        if target_club_id:
+            tgt_team = _rr.enrich_team(target_club_id)
+            if tgt_team.get("reep_id"):
+                _log.debug("REEP target team %s → %s", target_club_id, tgt_team["reep_id"])
+    except Exception:
+        pass
+
     # Step 3: Team-position averages
     try:
         src_pos_avg, _ = sofascore_client.get_team_position_averages(
@@ -939,6 +953,8 @@ def build_feature_dict_from_player(
     try:
         from backend.data import reep_registry
         reep_data = reep_registry.enrich_player(player_id)
+        if reep_data.get("reep_id"):
+            _log.debug("REEP player %s → %s", player_id, reep_data["reep_id"])
         if reep_data.get("height_cm"):
             player_height_cm = float(reep_data["height_cm"])
         if reep_data.get("date_of_birth"):
