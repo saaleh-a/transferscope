@@ -66,7 +66,7 @@ DELTA_CLIP_FLOOR = 0.5
 # (zero delta).  Prevents systematic overshoot when the model is uncertain.
 # Applied *before* clipping so that the shrunken delta is what gets compared
 # against the clip threshold — the two guards compose naturally.
-DELTA_SHRINKAGE = 0.50
+DELTA_SHRINKAGE = 0.75
 
 # ── Target group definitions ─────────────────────────────────────────────────
 
@@ -215,7 +215,7 @@ def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.
     hidden_units = overrides.get("hidden_units", [128, 64])
     dropout_rate = overrides.get("dropout", 0.3)
 
-    l2_reg = tf.keras.regularizers.l2(1e-3)
+    l2_reg = tf.keras.regularizers.l2(1e-4)
 
     inp = tf.keras.Input(shape=(input_dim,), name=f"{group_name}_input")
     x = tf.keras.layers.Dense(
@@ -434,11 +434,13 @@ class TransferPortalModel:
                 continue
             metric = key[len("player_"):]
             raw = feature_dict.get(key, 0.0)
-            if raw <= 0.0 and self._scaler is not None:
-                # Stat missing or zero — use training mean as anchor
-                safe_pre[metric] = float(self._scaler.mean_[idx])
-            else:
-                safe_pre[metric] = raw
+            # Use the raw pre-transfer value as the delta anchor.
+            # Do NOT substitute the training mean for zero values: defenders and
+            # players from leagues without advanced stat tracking legitimately have
+            # 0 for metrics like xG and shots.  Substituting the training mean
+            # causes systematic overestimation for these players and makes
+            # predictions worse than the naive baseline.
+            safe_pre[metric] = max(0.0, raw)
 
         result = {}
 
@@ -511,13 +513,23 @@ class TransferPortalModel:
         n = len(feature_dicts)
         results = [{} for _ in range(n)]
 
+        # Build and scale the full feature matrix first (mirrors predict()).
+        # predict_batch previously built X_group from raw feature dicts without
+        # applying self._scaler, feeding unscaled inputs to a network trained on
+        # StandardScaler-scaled features and producing garbage predictions.
+        all_keys = _feature_keys()
+        key_to_idx = {k: i for i, k in enumerate(all_keys)}
+        X_full = np.array(
+            [self._prepare_features(fd) for fd in feature_dicts], dtype=np.float32
+        )
+        if self._scaler is not None:
+            X_full = self._scaler.transform(X_full)
+
         for group_name, targets in MODEL_GROUPS.items():
             if group_name not in self.models:
                 continue
-            X_group = np.array(
-                [self._prepare_group_features(fd, group_name) for fd in feature_dicts],
-                dtype=np.float32,
-            )
+            group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
+            X_group = X_full[:, group_indices]
             preds = self.models[group_name].predict(X_group, verbose=0)
 
             # Inverse-transform predictions if target scalers are available
