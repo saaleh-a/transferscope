@@ -241,6 +241,29 @@ def render():
     if not target_pos_avg:
         target_pos_avg = current_per90_clean.copy()
 
+    # REEP player metadata (height, age) for model features
+    _player_height_cm = 0.0
+    _player_age = 0.0
+    try:
+        from datetime import date as _date_cls
+        from backend.data import reep_registry
+        _reep_data = reep_registry.enrich_player(player_info["id"])
+        if _reep_data.get("height_cm"):
+            _player_height_cm = float(_reep_data["height_cm"])
+        if _reep_data.get("date_of_birth"):
+            try:
+                from datetime import datetime
+                _dob = datetime.strptime(str(_reep_data["date_of_birth"])[:10], "%Y-%m-%d").date()
+                _player_age = (_date_cls.today() - _dob).days / 365.25
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Raw Elo from ranking objects (absolute scale, preserves cross-league strength)
+    _raw_elo_current = source_ranking.raw_elo if source_ranking else 1500.0
+    _raw_elo_target = target_ranking.raw_elo if target_ranking else 1500.0
+
     # Prediction — only use TF model if trained weights exist
     predicted = {}
     predicted_current = {}
@@ -256,6 +279,10 @@ def render():
                 league_ability_target=target_league,
                 team_pos_current=source_pos_avg,
                 team_pos_target=target_pos_avg,
+                raw_elo_current=_raw_elo_current,
+                raw_elo_target=_raw_elo_target,
+                player_height_cm=_player_height_cm,
+                player_age=_player_age,
             )
             predicted = model.predict(fd)
             # Paper Section 4: dual simulation — predict at current club too
@@ -267,6 +294,10 @@ def render():
                 league_ability_target=source_league,
                 team_pos_current=source_pos_avg,
                 team_pos_target=source_pos_avg,
+                raw_elo_current=_raw_elo_current,
+                raw_elo_target=_raw_elo_current,
+                player_height_cm=_player_height_cm,
+                player_age=_player_age,
             )
             predicted_current = model.predict(fd_current)
     except Exception as e:

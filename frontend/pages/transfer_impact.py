@@ -289,6 +289,28 @@ def render():
     if confidence == "red":
         st.warning("Low data confidence — prediction heavily relies on priors.")
 
+    # ── Fetch REEP player metadata (height, age) for model features ─────
+    _player_height_cm = 0.0
+    _player_age = 0.0
+    try:
+        from backend.data import reep_registry
+        _reep_data = reep_registry.enrich_player(player_id)
+        if _reep_data.get("height_cm"):
+            _player_height_cm = float(_reep_data["height_cm"])
+        if _reep_data.get("date_of_birth"):
+            try:
+                from datetime import datetime
+                _dob = datetime.strptime(str(_reep_data["date_of_birth"])[:10], "%Y-%m-%d").date()
+                _player_age = (date.today() - _dob).days / 365.25
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Raw Elo from ranking objects (absolute scale, preserves cross-league strength)
+    _raw_elo_current = source_ranking.raw_elo if source_ranking else 1500.0
+    _raw_elo_target = target_ranking.raw_elo if target_ranking else 1500.0
+
     # ── Build prediction ─────────────────────────────────────────────────
     # Replace None with 0.0 for model input; track which metrics have data
     current_per90_clean = {m: (current_per90.get(m) if current_per90.get(m) is not None else 0.0) for m in CORE_METRICS}
@@ -349,6 +371,10 @@ def render():
                 league_ability_target=target_league_mean,
                 team_pos_current=source_pos_avg,
                 team_pos_target=target_pos_avg,
+                raw_elo_current=_raw_elo_current,
+                raw_elo_target=_raw_elo_target,
+                player_height_cm=_player_height_cm,
+                player_age=_player_age,
             )
             predicted_target = model.predict(fd_target)
             # Paper Section 4: simulate at CURRENT club as baseline
@@ -362,6 +388,10 @@ def render():
                 league_ability_target=source_league_mean,
                 team_pos_current=source_pos_avg,
                 team_pos_target=source_pos_avg,
+                raw_elo_current=_raw_elo_current,
+                raw_elo_target=_raw_elo_current,
+                player_height_cm=_player_height_cm,
+                player_age=_player_age,
             )
             predicted_current = model.predict(fd_current)
     except Exception as e:
