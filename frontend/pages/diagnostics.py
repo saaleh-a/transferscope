@@ -94,7 +94,6 @@ def _render_feature_importance():
     from backend.models.transfer_portal import (
         TransferPortalModel,
         build_feature_dict,
-        _feature_keys,
     )
 
     model = TransferPortalModel()
@@ -111,27 +110,17 @@ def _render_feature_importance():
         st.warning(f"Could not load model: {exc}")
         return
 
-    # Build a sample feature dict using real training-data means from the
-    # fitted scaler so feature importance is computed at a representative
-    # operating point (avoids extreme z-scores from arbitrary defaults).
-    all_keys = _feature_keys()
-    if model._scaler is not None:
-        sample_fd = {k: float(model._scaler.mean_[i]) for i, k in enumerate(all_keys)}
-    else:
-        sample_per90 = {m: 0.5 for m in CORE_METRICS}
-        sample_fd = build_feature_dict(
-            player_per90=sample_per90,
-            team_ability_current=60.0,
-            team_ability_target=65.0,
-            league_ability_current=50.0,
-            league_ability_target=55.0,
-            team_pos_current={m: 0.4 for m in CORE_METRICS},
-            team_pos_target={m: 0.5 for m in CORE_METRICS},
-            raw_elo_current=1700.0,
-            raw_elo_target=1750.0,
-            player_height_cm=181.0,
-            player_age=26.0,
-        )
+    # Build a sample feature dict with realistic midfield values
+    sample_per90 = {m: 0.5 for m in CORE_METRICS}
+    sample_fd = build_feature_dict(
+        player_per90=sample_per90,
+        team_ability_current=60.0,
+        team_ability_target=65.0,
+        league_ability_current=50.0,
+        league_ability_target=55.0,
+        team_pos_current={m: 0.4 for m in CORE_METRICS},
+        team_pos_target={m: 0.5 for m in CORE_METRICS},
+    )
 
     try:
         importance = model.compute_feature_importance(sample_fd)

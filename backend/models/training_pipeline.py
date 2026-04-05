@@ -797,6 +797,12 @@ def _find_league_code(tournament_id: int) -> Optional[str]:
     return None
 
 
+def _rate_limit_delay() -> None:
+    """Sleep to respect API rate limits during data collection."""
+    import time
+    time.sleep(API_CALL_DELAY_SECONDS)
+
+
 def _compute_league_means(
     tournament_id: int,
     season_id: int,
