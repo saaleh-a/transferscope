@@ -274,11 +274,11 @@ def render():
         else None
     )
 
-    # Opta league ratings for the ambition (league step-up) metric.
-    # Use league_mean_normalized from the already-computed league snapshots
-    # (same source as the league comparison table) to ensure consistency.
-    _src_opta_league = source_league_mean
-    _tgt_opta_league = target_league_mean
+    # Opta league ratings for the ambition (league step-up) metric
+    _src_league_code = source_ranking.league_code if source_ranking else None
+    _tgt_league_code = target_ranking.league_code if target_ranking else None
+    _src_opta_league = power_rankings.get_league_opta_rating(_src_league_code, current_team)
+    _tgt_opta_league = power_rankings.get_league_opta_rating(_tgt_league_code, target_club_display)
     _league_step = _tgt_opta_league - _src_opta_league
 
     # ── (c) RAG confidence ───────────────────────────────────────────────

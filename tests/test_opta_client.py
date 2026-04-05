@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 from backend.data.opta_client import (
     OptaLeagueRanking,
     OptaTeamRanking,
+    _parse_float,
+    _parse_int,
 )
 
 
@@ -46,6 +48,41 @@ def _make_opta_league(
     )
 
 
+# ── Unit tests: parse helpers ─────────────────────────────────────────────────
+
+class TestParseHelpers(unittest.TestCase):
+    """Test the _parse_float and _parse_int utility functions."""
+
+    def test_parse_float_normal(self):
+        self.assertAlmostEqual(_parse_float("95.2"), 95.2)
+
+    def test_parse_float_with_comma(self):
+        self.assertAlmostEqual(_parse_float("1,234.5"), 1234.5)
+
+    def test_parse_float_empty(self):
+        self.assertAlmostEqual(_parse_float(""), 0.0)
+
+    def test_parse_float_invalid(self):
+        self.assertAlmostEqual(_parse_float("N/A"), 0.0)
+
+    def test_parse_float_whitespace(self):
+        self.assertAlmostEqual(_parse_float("  42.0  "), 42.0)
+
+    def test_parse_int_normal(self):
+        self.assertEqual(_parse_int("42"), 42)
+
+    def test_parse_int_with_hash(self):
+        self.assertEqual(_parse_int("#42"), 42)
+
+    def test_parse_int_with_comma(self):
+        self.assertEqual(_parse_int("1,234"), 1234)
+
+    def test_parse_int_empty(self):
+        self.assertEqual(_parse_int(""), 0)
+
+    def test_parse_int_invalid(self):
+        self.assertEqual(_parse_int("abc"), 0)
+
 
 # ── Unit tests: dataclass construction ────────────────────────────────────────
 
@@ -71,10 +108,10 @@ class TestOptaDataclasses(unittest.TestCase):
 class TestOptaCaching(unittest.TestCase):
     """Test that get_team_rankings / get_league_rankings use the cache."""
 
-    @patch("backend.data.opta_client._load_team_rankings_from_bundle")
+    @patch("backend.data.opta_client._scrape_team_rankings")
     @patch("backend.data.opta_client.cache")
-    def test_team_rankings_cache_hit(self, mock_cache, mock_load):
-        """When cache has data, loader should not be called."""
+    def test_team_rankings_cache_hit(self, mock_cache, mock_scrape):
+        """When cache has data, scraper should not be called."""
         from backend.data.opta_client import get_team_rankings
 
         mock_cache.make_key.return_value = "opta_team_rankings:2026-04-02"
@@ -82,40 +119,40 @@ class TestOptaCaching(unittest.TestCase):
 
         result = get_team_rankings()
         self.assertEqual(len(result), 1)
-        mock_load.assert_not_called()
+        mock_scrape.assert_not_called()
 
-    @patch("backend.data.opta_client._load_team_rankings_from_bundle")
+    @patch("backend.data.opta_client._scrape_team_rankings")
     @patch("backend.data.opta_client.cache")
-    def test_team_rankings_cache_miss(self, mock_cache, mock_load):
-        """When cache is empty, loader should be called and result cached."""
+    def test_team_rankings_cache_miss(self, mock_cache, mock_scrape):
+        """When cache is empty, scraper should be called and result cached."""
         from backend.data.opta_client import get_team_rankings
 
         mock_cache.make_key.return_value = "opta_team_rankings:2026-04-02"
         mock_cache.get.return_value = None
-        mock_load.return_value = [_make_opta_team()]
+        mock_scrape.return_value = [_make_opta_team()]
 
         result = get_team_rankings()
         self.assertEqual(len(result), 1)
-        mock_load.assert_called_once()
+        mock_scrape.assert_called_once()
         mock_cache.set.assert_called_once()
 
-    @patch("backend.data.opta_client._load_team_rankings_from_bundle")
+    @patch("backend.data.opta_client._scrape_team_rankings")
     @patch("backend.data.opta_client.cache")
-    def test_force_refresh_bypasses_cache(self, mock_cache, mock_load):
+    def test_force_refresh_bypasses_cache(self, mock_cache, mock_scrape):
         """force_refresh=True should bypass cache."""
         from backend.data.opta_client import get_team_rankings
 
         mock_cache.make_key.return_value = "opta_team_rankings:2026-04-02"
-        mock_load.return_value = [_make_opta_team()]
+        mock_scrape.return_value = [_make_opta_team()]
 
         result = get_team_rankings(force_refresh=True)
         self.assertEqual(len(result), 1)
         # cache.get should NOT have been called
         mock_cache.get.assert_not_called()
 
-    @patch("backend.data.opta_client._load_league_rankings_from_meta")
+    @patch("backend.data.opta_client._scrape_league_rankings")
     @patch("backend.data.opta_client.cache")
-    def test_league_rankings_cache_hit(self, mock_cache, mock_load):
+    def test_league_rankings_cache_hit(self, mock_cache, mock_scrape):
         from backend.data.opta_client import get_league_rankings
 
         mock_cache.make_key.return_value = "opta_league_rankings:2026-04-02"
@@ -123,7 +160,7 @@ class TestOptaCaching(unittest.TestCase):
 
         result = get_league_rankings()
         self.assertEqual(len(result), 1)
-        mock_load.assert_not_called()
+        mock_scrape.assert_not_called()
 
 
 # ── Unit tests: dict helpers ──────────────────────────────────────────────────
