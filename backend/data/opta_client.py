@@ -275,14 +275,12 @@ def _scrape_league_rankings() -> List[OptaLeagueRanking]:
     rankings: List[OptaLeagueRanking] = []
     for e in entries:
         try:
-            # globalRank is descending in the raw data (rank 1 = weakest at
-            # bottom of the list), so we invert to get a conventional rank
-            # where rank 1 = strongest league.
+            # globalRank uses standard convention: 1 = strongest league.
             raw_global = e.get("globalRank") or e.get("lastWeekGlobalRank") or 0
-            total = int(e.get("globalSize", 0)) or 1
-            rank = total - int(float(raw_global)) + 1
+            rank = max(1, int(float(raw_global)))
 
-            # 7-day change: compare globalRank to lastWeekGlobalRank
+            # 7-day change: compare lastWeekGlobalRank to current globalRank.
+            # delta = last_week - current; positive = improved (moved up).
             last_w = e.get("lastWeekGlobalRank")
             curr_r = e.get("globalRank")
             change = _parse_change(
@@ -291,7 +289,7 @@ def _scrape_league_rankings() -> List[OptaLeagueRanking]:
             )
 
             rankings.append(OptaLeagueRanking(
-                rank=max(1, rank),
+                rank=rank,
                 league=e.get("leagueName", ""),
                 rating=float(e.get("seasonAverageRating") or 0),
                 ranking_change_7d=change,
