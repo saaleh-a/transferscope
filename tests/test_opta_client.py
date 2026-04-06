@@ -321,6 +321,16 @@ class TestComputeRankingsFromOpta(unittest.TestCase):
 class TestComputeDailyRankingsOptaPath(unittest.TestCase):
     """Test that compute_daily_rankings tries Opta for today's date."""
 
+    def setUp(self):
+        """Clear the in-process rankings cache so tests are not affected by
+        real data loaded in earlier tests within the same process."""
+        import backend.features.power_rankings as pr
+        pr._rankings_in_process_cache.clear()
+
+    def tearDown(self):
+        import backend.features.power_rankings as pr
+        pr._rankings_in_process_cache.clear()
+
     @patch("backend.features.power_rankings._compute_rankings_from_opta")
     @patch("backend.features.power_rankings.cache")
     def test_today_uses_opta_when_available(self, mock_cache, mock_opta_fn):
@@ -408,6 +418,14 @@ class TestComputeDailyRankingsOptaPath(unittest.TestCase):
 
 class TestOptaToggle(unittest.TestCase):
     """Test that _USE_OPTA_FOR_INFERENCE can be toggled."""
+
+    def setUp(self):
+        import backend.features.power_rankings as pr
+        pr._rankings_in_process_cache.clear()
+
+    def tearDown(self):
+        import backend.features.power_rankings as pr
+        pr._rankings_in_process_cache.clear()
 
     @patch("backend.features.power_rankings._compute_rankings_from_opta")
     @patch("backend.features.power_rankings.clubelo_client")
@@ -919,6 +937,10 @@ class TestOfficialTeamCountInSnapshot(unittest.TestCase):
 
         # Malta's Premier League is not in our registry — should stay UNK
         self.assertEqual(team_rankings["Valletta FC"].league_code, "UNK")
+    @patch("backend.features.power_rankings.clubelo_client")
+    @patch("backend.features.power_rankings._get_clubelo_sofascore_map")
+    @patch("backend.data.opta_client.get_team_rankings")
+    @patch("backend.data.opta_client.get_league_rankings")
     def test_official_count_caps_inflated_team_list(
         self, mock_opta_leagues, mock_opta_teams, mock_ce_map, mock_ce_client
     ):

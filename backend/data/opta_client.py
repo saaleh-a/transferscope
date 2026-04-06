@@ -85,6 +85,8 @@ class OptaLeagueRanking:
     league: str
     rating: float                   # seasonAverageRating, same 0-100 scale
     ranking_change_7d: Optional[str]
+    country: str = ""
+    number_of_teams: int = 0
 
 
 # ── Internal fetchers ─────────────────────────────────────────────────────────
@@ -163,6 +165,23 @@ def _extract_all_json_parse(js_text: str) -> List[str]:
     return result
 
 
+def _parse_float(value: str, default: float = 0.0) -> float:
+    """Parse a string to float, stripping commas and whitespace."""
+    try:
+        return float(str(value).strip().replace(",", ""))
+    except (ValueError, TypeError):
+        return default
+
+
+def _parse_int(value: str, default: int = 0) -> int:
+    """Parse a string to int, stripping commas, '#' prefixes and whitespace."""
+    try:
+        cleaned = str(value).strip().lstrip("#").replace(",", "")
+        return int(float(cleaned))
+    except (ValueError, TypeError):
+        return default
+
+
 def _parse_change(last_week: Optional[str], current: Optional[str]) -> str:
     """Convert lastWeekGlobalRank / currentGlobalRank to a ±N string."""
     try:
@@ -174,7 +193,7 @@ def _parse_change(last_week: Optional[str], current: Optional[str]) -> str:
         return "0"
 
 
-def _load_team_rankings_from_bundle() -> List[OptaTeamRanking]:
+def _scrape_team_rankings() -> List[OptaTeamRanking]:
     """Fetch index.js and extract the men's team ranking dataset.
 
     Extraction strategy:
@@ -236,7 +255,7 @@ def _load_team_rankings_from_bundle() -> List[OptaTeamRanking]:
     return rankings
 
 
-def _load_league_rankings_from_meta() -> List[OptaLeagueRanking]:
+def _scrape_league_rankings() -> List[OptaLeagueRanking]:
     """Fetch league-meta.json and return a sorted list of OptaLeagueRanking.
 
     Uses ``seasonAverageRating`` as the rating field (same 0-100 scale as
@@ -276,6 +295,8 @@ def _load_league_rankings_from_meta() -> List[OptaLeagueRanking]:
                 league=e.get("leagueName", ""),
                 rating=float(e.get("seasonAverageRating") or 0),
                 ranking_change_7d=change,
+                country=e.get("countryName", ""),
+                number_of_teams=int(e.get("leagueSize", 0) or 0),
             ))
         except Exception as exc:
             _log.debug("Skipping malformed Opta league entry: %s — %s", e, exc)
@@ -310,7 +331,7 @@ def get_team_rankings(force_refresh: bool = False) -> List[OptaTeamRanking]:
             _log.debug("Opta team rankings from cache (%d teams)", len(cached))
             return cached
 
-    rankings = _load_team_rankings_from_bundle()
+    rankings = _scrape_team_rankings()
     if rankings:
         cache.set(key, rankings)
     return rankings
@@ -331,7 +352,7 @@ def get_league_rankings(force_refresh: bool = False) -> List[OptaLeagueRanking]:
             _log.debug("Opta league rankings from cache (%d leagues)", len(cached))
             return cached
 
-    rankings = _load_league_rankings_from_meta()
+    rankings = _scrape_league_rankings()
     if rankings:
         cache.set(key, rankings)
     return rankings
