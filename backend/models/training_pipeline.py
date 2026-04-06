@@ -2022,8 +2022,9 @@ def train_neural_network(
 
         def on_epoch_begin(self, epoch: int, logs: Any = None) -> None:
             if epoch < self.warmup_epochs:
+                # epoch 0 → start_lr, epoch warmup_epochs-1 → target_lr
                 lr = self.start_lr + (self.target_lr - self.start_lr) * (
-                    epoch / max(1, self.warmup_epochs)
+                    (epoch + 1) / self.warmup_epochs
                 )
                 tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
 
