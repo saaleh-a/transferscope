@@ -193,7 +193,7 @@ def _parse_change(last_week: Optional[str], current: Optional[str]) -> str:
         return "0"
 
 
-def _load_team_rankings_from_bundle() -> List[OptaTeamRanking]:
+def _scrape_team_rankings() -> List[OptaTeamRanking]:
     """Fetch index.js and extract the men's team ranking dataset.
 
     Extraction strategy:
@@ -255,7 +255,7 @@ def _load_team_rankings_from_bundle() -> List[OptaTeamRanking]:
     return rankings
 
 
-def _load_league_rankings_from_meta() -> List[OptaLeagueRanking]:
+def _scrape_league_rankings() -> List[OptaLeagueRanking]:
     """Fetch league-meta.json and return a sorted list of OptaLeagueRanking.
 
     Uses ``seasonAverageRating`` as the rating field (same 0-100 scale as
@@ -331,7 +331,7 @@ def get_team_rankings(force_refresh: bool = False) -> List[OptaTeamRanking]:
             _log.debug("Opta team rankings from cache (%d teams)", len(cached))
             return cached
 
-    rankings = _load_team_rankings_from_bundle()
+    rankings = _scrape_team_rankings()
     if rankings:
         cache.set(key, rankings)
     return rankings
@@ -352,7 +352,7 @@ def get_league_rankings(force_refresh: bool = False) -> List[OptaLeagueRanking]:
             _log.debug("Opta league rankings from cache (%d leagues)", len(cached))
             return cached
 
-    rankings = _load_league_rankings_from_meta()
+    rankings = _scrape_league_rankings()
     if rankings:
         cache.set(key, rankings)
     return rankings

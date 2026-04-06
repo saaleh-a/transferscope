@@ -1669,6 +1669,12 @@ def _get_opta_league_map() -> Dict[str, float]:
 
     Populated lazily on first call; the underlying opta_client result is
     already cached for 24 h so this adds only a tiny dict-build overhead.
+
+    As a side-effect also populates:
+    - ``_opta_league_country_map``: {(country_lower, league_lower): rating}
+      for country-qualified disambiguation of same-name leagues.
+    - ``_opta_league_team_counts``: {(country_lower, league_lower): n_teams}
+      using the official ``number_of_teams`` from league-meta.json.
     """
     global _opta_league_map, _opta_league_country_map, _opta_league_team_counts
     if _opta_league_map is not None:
