@@ -1204,6 +1204,12 @@ def _compute_rankings_from_opta() -> (
     opta_league_ratings: Dict[str, float] = {}
     opta_league_ratings_cq: Dict[Tuple[str, str], float] = {}
     opta_league_team_counts: Dict[Tuple[str, str], int] = {}
+    # league_code → official seasonAverageRating / leagueSize, resolved via
+    # _OPTA_DL_COUNTRY_TO_CODE.  This handles mismatches between the team
+    # bundle's domesticLeagueName (e.g. "Premier League") and the league-meta
+    # leagueName (e.g. "English Premier League").
+    league_code_to_official_mean: Dict[str, float] = {}
+    league_code_to_official_count: Dict[str, int] = {}
     for lr in opta_leagues:
         opta_league_ratings[lr.league] = lr.rating
         if lr.country:
@@ -1211,6 +1217,29 @@ def _compute_rankings_from_opta() -> (
             opta_league_ratings_cq[cq] = lr.rating
             if lr.number_of_teams > 0:
                 opta_league_team_counts[cq] = lr.number_of_teams
+
+            # Resolve lr → league code so we can look up official mean by code
+            # rather than relying on name equality (which often fails because
+            # league-meta uses "English Premier League" while the team bundle
+            # uses "Premier League").
+            lr_name_l = lr.league.lower()
+            lr_ctry_l = lr.country.lower()
+            code_for_lr = _OPTA_DL_COUNTRY_TO_CODE.get((lr_name_l, lr_ctry_l))
+            if not code_for_lr:
+                # Suffix match: "English Premier League".endswith("premier league")
+                # Keep the longest matching known name to avoid false positives
+                # (e.g. "liga" matching before "super liga").
+                best_len = 0
+                for (kn, kc), kcode in _OPTA_DL_COUNTRY_TO_CODE.items():
+                    if (kc == lr_ctry_l and lr_name_l.endswith(kn)
+                            and len(kn) > best_len and len(kn) >= 5):
+                        code_for_lr = kcode
+                        best_len = len(kn)
+            if code_for_lr and lr.rating > 0:
+                if code_for_lr not in league_code_to_official_mean:
+                    league_code_to_official_mean[code_for_lr] = lr.rating
+                if lr.number_of_teams > 0 and code_for_lr not in league_code_to_official_count:
+                    league_code_to_official_count[code_for_lr] = lr.number_of_teams
 
     # Collect all ClubElo data (single fetch, reused for raw_elo + league mapping).
     clubelo_raw: Dict[str, float] = {}  # canonical_name → raw elo
@@ -1369,21 +1398,27 @@ def _compute_rankings_from_opta() -> (
         # only the teams we matched by name (which biases high by excluding
         # weaker/unranked teams).  Official leagueSize prevents inflated
         # team counts (e.g. 22 for EPL instead of 20).
-        official_mean = None
-        official_count = None
-        opta_name = league_code_to_opta_name.get(code)
-        opta_country = league_code_to_country.get(code)
-        if opta_name:
-            # Try country-qualified lookup first (handles "Premier League"
-            # appearing in multiple countries), then fall back to name-only.
-            if opta_country:
-                cq_key = (opta_country.lower(), opta_name.lower())
-                official_mean = opta_league_ratings_cq.get(cq_key)
-                ct = opta_league_team_counts.get(cq_key)
-                if ct and ct > 0:
-                    official_count = ct
-            if official_mean is None:
-                official_mean = opta_league_ratings.get(opta_name)
+        #
+        # Primary: use league_code_to_official_mean which resolves by league
+        # code — robust even when league-meta leagueName differs from the
+        # team bundle's domesticLeagueName (e.g. "English Premier League"
+        # vs "Premier League").
+        # Secondary: fall back to (country, name) lookup for any leagues not
+        # yet in _OPTA_DL_COUNTRY_TO_CODE.
+        official_mean = league_code_to_official_mean.get(code)
+        official_count = league_code_to_official_count.get(code)
+        if official_mean is None:
+            opta_name = league_code_to_opta_name.get(code)
+            opta_country = league_code_to_country.get(code)
+            if opta_name:
+                if opta_country:
+                    cq_key = (opta_country.lower(), opta_name.lower())
+                    official_mean = opta_league_ratings_cq.get(cq_key)
+                    ct = opta_league_team_counts.get(cq_key)
+                    if ct and ct > 0:
+                        official_count = ct
+                if official_mean is None:
+                    official_mean = opta_league_ratings.get(opta_name)
 
         final_mean = official_mean if official_mean is not None else float(np.mean(norms))
         final_count = official_count if official_count is not None else len(members)
