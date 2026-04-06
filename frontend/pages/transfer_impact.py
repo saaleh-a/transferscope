@@ -663,7 +663,7 @@ def render():
                 "Actual (per 90)": "{:.3f}",
                 "Simulated Current": "{:.3f}",
                 "Predicted (per 90)": "{:.3f}",
-                "± Std": "{:.3f}",
+                "± Std": lambda v: v if isinstance(v, str) else f"{v:.3f}",
                 "Change %": "{:.1f}",
             })
             .map(
