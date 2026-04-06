@@ -108,7 +108,7 @@ class TestOptaDataclasses(unittest.TestCase):
 class TestOptaCaching(unittest.TestCase):
     """Test that get_team_rankings / get_league_rankings use the cache."""
 
-    @patch("backend.data.opta_client._load_team_rankings_from_bundle")
+    @patch("backend.data.opta_client._scrape_team_rankings")
     @patch("backend.data.opta_client.cache")
     def test_team_rankings_cache_hit(self, mock_cache, mock_scrape):
         """When cache has data, scraper should not be called."""
@@ -121,7 +121,7 @@ class TestOptaCaching(unittest.TestCase):
         self.assertEqual(len(result), 1)
         mock_scrape.assert_not_called()
 
-    @patch("backend.data.opta_client._load_team_rankings_from_bundle")
+    @patch("backend.data.opta_client._scrape_team_rankings")
     @patch("backend.data.opta_client.cache")
     def test_team_rankings_cache_miss(self, mock_cache, mock_scrape):
         """When cache is empty, scraper should be called and result cached."""
@@ -136,7 +136,7 @@ class TestOptaCaching(unittest.TestCase):
         mock_scrape.assert_called_once()
         mock_cache.set.assert_called_once()
 
-    @patch("backend.data.opta_client._load_team_rankings_from_bundle")
+    @patch("backend.data.opta_client._scrape_team_rankings")
     @patch("backend.data.opta_client.cache")
     def test_force_refresh_bypasses_cache(self, mock_cache, mock_scrape):
         """force_refresh=True should bypass cache."""
@@ -150,7 +150,7 @@ class TestOptaCaching(unittest.TestCase):
         # cache.get should NOT have been called
         mock_cache.get.assert_not_called()
 
-    @patch("backend.data.opta_client._load_league_rankings_from_meta")
+    @patch("backend.data.opta_client._scrape_league_rankings")
     @patch("backend.data.opta_client.cache")
     def test_league_rankings_cache_hit(self, mock_cache, mock_scrape):
         from backend.data.opta_client import get_league_rankings
