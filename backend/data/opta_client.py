@@ -85,6 +85,8 @@ class OptaLeagueRanking:
     league: str
     rating: float                   # seasonAverageRating, same 0-100 scale
     ranking_change_7d: Optional[str]
+    country: str = ""               # country / region name from league-meta.json
+    number_of_teams: int = 0        # official league size (leagueSize)
 
 
 # ── Internal fetchers ─────────────────────────────────────────────────────────
@@ -161,6 +163,23 @@ def _extract_all_json_parse(js_text: str) -> List[str]:
     for raw in matches:
         result.append(raw.replace(_DBL_ESC, _SGL_ESC))
     return result
+
+
+def _parse_float(text: str) -> float:
+    """Parse a float from *text*, stripping commas and whitespace.  Returns 0.0 on failure."""
+    try:
+        return float(text.strip().replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _parse_int(text: str) -> int:
+    """Parse an int from *text*, stripping ``#``, commas, and whitespace.  Returns 0 on failure."""
+    try:
+        cleaned = text.strip().lstrip("#").replace(",", "")
+        return int(float(cleaned))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _parse_change(last_week: Optional[str], current: Optional[str]) -> str:
@@ -276,6 +295,8 @@ def _load_league_rankings_from_meta() -> List[OptaLeagueRanking]:
                 league=e.get("leagueName", ""),
                 rating=float(e.get("seasonAverageRating") or 0),
                 ranking_change_7d=change,
+                country=e.get("countryName", ""),
+                number_of_teams=int(float(e.get("leagueSize") or 0)),
             ))
         except Exception as exc:
             _log.debug("Skipping malformed Opta league entry: %s — %s", e, exc)
