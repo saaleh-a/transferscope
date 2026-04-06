@@ -113,6 +113,10 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "interaction_ability_gap",
         "interaction_gap_squared",
         "interaction_league_gap",
+        # Relative team dominance within league (Phase 6)
+        "relative_ability_current",
+        "relative_ability_target",
+        "relative_ability_gap",
         # Per-metric league-normalised (Phase 5)
         "league_norm_expected_goals",
         "league_norm_shots",
@@ -155,6 +159,10 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "interaction_ability_gap",
         "interaction_gap_squared",
         "interaction_league_gap",
+        # Relative team dominance within league (Phase 6)
+        "relative_ability_current",
+        "relative_ability_target",
+        "relative_ability_gap",
         # Per-metric league-normalised (Phase 5)
         "league_norm_expected_assists",
         "league_norm_successful_crosses",
@@ -185,6 +193,10 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "interaction_ability_gap",
         "interaction_gap_squared",
         "interaction_league_gap",
+        # Relative team dominance within league (Phase 6)
+        "relative_ability_current",
+        "relative_ability_target",
+        "relative_ability_gap",
         # Per-metric league-normalised (Phase 5)
         "league_norm_successful_dribbles",
         "league_mean_ratio_successful_dribbles",
@@ -209,6 +221,10 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "interaction_ability_gap",
         "interaction_gap_squared",
         "interaction_league_gap",
+        # Relative team dominance within league (Phase 6)
+        "relative_ability_current",
+        "relative_ability_target",
+        "relative_ability_gap",
         # Per-metric league-normalised (Phase 5)
         "league_norm_clearances",
         "league_norm_interceptions",
@@ -782,6 +798,10 @@ def _feature_keys() -> List[str]:
     keys.append("interaction_ability_gap")
     keys.append("interaction_gap_squared")
     keys.append("interaction_league_gap")
+    # Relative team dominance within league (Phase 6)
+    keys.append("relative_ability_current")
+    keys.append("relative_ability_target")
+    keys.append("relative_ability_gap")
     # Per-metric league-normalised features (Phase 5)
     # How many multiples of league average the player is per metric
     for m in CORE_METRICS:
@@ -858,6 +878,13 @@ def build_feature_dict(
     fd["interaction_gap_squared"] = ability_gap ** 2
     fd["interaction_league_gap"] = league_ability_target - league_ability_current
 
+    # Relative team dominance within league (team_ability - league_ability)
+    rel_current = team_ability_current - league_ability_current
+    rel_target = team_ability_target - league_ability_target
+    fd["relative_ability_current"] = rel_current
+    fd["relative_ability_target"] = rel_target
+    fd["relative_ability_gap"] = rel_target - rel_current
+
     # Per-metric league-normalised features (Phase 5)
     _src_means = source_league_means or {}
     _tgt_means = target_league_means or {}
@@ -882,7 +909,7 @@ def build_feature_dict(
     return fd
 
 
-FEATURE_DIM = len(_feature_keys())  # 76 (13 player + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 13 league_norm + 13 league_mean_ratio)
+FEATURE_DIM = len(_feature_keys())  # 79 (13 player + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio)
 _log.info("Feature vector dimension: %d", FEATURE_DIM)
 
 # Minimum minutes threshold for league mean computation (matches training pipeline)

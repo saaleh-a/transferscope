@@ -1215,7 +1215,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertEqual(tp_keys, ref_keys)
 
     def test_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (76)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (79)."""
         from backend.models.training_pipeline import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)

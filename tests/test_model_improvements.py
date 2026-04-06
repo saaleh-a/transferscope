@@ -51,9 +51,9 @@ class TestInteractionFeatures(unittest.TestCase):
     """Tests for the 3 interaction features added to build_feature_dict()."""
 
     def test_interaction_features_present(self):
-        """build_feature_dict returns 76 keys including interaction features."""
+        """build_feature_dict returns 79 keys including interaction features."""
         fd = _make_feature_dict()
-        self.assertEqual(len(fd), 76)
+        self.assertEqual(len(fd), 79)
         self.assertIn("interaction_ability_gap", fd)
         self.assertIn("interaction_gap_squared", fd)
         self.assertIn("interaction_league_gap", fd)
@@ -102,15 +102,15 @@ class TestInteractionFeatures(unittest.TestCase):
 
 
 class TestFeatureDimension(unittest.TestCase):
-    """Tests that FEATURE_DIM and _feature_keys() reflect the 76 features."""
+    """Tests that FEATURE_DIM and _feature_keys() reflect the 79 features."""
 
-    def test_feature_dim_is_76(self):
-        """FEATURE_DIM must be 76 (43 base + 2 raw_elo + 2 reep + 3 interaction + 13 league_norm + 13 league_mean_ratio)."""
-        self.assertEqual(FEATURE_DIM, 76)
+    def test_feature_dim_is_79(self):
+        """FEATURE_DIM must be 79 (43 base + 2 raw_elo + 2 reep + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio)."""
+        self.assertEqual(FEATURE_DIM, 79)
 
     def test_feature_keys_length(self):
-        """_feature_keys() returns exactly 76 items."""
-        self.assertEqual(len(_feature_keys()), 76)
+        """_feature_keys() returns exactly 79 items."""
+        self.assertEqual(len(_feature_keys()), 79)
 
     def test_feature_keys_contain_interactions(self):
         """_feature_keys() includes all 3 interaction feature names."""
@@ -149,20 +149,20 @@ class TestGroupFeatureSubsets(unittest.TestCase):
                 )
 
     def test_shooting_subset_size(self):
-        """Shooting group: 22 original + 4 league_norm + 4 league_mean_ratio = 30 features."""
-        self.assertEqual(len(GROUP_FEATURE_SUBSETS["shooting"]), 30)
+        """Shooting group: 22 original + 3 relative + 4 league_norm + 4 league_mean_ratio = 33 features."""
+        self.assertEqual(len(GROUP_FEATURE_SUBSETS["shooting"]), 33)
 
     def test_passing_subset_size(self):
-        """Passing group: 31 original + 7 league_norm + 7 league_mean_ratio = 45 features."""
-        self.assertEqual(len(GROUP_FEATURE_SUBSETS["passing"]), 45)
+        """Passing group: 31 original + 3 relative + 7 league_norm + 7 league_mean_ratio = 48 features."""
+        self.assertEqual(len(GROUP_FEATURE_SUBSETS["passing"]), 48)
 
     def test_dribbling_subset_size(self):
-        """Dribbling group: 13 original + 1 league_norm + 1 league_mean_ratio = 15 features."""
-        self.assertEqual(len(GROUP_FEATURE_SUBSETS["dribbling"]), 15)
+        """Dribbling group: 13 original + 3 relative + 1 league_norm + 1 league_mean_ratio = 18 features."""
+        self.assertEqual(len(GROUP_FEATURE_SUBSETS["dribbling"]), 18)
 
     def test_defending_subset_size(self):
-        """Defending group: 19 original + 3 league_norm + 3 league_mean_ratio = 25 features."""
-        self.assertEqual(len(GROUP_FEATURE_SUBSETS["defending"]), 25)
+        """Defending group: 19 original + 3 relative + 3 league_norm + 3 league_mean_ratio = 28 features."""
+        self.assertEqual(len(GROUP_FEATURE_SUBSETS["defending"]), 28)
 
 
 # ── Backward compatibility ──────────────────────────────────────────────────

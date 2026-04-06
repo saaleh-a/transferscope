@@ -688,8 +688,10 @@ def build_training_sample(
         else:
             league_mean_ratio_features.append(1.0)
 
-    # Assemble the 76-feature vector
+    # Assemble the 79-feature vector
     ability_gap = team_ability_target - team_ability_current
+    rel_current = team_ability_current - league_ability_current
+    rel_target = team_ability_target - league_ability_target
     features = np.array(
         player_metrics
         + [team_ability_current, team_ability_target,
@@ -700,6 +702,7 @@ def build_training_sample(
         + team_pos_target
         + [ability_gap, ability_gap ** 2,
            league_ability_target - league_ability_current]
+        + [rel_current, rel_target, rel_target - rel_current]
         + league_norm_features
         + league_mean_ratio_features,
         dtype=np.float32,
@@ -1207,6 +1210,7 @@ def build_non_transfer_sample(
 
     # Same team → current == target for all ability and position features
     # Interaction features are all zero (no gap when staying at same club)
+    nt_rel = team_ability - league_ability
     features = np.array(
         player_metrics
         + [team_ability, team_ability, league_ability, league_ability]
@@ -1215,6 +1219,7 @@ def build_non_transfer_sample(
         + team_pos
         + team_pos  # team_pos_target == team_pos_current
         + [0.0, 0.0, 0.0]  # interaction: gap=0, gap²=0, league_gap=0
+        + [nt_rel, nt_rel, 0.0]  # relative: current==target, gap=0
         + league_norm_features
         + league_mean_ratio_features,
         dtype=np.float32,
@@ -2207,11 +2212,11 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 76-feature vector.
+    """Return the ordered list of feature keys matching the 79-feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
-    includes raw Elo, REEP metadata, interaction features, and
-    per-metric league-normalised features.
+    includes raw Elo, REEP metadata, interaction features, relative
+    dominance features, and per-metric league-normalised features.
     """
     keys = []
     for m in CORE_METRICS:
@@ -2234,6 +2239,10 @@ def _feature_keys_list() -> List[str]:
     keys.append("interaction_ability_gap")
     keys.append("interaction_gap_squared")
     keys.append("interaction_league_gap")
+    # Relative team dominance within league (Phase 6)
+    keys.append("relative_ability_current")
+    keys.append("relative_ability_target")
+    keys.append("relative_ability_gap")
     # Per-metric league-normalised features (Phase 5)
     for m in CORE_METRICS:
         keys.append(f"league_norm_{m}")
