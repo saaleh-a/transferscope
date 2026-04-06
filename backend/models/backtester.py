@@ -106,10 +106,11 @@ def _prediction_confidence(X_row: np.ndarray) -> float:
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 50-feature vector.
+    """Return the ordered list of feature keys matching the 76-feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
-    includes raw Elo, REEP metadata, and the 3 interaction features.
+    includes raw Elo, REEP metadata, interaction features, and
+    per-metric league-normalised features.
     """
     keys = []
     for m in CORE_METRICS:
@@ -132,6 +133,11 @@ def _feature_keys_list() -> List[str]:
     keys.append("interaction_ability_gap")
     keys.append("interaction_gap_squared")
     keys.append("interaction_league_gap")
+    # Per-metric league-normalised features (Phase 5)
+    for m in CORE_METRICS:
+        keys.append(f"league_norm_{m}")
+    for m in CORE_METRICS:
+        keys.append(f"league_mean_ratio_{m}")
     return keys
 
 

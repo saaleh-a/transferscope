@@ -113,6 +113,15 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "interaction_ability_gap",
         "interaction_gap_squared",
         "interaction_league_gap",
+        # Per-metric league-normalised (Phase 5)
+        "league_norm_expected_goals",
+        "league_norm_shots",
+        "league_norm_touches_in_opposition_box",
+        "league_norm_chances_created",
+        "league_mean_ratio_expected_goals",
+        "league_mean_ratio_shots",
+        "league_mean_ratio_touches_in_opposition_box",
+        "league_mean_ratio_chances_created",
     ],
     "passing": [
         "player_expected_assists",
@@ -146,6 +155,21 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "interaction_ability_gap",
         "interaction_gap_squared",
         "interaction_league_gap",
+        # Per-metric league-normalised (Phase 5)
+        "league_norm_expected_assists",
+        "league_norm_successful_crosses",
+        "league_norm_successful_passes",
+        "league_norm_pass_completion_pct",
+        "league_norm_accurate_long_balls",
+        "league_norm_chances_created",
+        "league_norm_touches_in_opposition_box",
+        "league_mean_ratio_expected_assists",
+        "league_mean_ratio_successful_crosses",
+        "league_mean_ratio_successful_passes",
+        "league_mean_ratio_pass_completion_pct",
+        "league_mean_ratio_accurate_long_balls",
+        "league_mean_ratio_chances_created",
+        "league_mean_ratio_touches_in_opposition_box",
     ],
     "dribbling": [
         "player_successful_dribbles",
@@ -161,6 +185,9 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "interaction_ability_gap",
         "interaction_gap_squared",
         "interaction_league_gap",
+        # Per-metric league-normalised (Phase 5)
+        "league_norm_successful_dribbles",
+        "league_mean_ratio_successful_dribbles",
     ],
     "defending": [
         "player_clearances",
@@ -182,6 +209,13 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "interaction_ability_gap",
         "interaction_gap_squared",
         "interaction_league_gap",
+        # Per-metric league-normalised (Phase 5)
+        "league_norm_clearances",
+        "league_norm_interceptions",
+        "league_norm_possession_won_final_3rd",
+        "league_mean_ratio_clearances",
+        "league_mean_ratio_interceptions",
+        "league_mean_ratio_possession_won_final_3rd",
     ],
 }
 
@@ -748,6 +782,13 @@ def _feature_keys() -> List[str]:
     keys.append("interaction_ability_gap")
     keys.append("interaction_gap_squared")
     keys.append("interaction_league_gap")
+    # Per-metric league-normalised features (Phase 5)
+    # How many multiples of league average the player is per metric
+    for m in CORE_METRICS:
+        keys.append(f"league_norm_{m}")
+    # Ratio of source-to-target league means per metric
+    for m in CORE_METRICS:
+        keys.append(f"league_mean_ratio_{m}")
     return keys
 
 
@@ -763,6 +804,8 @@ def build_feature_dict(
     raw_elo_target: float = 1500.0,
     player_height_cm: float = 0.0,
     player_age: float = 0.0,
+    source_league_means: Optional[Dict[str, float]] = None,
+    target_league_means: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """Assemble a feature dict from components, ready for predict().
 
@@ -779,6 +822,9 @@ def build_feature_dict(
         Player height in cm from REEP.  0.0 when unavailable.
     player_age : float
         Player age in years from REEP.  0.0 when unavailable.
+    source_league_means / target_league_means : dict, optional
+        Per-metric league averages for the source/target league.
+        When provided, enables per-metric league-normalised features.
     """
     fd: Dict[str, float] = {}
 
@@ -812,11 +858,65 @@ def build_feature_dict(
     fd["interaction_gap_squared"] = ability_gap ** 2
     fd["interaction_league_gap"] = league_ability_target - league_ability_current
 
+    # Per-metric league-normalised features (Phase 5)
+    _src_means = source_league_means or {}
+    _tgt_means = target_league_means or {}
+    for m in CORE_METRICS:
+        player_val = fd.get(f"player_{m}", 0.0)
+        src_mean = _src_means.get(m, 0.0)
+        tgt_mean = _tgt_means.get(m, 0.0)
+        # How many multiples of source league average the player is
+        # (capped to avoid extreme values when league mean ≈ 0)
+        if src_mean > 1e-6:
+            fd[f"league_norm_{m}"] = min(player_val / src_mean, 20.0)
+        else:
+            fd[f"league_norm_{m}"] = 0.0
+        # Ratio of source-to-target league means (how different are the leagues
+        # on this specific metric).  1.0 = identical, >1 = source league has
+        # higher raw averages.
+        if tgt_mean > 1e-6:
+            fd[f"league_mean_ratio_{m}"] = min(src_mean / tgt_mean, 5.0) if src_mean > 1e-6 else 1.0
+        else:
+            fd[f"league_mean_ratio_{m}"] = 1.0
+
     return fd
 
 
-FEATURE_DIM = len(_feature_keys())  # 50 (13 player + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction)
+FEATURE_DIM = len(_feature_keys())  # 76 (13 player + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 13 league_norm + 13 league_mean_ratio)
 _log.info("Feature vector dimension: %d", FEATURE_DIM)
+
+# Minimum minutes threshold for league mean computation (matches training pipeline)
+_MIN_MINUTES_THRESHOLD = 450
+
+
+def _compute_league_means_from_stats(
+    players: List[Dict[str, Any]],
+) -> Dict[str, float]:
+    """Compute league mean per-90 from a list of player stat dicts.
+
+    Mirrors ``training_pipeline._compute_league_means`` but operates on
+    already-fetched data instead of calling Sofascore.
+    """
+    metric_sums: Dict[str, float] = {m: 0.0 for m in CORE_METRICS}
+    metric_counts: Dict[str, int] = {m: 0 for m in CORE_METRICS}
+
+    for p in players:
+        if p.get("minutes_played", 0) < _MIN_MINUTES_THRESHOLD:
+            continue
+        per90 = p.get("per90") or {}
+        for m in CORE_METRICS:
+            v = per90.get(m)
+            if v is not None:
+                try:
+                    metric_sums[m] += float(v)
+                    metric_counts[m] += 1
+                except (ValueError, TypeError):
+                    pass
+
+    return {
+        m: metric_sums[m] / metric_counts[m] if metric_counts[m] > 0 else 0.0
+        for m in CORE_METRICS
+    }
 
 
 # ── Improvement 9: Inference-time feature builder ────────────────────────────
@@ -980,7 +1080,29 @@ def build_feature_dict_from_player(
     except Exception:
         pass
 
-    # Step 5: Assemble via build_feature_dict
+    # Step 5: League means for per-metric normalisation
+    source_league_means: Optional[Dict[str, float]] = None
+    target_league_means: Optional[Dict[str, float]] = None
+    try:
+        src_league_stats = sofascore_client.get_league_player_stats(
+            tournament_id, season_id, limit=300,
+        )
+        if src_league_stats:
+            source_league_means = _compute_league_means_from_stats(src_league_stats)
+    except Exception:
+        _log.debug("Could not fetch source league means for tournament %s", tournament_id)
+    try:
+        # For target league, use target_league_id with current season
+        # (season_id may differ, but league means are stable across seasons)
+        tgt_league_stats = sofascore_client.get_league_player_stats(
+            target_league_id, season_id, limit=300,
+        )
+        if tgt_league_stats:
+            target_league_means = _compute_league_means_from_stats(tgt_league_stats)
+    except Exception:
+        _log.debug("Could not fetch target league means for tournament %s", target_league_id)
+
+    # Step 6: Assemble via build_feature_dict
     return build_feature_dict(
         player_per90=player_per90,
         team_ability_current=team_ability_current,
@@ -993,4 +1115,6 @@ def build_feature_dict_from_player(
         raw_elo_target=raw_elo_target,
         player_height_cm=player_height_cm,
         player_age=player_age,
+        source_league_means=source_league_means,
+        target_league_means=target_league_means,
     )

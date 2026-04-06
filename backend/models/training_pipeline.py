@@ -660,7 +660,35 @@ def build_training_sample(
     team_pos_current = [0.0] * len(CORE_METRICS)
     team_pos_target = [0.0] * len(CORE_METRICS)
 
-    # Assemble the 50-feature vector (43 base + 2 raw elo + 2 reep + 3 interaction)
+    # Block 6 — League means (source + target) for per-metric normalisation
+    source_league_means = _compute_league_means(
+        record.pre_transfer_tournament_id, record.pre_transfer_season_id
+    )
+    target_league_means = _compute_league_means(
+        record.post_transfer_tournament_id, record.post_transfer_season_id
+    )
+
+    # Per-metric league-normalised features (Phase 5)
+    league_norm_features = []
+    league_mean_ratio_features = []
+    for m in CORE_METRICS:
+        player_val = player_metrics[CORE_METRICS.index(m)]
+        src_mean = source_league_means.get(m, 0.0)
+        tgt_mean = target_league_means.get(m, 0.0)
+        # How many multiples of source league average the player is
+        if src_mean > 1e-6:
+            league_norm_features.append(min(player_val / src_mean, 20.0))
+        else:
+            league_norm_features.append(0.0)
+        # Ratio of source-to-target league means
+        if tgt_mean > 1e-6:
+            league_mean_ratio_features.append(
+                min(src_mean / tgt_mean, 5.0) if src_mean > 1e-6 else 1.0
+            )
+        else:
+            league_mean_ratio_features.append(1.0)
+
+    # Assemble the 76-feature vector
     ability_gap = team_ability_target - team_ability_current
     features = np.array(
         player_metrics
@@ -671,7 +699,9 @@ def build_training_sample(
         + team_pos_current
         + team_pos_target
         + [ability_gap, ability_gap ** 2,
-           league_ability_target - league_ability_current],
+           league_ability_target - league_ability_current]
+        + league_norm_features
+        + league_mean_ratio_features,
         dtype=np.float32,
     )
 
@@ -758,10 +788,8 @@ def build_training_sample(
         )
     labels_arr = np.nan_to_num(labels_arr, nan=0.0)
 
-    # Compute league means for target league
-    league_means = _compute_league_means(
-        record.post_transfer_tournament_id, record.post_transfer_season_id
-    )
+    # source_league_means and target_league_means already computed above
+    # (Block 6) for per-metric normalisation features.
 
     return {
         "features": features,
@@ -782,7 +810,8 @@ def build_training_sample(
         "pre_per90": {m: float(player_metrics[i]) for i, m in enumerate(CORE_METRICS)},
         "from_pos_avg": {m: float(team_pos_current[i]) for i, m in enumerate(CORE_METRICS)},
         "to_pos_avg": {m: float(team_pos_target[i]) for i, m in enumerate(CORE_METRICS)},
-        "league_means": league_means,
+        "league_means": target_league_means,
+        "source_league_means": source_league_means,
         "used_match_logs_features": used_match_logs_for_features,
         "used_match_logs_labels": used_match_logs_for_labels,
         "minutes_accumulated": minutes_accumulated,
@@ -1159,6 +1188,23 @@ def build_non_transfer_sample(
     position = normalize_position(record.position) or "Forward"
     team_pos = [0.0] * len(CORE_METRICS)
 
+    # League means for per-metric normalisation (same league for non-transfers)
+    league_means = _compute_league_means(record.league_id, record.post_season_id)
+
+    # Per-metric league-normalised features (Phase 5)
+    league_norm_features = []
+    league_mean_ratio_features = []
+    for m in CORE_METRICS:
+        player_val = player_metrics[CORE_METRICS.index(m)]
+        lm = league_means.get(m, 0.0)
+        # How many multiples of league average the player is
+        if lm > 1e-6:
+            league_norm_features.append(min(player_val / lm, 20.0))
+        else:
+            league_norm_features.append(0.0)
+        # Same league → ratio = 1.0
+        league_mean_ratio_features.append(1.0)
+
     # Same team → current == target for all ability and position features
     # Interaction features are all zero (no gap when staying at same club)
     features = np.array(
@@ -1168,7 +1214,9 @@ def build_non_transfer_sample(
         + [nt_height_cm, nt_age]
         + team_pos
         + team_pos  # team_pos_target == team_pos_current
-        + [0.0, 0.0, 0.0],  # interaction: gap=0, gap²=0, league_gap=0
+        + [0.0, 0.0, 0.0]  # interaction: gap=0, gap²=0, league_gap=0
+        + league_norm_features
+        + league_mean_ratio_features,
         dtype=np.float32,
     )
 
@@ -1238,8 +1286,7 @@ def build_non_transfer_sample(
     labels_arr = np.array(labels, dtype=np.float32)
     labels_arr = np.nan_to_num(labels_arr, nan=0.0)
 
-    # Compute league means for target league (same league)
-    league_means = _compute_league_means(record.league_id, record.post_season_id)
+    # league_means already computed above (Block: League means) for features.
 
     return {
         "features": features,
@@ -1260,6 +1307,7 @@ def build_non_transfer_sample(
         "from_pos_avg": {m: float(team_pos[i]) for i, m in enumerate(CORE_METRICS)},
         "to_pos_avg": {m: float(team_pos[i]) for i, m in enumerate(CORE_METRICS)},
         "league_means": league_means,
+        "source_league_means": league_means,  # same league for non-transfers
         "used_match_logs_features": used_match_logs_for_features,
         "used_match_logs_labels": used_match_logs_for_labels,
         "source_club_id": record.club_id,
@@ -2159,10 +2207,11 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 50-feature vector.
+    """Return the ordered list of feature keys matching the 76-feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
-    includes raw Elo, REEP metadata, and the 3 interaction features.
+    includes raw Elo, REEP metadata, interaction features, and
+    per-metric league-normalised features.
     """
     keys = []
     for m in CORE_METRICS:
@@ -2185,6 +2234,11 @@ def _feature_keys_list() -> List[str]:
     keys.append("interaction_ability_gap")
     keys.append("interaction_gap_squared")
     keys.append("interaction_league_gap")
+    # Per-metric league-normalised features (Phase 5)
+    for m in CORE_METRICS:
+        keys.append(f"league_norm_{m}")
+    for m in CORE_METRICS:
+        keys.append(f"league_mean_ratio_{m}")
     return keys
 
 

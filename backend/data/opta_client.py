@@ -85,8 +85,8 @@ class OptaLeagueRanking:
     league: str
     rating: float                   # seasonAverageRating, same 0-100 scale
     ranking_change_7d: Optional[str]
-    country: str = ""
-    number_of_teams: int = 0
+    country: str = ""               # country / region name from league-meta.json
+    number_of_teams: int = 0        # official league size (leagueSize)
 
 
 # ── Internal fetchers ─────────────────────────────────────────────────────────
@@ -165,21 +165,21 @@ def _extract_all_json_parse(js_text: str) -> List[str]:
     return result
 
 
-def _parse_float(value: str, default: float = 0.0) -> float:
-    """Parse a string to float, stripping commas and whitespace."""
+def _parse_float(text: str) -> float:
+    """Parse a float from *text*, stripping commas and whitespace.  Returns 0.0 on failure."""
     try:
-        return float(str(value).strip().replace(",", ""))
-    except (ValueError, TypeError):
-        return default
+        return float(text.strip().replace(",", ""))
+    except (TypeError, ValueError):
+        return 0.0
 
 
-def _parse_int(value: str, default: int = 0) -> int:
-    """Parse a string to int, stripping commas, '#' prefixes and whitespace."""
+def _parse_int(text: str) -> int:
+    """Parse an int from *text*, stripping ``#``, commas, and whitespace.  Returns 0 on failure."""
     try:
-        cleaned = str(value).strip().lstrip("#").replace(",", "")
+        cleaned = text.strip().lstrip("#").replace(",", "")
         return int(float(cleaned))
-    except (ValueError, TypeError):
-        return default
+    except (TypeError, ValueError):
+        return 0
 
 
 def _parse_change(last_week: Optional[str], current: Optional[str]) -> str:
@@ -296,7 +296,7 @@ def _scrape_league_rankings() -> List[OptaLeagueRanking]:
                 rating=float(e.get("seasonAverageRating") or 0),
                 ranking_change_7d=change,
                 country=e.get("countryName", ""),
-                number_of_teams=int(e.get("leagueSize", 0) or 0),
+                number_of_teams=int(float(e.get("leagueSize") or 0)),
             ))
         except Exception as exc:
             _log.debug("Skipping malformed Opta league entry: %s — %s", e, exc)

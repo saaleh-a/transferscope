@@ -274,12 +274,13 @@ def render():
         else None
     )
 
-    # Opta league ratings for the ambition (league step-up) metric
+    # League step-up uses Power-Ranking mean_normalized (same system as
+    # the League Comparison table below) so the numbers are consistent.
     _src_league_code = source_ranking.league_code if source_ranking else None
     _tgt_league_code = target_ranking.league_code if target_ranking else None
-    _src_opta_league = power_rankings.get_league_opta_rating(_src_league_code, current_team)
-    _tgt_opta_league = power_rankings.get_league_opta_rating(_tgt_league_code, target_club_display)
-    _league_step = _tgt_opta_league - _src_opta_league
+    _src_league_rating = source_league_mean  # Power-Ranking mean_normalized (0-100)
+    _tgt_league_rating = target_league_mean  # Power-Ranking mean_normalized (0-100)
+    _league_step = _tgt_league_rating - _src_league_rating
 
     # ── (c) RAG confidence ───────────────────────────────────────────────
     features = rolling_windows.compute_player_features(player_stats)
@@ -355,6 +356,36 @@ def render():
     if not target_pos_avg:
         target_pos_avg = current_per90_clean.copy()
 
+    # ── League means for per-metric normalisation ─────────────────────────
+    _source_league_means: Optional[Dict[str, float]] = None
+    _target_league_means: Optional[Dict[str, float]] = None
+    season_for_means = selected_season_id or player_stats.get("season_id")
+    if tournament_id and season_for_means:
+        try:
+            from backend.models.transfer_portal import _compute_league_means_from_stats
+            src_players = _get_league_players_cached(tournament_id, season_for_means)
+            if src_players:
+                _source_league_means = _compute_league_means_from_stats(src_players)
+        except Exception:
+            pass
+    # Target league means: resolve target team's tournament
+    _target_tournament_id = None
+    if target_team_id:
+        try:
+            _target_tournament_id = sofascore_client.discover_tournament_for_team(
+                target_team_id
+            )
+        except Exception:
+            pass
+    if _target_tournament_id and season_for_means:
+        try:
+            from backend.models.transfer_portal import _compute_league_means_from_stats
+            tgt_players = _get_league_players_cached(_target_tournament_id, season_for_means)
+            if tgt_players:
+                _target_league_means = _compute_league_means_from_stats(tgt_players)
+        except Exception:
+            pass
+
     # Only use the TF model if trained weights have been saved to disk.
     predicted_target = {}
     predicted_current = {}
@@ -375,6 +406,8 @@ def render():
                 raw_elo_target=_raw_elo_target,
                 player_height_cm=_player_height_cm,
                 player_age=_player_age,
+                source_league_means=_source_league_means,
+                target_league_means=_target_league_means,
             )
             predicted_target = model.predict(fd_target)
             # Paper Section 4: simulate at CURRENT club as baseline
@@ -392,6 +425,8 @@ def render():
                 raw_elo_target=_raw_elo_current,
                 player_height_cm=_player_height_cm,
                 player_age=_player_age,
+                source_league_means=_source_league_means,
+                target_league_means=_source_league_means,  # same league baseline
             )
             predicted_current = model.predict(fd_current)
     except Exception as e:
@@ -539,7 +574,7 @@ def render():
         f'<span class="ts-stat-value" style="font-size:1.3rem; color:{_amb_col};">'
         f'{_amb_sign}{_league_step:.1f}</span>'
         f'<span style="font-size:0.72rem; color:{_amb_col};">{_amb_label} '
-        f'({_src_opta_league:.0f} → {_tgt_opta_league:.0f})</span>'
+        f'({_src_league_rating:.0f} → {_tgt_league_rating:.0f})</span>'
         f'</div>'
     )
 
