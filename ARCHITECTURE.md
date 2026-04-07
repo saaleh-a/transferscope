@@ -301,13 +301,14 @@ Input (group-specific feature subset)
 ```
 
 Per-group feature subsets (GROUP_FEATURE_SUBSETS):
-- Shooting: 24 features (player metrics + ability + raw Elo + height + spatial shot + team-pos + interaction)
-- Passing: 32 features
-- Dribbling: 14 features
-- Defending: 20 features
+- Shooting: 36 features (player metrics + additional metrics + ability + raw Elo + height + spatial shot + team-pos + interaction + relative ability + league norm + league mean ratio)
+- Passing: 50 features
+- Dribbling: 22 features
+- Defending: 28 features
 
-Total input feature dict: 55 keys (13 player per-90 + 4 team/league ability
-+ 2 raw Elo + 2 REEP metadata + 5 StatsBomb spatial
+Total input feature dict: 89 keys (13 player core per-90 + 10 additional player metrics
++ 4 team/league ability + 2 raw Elo + 2 REEP metadata
++ 3 relative ability + 13 league norm + 13 league mean ratio
 + 26 team-pos per-90 + 3 interaction: ability_gap, gap², league_gap).
 
 **Raw Elo features** (`raw_elo_current`, `raw_elo_target`) preserve absolute
@@ -351,10 +352,12 @@ with a warning when no trained model exists.
 
 ## Adjustment models
 
-**Team adjustment — 13 sklearn LinearRegression models, one per metric:**
+**Team adjustment — 13 sklearn Ridge regression models (3 features each), one per metric:**
 ```
-target = naive_league_expectation (used as offset)
-       + beta * team_relative_feature_in_previous_league
+target = β₀
+       + β₁ * team_relative_feature  (paper A.1 z_{i,j}: (team_per90 - league_mean) / league_mean)
+       + β₂ * from_ra                (source team relative ability)
+       + β₃ * to_ra                  (target team relative ability)
        + error
 ```
 
@@ -491,9 +494,9 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Pizza/radar charts for player profiles via player_pizza.py component
 - Backtest Validator page: validates predictions against actual post-transfer outcomes
 - Diagnostics page: system health, data source status, cache info
-- 55-feature vector: 43 base + 2 raw Elo + 2 REEP metadata + 5 StatsBomb spatial + 3 interaction
+- 89-feature vector: 13 core + 10 additional + 4 ability + 2 raw Elo + 2 REEP + 3 relative ability + 13 league norm + 13 league mean ratio + 26 team-pos + 3 interaction
 - Raw Elo features preserve absolute cross-league strength that 0-100 normalization loses
-- TeamAdjustmentModel uses both from_ra and to_ra (2-feature) — not single source-only feature
+- TeamAdjustmentModel uses 3 features per metric: team_relative_feature (paper A.1 z_{i,j}), from_ra, to_ra
 - Per-group architecture overrides: dribbling 64→32 + dropout 0.4 (smaller than default 128→64) to combat overfitting with 14 features / 1 target
 
 ---
