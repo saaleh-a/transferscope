@@ -2431,7 +2431,38 @@ def run_pipeline(
             y = np.load(y_path)
             with open(meta_path, "r") as f:
                 metadata = json.load(f)
-            _report("Loaded feature matrices", f"{len(X)} samples from data/models/matrices/")
+
+            # Migrate cached matrices when the feature dimension has changed.
+            # The 76→79 migration adds three relative-ability columns (Phase 6)
+            # at position 50, computed from existing team/league ability columns.
+            if X.shape[1] == 76 and FEATURE_DIM == 79:
+                _log.info(
+                    "Migrating cached matrices from 76 to 79 features "
+                    "(adding relative_ability columns)"
+                )
+                # Columns in the 76-format: 13=team_ability_current,
+                # 14=team_ability_target, 15=league_ability_current,
+                # 16=league_ability_target.
+                rel_current = X[:, 13] - X[:, 15]
+                rel_target = X[:, 14] - X[:, 16]
+                rel_gap = rel_target - rel_current
+                # Insert at position 50 (between interaction and league_norm).
+                new_cols = np.column_stack([rel_current, rel_target, rel_gap])
+                X = np.concatenate(
+                    [X[:, :50], new_cols, X[:, 50:]], axis=1
+                ).astype(np.float32)
+                # Persist the migrated matrix so future runs skip migration.
+                np.save(X_path, X)
+                _log.info("Migrated and saved — X shape now %s", X.shape)
+            elif X.shape[1] != FEATURE_DIM:
+                _report(
+                    "WARNING: cached X has %d features but model expects %d — "
+                    "rebuilding from API" % (X.shape[1], FEATURE_DIM),
+                )
+                skip_build = False
+
+            if skip_build:
+                _report("Loaded feature matrices", f"{len(X)} samples from data/models/matrices/")
         else:
             _report("WARNING: --skip-build set but no matrices found — building from API")
             skip_build = False
