@@ -1228,3 +1228,176 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertIn("interaction_ability_gap", keys)
         self.assertIn("interaction_gap_squared", keys)
         self.assertIn("interaction_league_gap", keys)
+
+
+class TestCachedMatrixMigration(unittest.TestCase):
+    """Tests for the 76→79 cached feature matrix migration in run_pipeline()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.matrices_dir = os.path.join(self.tmpdir, "models", "matrices")
+        os.makedirs(self.matrices_dir)
+
+        # Build a deterministic legacy (76-col) matrix.
+        # Columns 13-16 are team/league abilities used by the migration.
+        from backend.models.training_pipeline import _feature_keys_list
+
+        keys = _feature_keys_list()
+        relative_keys = {
+            "relative_ability_current",
+            "relative_ability_target",
+            "relative_ability_gap",
+        }
+        self.legacy_dim = len([k for k in keys if k not in relative_keys])
+        self.n_samples = 5
+        rng = np.random.RandomState(42)
+        self.X_legacy = rng.rand(self.n_samples, self.legacy_dim).astype(np.float32)
+
+        # Identify legacy column positions for team/league ability
+        legacy_keys = [k for k in keys if k not in relative_keys]
+        self.col_team_current = legacy_keys.index("team_ability_current")
+        self.col_team_target = legacy_keys.index("team_ability_target")
+        self.col_league_current = legacy_keys.index("league_ability_current")
+        self.col_league_target = legacy_keys.index("league_ability_target")
+
+        # Also identify insert position (where relative_ability_* would go)
+        self.insert_pos = min(keys.index(k) for k in relative_keys)
+
+        # Save legacy matrices + minimal metadata
+        np.save(os.path.join(self.matrices_dir, "X.npy"), self.X_legacy)
+        np.save(
+            os.path.join(self.matrices_dir, "y.npy"),
+            rng.rand(self.n_samples, 13).astype(np.float32),
+        )
+        with open(os.path.join(self.matrices_dir, "metadata.json"), "w") as f:
+            json.dump({"version": "legacy"}, f)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _run_pipeline_skip_build(self):
+        """Run pipeline with skip_build=True, patching paths to tmpdir."""
+        from backend.models import training_pipeline as tp
+
+        # Patch _MODELS_DIR so run_pipeline reads from our tmpdir
+        models_dir = os.path.join(self.tmpdir, "models")
+        with (
+            mock.patch.object(tp, "_MODELS_DIR", models_dir),
+            mock.patch.object(tp, "DEFAULT_LEAGUE_CODES", ["ENG1"]),
+        ):
+            # We need at least 10 transfer records for the pipeline to proceed
+            # past the early return, so mock the discovery/loading path.
+            fake_records = [_make_mock_transfer_record() for _ in range(15)]
+            records_path = os.path.join(models_dir, "transfer_records.json")
+            from dataclasses import asdict
+
+            with open(records_path, "w") as f:
+                json.dump([asdict(r) for r in fake_records], f, default=str)
+
+            # Run with skip_build=True, skip_discovery=True, skip_training=True
+            # so only the matrix loading + migration code executes.
+            result = tp.run_pipeline(
+                skip_discovery=True,
+                skip_build=True,
+                skip_training=True,
+            )
+        return result
+
+    def test_migration_produces_correct_shape(self):
+        """76→79 migration should produce a matrix with FEATURE_DIM columns."""
+        self._run_pipeline_skip_build()
+
+        X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
+        self.assertEqual(X_migrated.shape, (self.n_samples, FEATURE_DIM))
+
+    def test_migration_computes_correct_values(self):
+        """Migrated relative_ability columns should equal team − league ability."""
+        self._run_pipeline_skip_build()
+
+        X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
+        pos = self.insert_pos
+
+        expected_rel_current = (
+            self.X_legacy[:, self.col_team_current]
+            - self.X_legacy[:, self.col_league_current]
+        )
+        expected_rel_target = (
+            self.X_legacy[:, self.col_team_target]
+            - self.X_legacy[:, self.col_league_target]
+        )
+        expected_rel_gap = expected_rel_target - expected_rel_current
+
+        np.testing.assert_allclose(
+            X_migrated[:, pos], expected_rel_current, atol=1e-6
+        )
+        np.testing.assert_allclose(
+            X_migrated[:, pos + 1], expected_rel_target, atol=1e-6
+        )
+        np.testing.assert_allclose(
+            X_migrated[:, pos + 2], expected_rel_gap, atol=1e-6
+        )
+
+    def test_migration_preserves_original_columns(self):
+        """Original 76 columns should be preserved around the inserted ones."""
+        self._run_pipeline_skip_build()
+
+        X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
+        pos = self.insert_pos
+
+        # Columns before insert position should be identical
+        np.testing.assert_array_equal(
+            X_migrated[:, :pos], self.X_legacy[:, :pos]
+        )
+        # Columns after insert position should be the tail of the original
+        np.testing.assert_array_equal(
+            X_migrated[:, pos + 3 :], self.X_legacy[:, pos:]
+        )
+
+    def test_migration_persists_to_disk(self):
+        """After migration, X.npy on disk should have the new shape."""
+        self._run_pipeline_skip_build()
+
+        X_path = os.path.join(self.matrices_dir, "X.npy")
+        X_reloaded = np.load(X_path)
+        self.assertEqual(X_reloaded.shape[1], FEATURE_DIM)
+
+    def test_unknown_dimension_forces_rebuild(self):
+        """Unexpected column count (not 76 or 79) should clear skip_build."""
+        # Save a matrix with a completely wrong number of columns
+        wrong_dim = 60
+        rng = np.random.RandomState(99)
+        X_wrong = rng.rand(self.n_samples, wrong_dim).astype(np.float32)
+        np.save(os.path.join(self.matrices_dir, "X.npy"), X_wrong)
+
+        from backend.models import training_pipeline as tp
+
+        models_dir = os.path.join(self.tmpdir, "models")
+        with (
+            mock.patch.object(tp, "_MODELS_DIR", models_dir),
+            mock.patch.object(tp, "DEFAULT_LEAGUE_CODES", ["ENG1"]),
+        ):
+            fake_records = [_make_mock_transfer_record() for _ in range(15)]
+            records_path = os.path.join(models_dir, "transfer_records.json")
+            from dataclasses import asdict
+
+            with open(records_path, "w") as f:
+                json.dump([asdict(r) for r in fake_records], f, default=str)
+
+            # When skip_build is cleared, the pipeline calls
+            # discover_non_transfers.  Patch it to detect the rebuild attempt.
+            with mock.patch.object(
+                tp, "discover_non_transfers", return_value=[]
+            ) as mock_discover:
+                try:
+                    tp.run_pipeline(
+                        skip_discovery=True,
+                        skip_build=True,
+                        skip_training=True,
+                    )
+                except Exception:
+                    pass  # Expected — no real API in test
+
+            self.assertTrue(
+                mock_discover.called,
+                "Pipeline should attempt rebuild when cached X has unexpected dimensions",
+            )
