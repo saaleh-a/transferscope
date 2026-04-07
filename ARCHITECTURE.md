@@ -304,7 +304,7 @@ Per-group feature subsets (GROUP_FEATURE_SUBSETS):
 - Shooting: 36 features (player metrics + additional metrics + ability + raw Elo + height + spatial shot + team-pos + interaction + relative ability + league norm + league mean ratio)
 - Passing: 50 features
 - Dribbling: 22 features
-- Defending: 28 features
+- Defending: 33 features
 
 Total input feature dict: 89 keys (13 player core per-90 + 10 additional player metrics
 + 4 team/league ability + 2 raw Elo + 2 REEP metadata

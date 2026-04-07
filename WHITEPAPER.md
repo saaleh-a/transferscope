@@ -130,11 +130,11 @@ This means a player at a worse team **can improve or decline** at a bigger team,
 | Shooting | 36 | xG, Shots | 2 |
 | Passing | 50 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area Entries | 7 |
 | Dribbling | 22 | Take-ons | 1 |
-| Defending | 28 | Clearances, Interceptions, Possession Won Final 3rd | 3 |
+| Defending | 33 | Clearances, Interceptions, Possession Won Final 3rd | 3 |
 
 Each group has the same architecture: Input → Dense(128, ReLU) → BatchNormalization → Dropout(0.3) → Dense(64, ReLU) → BatchNormalization → Dropout(0.3) → Linear output heads (dribbling uses 64→32 + dropout 0.4). Trained with Adam optimizer and Huber loss (delta=1.0) with L2 regularization. `DELTA_SHRINKAGE=0.85`. Auto-loads trained weights from `data/models/` when available; falls back to `paper_heuristic_predict()` when untrained.
 
-> **In plain English:** The neural network is the "brain" of the system. A full set of 89 numbers about a player is assembled (their current stats including 10 additional metrics, team strength, league strength, raw Elo scores, REEP metadata, relative ability, league normalisation features, what position players typically do at both clubs, plus interaction features). But each specialist group only sees the subset relevant to its job — the shooting brain gets 36 features, the passing brain 50, the dribbling brain 22, and the defending brain 28. Each group outputs its predictions for that stat type. This focus makes each specialist better at its job.
+> **In plain English:** The neural network is the "brain" of the system. A full set of 89 numbers about a player is assembled (their current stats including 10 additional metrics, team strength, league strength, raw Elo scores, REEP metadata, relative ability, league normalisation features, what position players typically do at both clubs, plus interaction features). But each specialist group only sees the subset relevant to its job — the shooting brain gets 36 features, the passing brain 50, the dribbling brain 22, and the defending brain 33. Each group outputs its predictions for that stat type. This focus makes each specialist better at its job.
 >
 > The "Dropout(0.3)" bit means the model randomly ignores 30% of its connections during training — this is like studying by covering up parts of your notes and forcing yourself to remember. It prevents the model from memorizing specific examples and helps it generalize to new players it hasn't seen before.
 
@@ -149,7 +149,6 @@ The full 89-feature dictionary is assembled from:
 - 13 league mean ratio features (source mean / target mean)
 - 26 team-position per-90 metrics (13 current + 13 target)
 - 3 interaction features (ability gap, gap², league gap)
-- 3 interaction features (ability_gap, gap_squared, league_gap)
 
 Each group slices only its relevant features internally (GROUP_FEATURE_SUBSETS), reducing noise — dribbling doesn't need passing team-position averages.
 
