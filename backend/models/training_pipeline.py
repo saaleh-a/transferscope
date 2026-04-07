@@ -2431,7 +2431,45 @@ def run_pipeline(
             y = np.load(y_path)
             with open(meta_path, "r") as f:
                 metadata = json.load(f)
-            _report("Loaded feature matrices", f"{len(X)} samples from data/models/matrices/")
+
+            # Migrate cached matrices when the feature dimension has changed.
+            # Phase 6 added 3 relative-ability columns (team_ability − league_ability)
+            # at the position between interaction and league_norm features.
+            # This one-time migration can be removed once all cached matrices
+            # have been upgraded.
+            _LEGACY_DIM_PHASE5 = 76   # before relative_ability was added
+            _COL_TEAM_ABILITY_CURRENT = 13
+            _COL_TEAM_ABILITY_TARGET = 14
+            _COL_LEAGUE_ABILITY_CURRENT = 15
+            _COL_LEAGUE_ABILITY_TARGET = 16
+            _REL_ABILITY_INSERT_POS = 50  # after interaction, before league_norm
+
+            if X.shape[1] == _LEGACY_DIM_PHASE5 and FEATURE_DIM == _LEGACY_DIM_PHASE5 + 3:
+                _log.info(
+                    "Migrating cached matrices from %d to %d features "
+                    "(adding relative_ability columns)",
+                    _LEGACY_DIM_PHASE5, FEATURE_DIM,
+                )
+                rel_current = X[:, _COL_TEAM_ABILITY_CURRENT] - X[:, _COL_LEAGUE_ABILITY_CURRENT]
+                rel_target = X[:, _COL_TEAM_ABILITY_TARGET] - X[:, _COL_LEAGUE_ABILITY_TARGET]
+                rel_gap = rel_target - rel_current
+                new_cols = np.column_stack([rel_current, rel_target, rel_gap])
+                X = np.concatenate(
+                    [X[:, :_REL_ABILITY_INSERT_POS], new_cols,
+                     X[:, _REL_ABILITY_INSERT_POS:]], axis=1,
+                ).astype(np.float32)
+                # Persist the migrated matrix so future runs skip migration.
+                np.save(X_path, X)
+                _log.info("Migrated and saved — X shape now %s", X.shape)
+            elif X.shape[1] != FEATURE_DIM:
+                _report(
+                    "WARNING: cached X has %d features but model expects %d — "
+                    "rebuilding from API" % (X.shape[1], FEATURE_DIM),
+                )
+                skip_build = False
+
+            if skip_build:
+                _report("Loaded feature matrices", f"{len(X)} samples from data/models/matrices/")
         else:
             _report("WARNING: --skip-build set but no matrices found — building from API")
             skip_build = False
