@@ -2437,14 +2437,29 @@ def run_pipeline(
             # at the position between interaction and league_norm features.
             # This one-time migration can be removed once all cached matrices
             # have been upgraded.
-            _LEGACY_DIM_PHASE5 = 76   # before relative_ability was added
-            _COL_TEAM_ABILITY_CURRENT = 13
-            _COL_TEAM_ABILITY_TARGET = 14
-            _COL_LEAGUE_ABILITY_CURRENT = 15
-            _COL_LEAGUE_ABILITY_TARGET = 16
-            _REL_ABILITY_INSERT_POS = 50  # after interaction, before league_norm
+            _feature_keys = _feature_keys_list()
+            _relative_ability_keys = [
+                "relative_ability_current",
+                "relative_ability_target",
+                "relative_ability_gap",
+            ]
+            _legacy_feature_keys = [
+                key for key in _feature_keys if key not in set(_relative_ability_keys)
+            ]
+            _LEGACY_DIM_PHASE5 = len(_legacy_feature_keys)
+            _REL_ABILITY_INSERT_POS = min(
+                _feature_keys.index(key) for key in _relative_ability_keys
+            )
 
-            if X.shape[1] == _LEGACY_DIM_PHASE5 and FEATURE_DIM == _LEGACY_DIM_PHASE5 + 3:
+            def _legacy_feature_index(feature_key: str) -> int:
+                return _legacy_feature_keys.index(feature_key)
+
+            _COL_TEAM_ABILITY_CURRENT = _legacy_feature_index("team_ability_current")
+            _COL_TEAM_ABILITY_TARGET = _legacy_feature_index("team_ability_target")
+            _COL_LEAGUE_ABILITY_CURRENT = _legacy_feature_index("league_ability_current")
+            _COL_LEAGUE_ABILITY_TARGET = _legacy_feature_index("league_ability_target")
+
+            if X.shape[1] == _LEGACY_DIM_PHASE5 and FEATURE_DIM == _LEGACY_DIM_PHASE5 + len(_relative_ability_keys):
                 _log.info(
                     "Migrating cached matrices from %d to %d features "
                     "(adding relative_ability columns)",
