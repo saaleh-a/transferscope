@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from backend.data.sofascore_client import CORE_METRICS
+from backend.data.sofascore_client import ADDITIONAL_METRICS, CORE_METRICS
 from backend.features import power_rankings
 from backend.models.transfer_portal import (
     FEATURE_DIM,
@@ -106,14 +106,18 @@ def _prediction_confidence(X_row: np.ndarray) -> float:
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 79-feature vector.
+    """Return the ordered list of feature keys matching the 89-feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
     includes raw Elo, REEP metadata, interaction features, relative
-    dominance features, and per-metric league-normalised features.
+    dominance features, per-metric league-normalised features, and
+    10 additional player metrics (enrichment inputs).
     """
     keys = []
     for m in CORE_METRICS:
+        keys.append(f"player_{m}")
+    # Additional player metrics (enrichment inputs, not prediction targets)
+    for m in ADDITIONAL_METRICS:
         keys.append(f"player_{m}")
     keys.extend([
         "team_ability_current", "team_ability_target",

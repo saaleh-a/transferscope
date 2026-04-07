@@ -605,12 +605,13 @@ class TestErrorHandling(unittest.TestCase):
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
-        # Team-position features should be zeros (indices 21-47 in new layout)
-        # Layout: [0:13] player, [13:17] abilities, [17:19] raw_elo,
-        #          [19:21] reep, [21:34] pos_current,
-        #          [34:47] pos_target, [47:50] interactions.
+        # Team-position features should be zeros (indices 31-57 in new layout)
+        # Layout: [0:13] player_core, [13:23] player_additional,
+        #          [23:27] abilities, [27:29] raw_elo,
+        #          [29:31] reep, [31:44] pos_current,
+        #          [44:57] pos_target, [57:60] interactions.
         features = result["features"]
-        team_pos_slice = features[21:47]
+        team_pos_slice = features[31:57]
         np.testing.assert_array_equal(team_pos_slice, 0.0)
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
@@ -869,7 +870,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_team_name="Target FC",
         )
 
-        # Should have all 50 keys (FEATURE_DIM)
+        # Should have all keys (FEATURE_DIM = 89)
         self.assertEqual(len(result), FEATURE_DIM)
 
         # Player metrics should reflect match log rolling values (1.5), not season agg (0.3)
@@ -907,7 +908,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_team_name="Target FC",
         )
 
-        # Should have all 50 keys (FEATURE_DIM)
+        # Should have all keys (FEATURE_DIM = 89)
         self.assertEqual(len(result), FEATURE_DIM)
 
         # Player metrics should reflect season agg (0.8)
@@ -1215,7 +1216,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertEqual(tp_keys, ref_keys)
 
     def test_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (79)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (89)."""
         from backend.models.training_pipeline import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
@@ -1231,37 +1232,18 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
 
 
 class TestCachedMatrixMigration(unittest.TestCase):
-    """Tests for the 76→79 cached feature matrix migration in run_pipeline()."""
+    """Tests for the 79→89 cached feature matrix migration in run_pipeline()."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
         self.matrices_dir = os.path.join(self.tmpdir, "models", "matrices")
         os.makedirs(self.matrices_dir)
 
-        # Build a deterministic legacy (76-col) matrix.
-        # Columns 13-16 are team/league abilities used by the migration.
-        from backend.models.training_pipeline import _feature_keys_list
-
-        keys = _feature_keys_list()
-        relative_keys = {
-            "relative_ability_current",
-            "relative_ability_target",
-            "relative_ability_gap",
-        }
-        self.legacy_dim = len([k for k in keys if k not in relative_keys])
+        # Build a deterministic legacy (79-col) matrix.
+        self.legacy_dim = 79
         self.n_samples = 5
         rng = np.random.RandomState(42)
         self.X_legacy = rng.rand(self.n_samples, self.legacy_dim).astype(np.float32)
-
-        # Identify legacy column positions for team/league ability
-        legacy_keys = [k for k in keys if k not in relative_keys]
-        self.col_team_current = legacy_keys.index("team_ability_current")
-        self.col_team_target = legacy_keys.index("team_ability_target")
-        self.col_league_current = legacy_keys.index("league_ability_current")
-        self.col_league_target = legacy_keys.index("league_ability_target")
-
-        # Also identify insert position (where relative_ability_* would go)
-        self.insert_pos = min(keys.index(k) for k in relative_keys)
 
         # Save legacy matrices + minimal metadata
         np.save(os.path.join(self.matrices_dir, "X.npy"), self.X_legacy)
@@ -1304,53 +1286,35 @@ class TestCachedMatrixMigration(unittest.TestCase):
         return result
 
     def test_migration_produces_correct_shape(self):
-        """76→79 migration should produce a matrix with FEATURE_DIM columns."""
+        """79→89 migration should produce a matrix with FEATURE_DIM columns."""
         self._run_pipeline_skip_build()
 
         X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
         self.assertEqual(X_migrated.shape, (self.n_samples, FEATURE_DIM))
 
-    def test_migration_computes_correct_values(self):
-        """Migrated relative_ability columns should equal team − league ability."""
+    def test_migration_inserts_zeros_for_additional_metrics(self):
+        """Migrated additional metric columns (13:23) should be all zeros."""
         self._run_pipeline_skip_build()
 
         X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
-        pos = self.insert_pos
-
-        expected_rel_current = (
-            self.X_legacy[:, self.col_team_current]
-            - self.X_legacy[:, self.col_league_current]
-        )
-        expected_rel_target = (
-            self.X_legacy[:, self.col_team_target]
-            - self.X_legacy[:, self.col_league_target]
-        )
-        expected_rel_gap = expected_rel_target - expected_rel_current
-
-        np.testing.assert_allclose(
-            X_migrated[:, pos], expected_rel_current, atol=1e-6
-        )
-        np.testing.assert_allclose(
-            X_migrated[:, pos + 1], expected_rel_target, atol=1e-6
-        )
-        np.testing.assert_allclose(
-            X_migrated[:, pos + 2], expected_rel_gap, atol=1e-6
-        )
+        # Additional metrics inserted at position 13 (after 13 core player metrics)
+        additional_slice = X_migrated[:, 13:23]
+        np.testing.assert_array_equal(additional_slice, 0.0)
 
     def test_migration_preserves_original_columns(self):
-        """Original 76 columns should be preserved around the inserted ones."""
+        """Original 79 columns should be preserved around the inserted ones."""
         self._run_pipeline_skip_build()
 
         X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
-        pos = self.insert_pos
+        insert_pos = 13  # after 13 core player metrics
 
         # Columns before insert position should be identical
         np.testing.assert_array_equal(
-            X_migrated[:, :pos], self.X_legacy[:, :pos]
+            X_migrated[:, :insert_pos], self.X_legacy[:, :insert_pos]
         )
         # Columns after insert position should be the tail of the original
         np.testing.assert_array_equal(
-            X_migrated[:, pos + 3 :], self.X_legacy[:, pos:]
+            X_migrated[:, insert_pos + 10:], self.X_legacy[:, insert_pos:]
         )
 
     def test_migration_persists_to_disk(self):
@@ -1362,7 +1326,7 @@ class TestCachedMatrixMigration(unittest.TestCase):
         self.assertEqual(X_reloaded.shape[1], FEATURE_DIM)
 
     def test_unknown_dimension_forces_rebuild(self):
-        """Unexpected column count (not 76 or 79) should clear skip_build."""
+        """Unexpected column count (not 79 or 89) should clear skip_build."""
         # Save a matrix with a completely wrong number of columns
         wrong_dim = 60
         rng = np.random.RandomState(99)

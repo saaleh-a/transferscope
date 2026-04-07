@@ -39,7 +39,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from backend.data import cache, sofascore_client
-from backend.data.sofascore_client import CORE_METRICS, normalize_position
+from backend.data.sofascore_client import ADDITIONAL_METRICS, CORE_METRICS, normalize_position
 from backend.features import power_rankings
 from backend.features.adjustment_models import (
     PlayerAdjustmentModel,
@@ -577,6 +577,18 @@ def build_training_sample(
             val = float(v)
         player_metrics.append(val)
 
+    # Extract 10 additional metrics — enrichment inputs (not targets)
+    additional_player_metrics = []
+    for m in ADDITIONAL_METRICS:
+        v = pre_per90.get(m)
+        if v is None:
+            val = 0.0
+        elif np.isnan(v):
+            val = 0.0
+        else:
+            val = float(v)
+        additional_player_metrics.append(val)
+
     # Block 2 — Team ability (2 values)
     # Parse transfer_date so historical Elo is used instead of today's.
     # Falling back to None (= today) only when the date is missing/unparseable.
@@ -688,12 +700,13 @@ def build_training_sample(
         else:
             league_mean_ratio_features.append(1.0)
 
-    # Assemble the 79-feature vector
+    # Assemble the 89-feature vector
     ability_gap = team_ability_target - team_ability_current
     rel_current = team_ability_current - league_ability_current
     rel_target = team_ability_target - league_ability_target
     features = np.array(
         player_metrics
+        + additional_player_metrics
         + [team_ability_current, team_ability_target,
            league_ability_current, league_ability_target]
         + [raw_elo_current, raw_elo_target]
@@ -1143,6 +1156,18 @@ def build_non_transfer_sample(
             val = float(v)
         player_metrics.append(val)
 
+    # Extract 10 additional metrics — enrichment inputs (not targets)
+    additional_player_metrics = []
+    for m in ADDITIONAL_METRICS:
+        v = pre_per90.get(m)
+        if v is None:
+            val = 0.0
+        elif np.isnan(v):
+            val = 0.0
+        else:
+            val = float(v)
+        additional_player_metrics.append(val)
+
     # Power rankings — same club so current == target
     try:
         team_rankings, league_snapshots = power_rankings.compute_daily_rankings()
@@ -1213,6 +1238,7 @@ def build_non_transfer_sample(
     nt_rel = team_ability - league_ability
     features = np.array(
         player_metrics
+        + additional_player_metrics
         + [team_ability, team_ability, league_ability, league_ability]
         + [raw_elo, raw_elo]
         + [nt_height_cm, nt_age]
@@ -2323,14 +2349,18 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 79-feature vector.
+    """Return the ordered list of feature keys matching the 89-feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
     includes raw Elo, REEP metadata, interaction features, relative
-    dominance features, and per-metric league-normalised features.
+    dominance features, per-metric league-normalised features, and
+    10 additional player metrics (enrichment inputs).
     """
     keys = []
     for m in CORE_METRICS:
+        keys.append(f"player_{m}")
+    # Additional player metrics (enrichment inputs, not prediction targets)
+    for m in ADDITIONAL_METRICS:
         keys.append(f"player_{m}")
     keys.extend([
         "team_ability_current", "team_ability_target",
@@ -2498,49 +2528,28 @@ def run_pipeline(
                 metadata = json.load(f)
 
             # Migrate cached matrices when the feature dimension has changed.
-            # Phase 6 added 3 relative-ability columns (team_ability − league_ability)
-            # at the position between interaction and league_norm features.
-            # This one-time migration can be removed once all cached matrices
-            # have been upgraded.
-            _feature_keys = _feature_keys_list()
-            _relative_ability_keys = [
-                "relative_ability_current",
-                "relative_ability_target",
-                "relative_ability_gap",
-            ]
-            _legacy_feature_keys = [
-                key for key in _feature_keys if key not in set(_relative_ability_keys)
-            ]
-            _LEGACY_DIM_PHASE5 = len(_legacy_feature_keys)
-            _REL_ABILITY_INSERT_POS = min(
-                _feature_keys.index(key) for key in _relative_ability_keys
-            )
-
-            def _legacy_feature_index(feature_key: str) -> int:
-                return _legacy_feature_keys.index(feature_key)
-
-            _COL_TEAM_ABILITY_CURRENT = _legacy_feature_index("team_ability_current")
-            _COL_TEAM_ABILITY_TARGET = _legacy_feature_index("team_ability_target")
-            _COL_LEAGUE_ABILITY_CURRENT = _legacy_feature_index("league_ability_current")
-            _COL_LEAGUE_ABILITY_TARGET = _legacy_feature_index("league_ability_target")
-
-            if X.shape[1] == _LEGACY_DIM_PHASE5 and FEATURE_DIM == _LEGACY_DIM_PHASE5 + len(_relative_ability_keys):
+            #
+            # Phase 7: 79→89 migration — insert 10 zero-filled additional
+            # player metric columns after the 13 core player metrics.
+            # Phase 6 (76→79) migration is no longer needed as all
+            # cached matrices should already be at 79 columns.
+            _LEGACY_DIM_PHASE6 = 79
+            _N_ADDITIONAL = len(ADDITIONAL_METRICS)  # 10
+            _ADDITIONAL_INSERT_POS = len(CORE_METRICS)  # after 13 core player metrics
+            if X.shape[1] == _LEGACY_DIM_PHASE6 and FEATURE_DIM == _LEGACY_DIM_PHASE6 + _N_ADDITIONAL:
                 _log.info(
                     "Migrating cached matrices from %d to %d features "
-                    "(adding relative_ability columns)",
-                    _LEGACY_DIM_PHASE5, FEATURE_DIM,
+                    "(adding %d additional player metric columns)",
+                    _LEGACY_DIM_PHASE6, FEATURE_DIM, _N_ADDITIONAL,
                 )
-                rel_current = X[:, _COL_TEAM_ABILITY_CURRENT] - X[:, _COL_LEAGUE_ABILITY_CURRENT]
-                rel_target = X[:, _COL_TEAM_ABILITY_TARGET] - X[:, _COL_LEAGUE_ABILITY_TARGET]
-                rel_gap = rel_target - rel_current
-                new_cols = np.column_stack([rel_current, rel_target, rel_gap])
+                zeros = np.zeros((X.shape[0], _N_ADDITIONAL), dtype=np.float32)
                 X = np.concatenate(
-                    [X[:, :_REL_ABILITY_INSERT_POS], new_cols,
-                     X[:, _REL_ABILITY_INSERT_POS:]], axis=1,
+                    [X[:, :_ADDITIONAL_INSERT_POS], zeros,
+                     X[:, _ADDITIONAL_INSERT_POS:]], axis=1,
                 ).astype(np.float32)
-                # Persist the migrated matrix so future runs skip migration.
                 np.save(X_path, X)
                 _log.info("Migrated and saved — X shape now %s", X.shape)
+
             elif X.shape[1] != FEATURE_DIM:
                 _report(
                     "WARNING: cached X has %d features but model expects %d — "
