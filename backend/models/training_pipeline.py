@@ -2026,7 +2026,7 @@ def train_neural_network(
                 lr = self.start_lr + (self.target_lr - self.start_lr) * (
                     (epoch + 1) / self.warmup_epochs
                 )
-                tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
+                self.model.optimizer.learning_rate.assign(lr)
 
     for group_name, targets in MODEL_GROUPS.items():
         # Get target columns
