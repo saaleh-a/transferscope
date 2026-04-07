@@ -2433,23 +2433,30 @@ def run_pipeline(
                 metadata = json.load(f)
 
             # Migrate cached matrices when the feature dimension has changed.
-            # The 76→79 migration adds three relative-ability columns (Phase 6)
-            # at position 50, computed from existing team/league ability columns.
-            if X.shape[1] == 76 and FEATURE_DIM == 79:
+            # Phase 6 added 3 relative-ability columns (team_ability − league_ability)
+            # at the position between interaction and league_norm features.
+            # This one-time migration can be removed once all cached matrices
+            # have been upgraded.
+            _LEGACY_DIM_PHASE5 = 76   # before relative_ability was added
+            _COL_TEAM_ABILITY_CURRENT = 13
+            _COL_TEAM_ABILITY_TARGET = 14
+            _COL_LEAGUE_ABILITY_CURRENT = 15
+            _COL_LEAGUE_ABILITY_TARGET = 16
+            _REL_ABILITY_INSERT_POS = 50  # after interaction, before league_norm
+
+            if X.shape[1] == _LEGACY_DIM_PHASE5 and FEATURE_DIM == _LEGACY_DIM_PHASE5 + 3:
                 _log.info(
-                    "Migrating cached matrices from 76 to 79 features "
-                    "(adding relative_ability columns)"
+                    "Migrating cached matrices from %d to %d features "
+                    "(adding relative_ability columns)",
+                    _LEGACY_DIM_PHASE5, FEATURE_DIM,
                 )
-                # Columns in the 76-format: 13=team_ability_current,
-                # 14=team_ability_target, 15=league_ability_current,
-                # 16=league_ability_target.
-                rel_current = X[:, 13] - X[:, 15]
-                rel_target = X[:, 14] - X[:, 16]
+                rel_current = X[:, _COL_TEAM_ABILITY_CURRENT] - X[:, _COL_LEAGUE_ABILITY_CURRENT]
+                rel_target = X[:, _COL_TEAM_ABILITY_TARGET] - X[:, _COL_LEAGUE_ABILITY_TARGET]
                 rel_gap = rel_target - rel_current
-                # Insert at position 50 (between interaction and league_norm).
                 new_cols = np.column_stack([rel_current, rel_target, rel_gap])
                 X = np.concatenate(
-                    [X[:, :50], new_cols, X[:, 50:]], axis=1
+                    [X[:, :_REL_ABILITY_INSERT_POS], new_cols,
+                     X[:, _REL_ABILITY_INSERT_POS:]], axis=1,
                 ).astype(np.float32)
                 # Persist the migrated matrix so future runs skip migration.
                 np.save(X_path, X)
