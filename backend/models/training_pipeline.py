@@ -1917,50 +1917,42 @@ def train_neural_network(
     # (e.g. successful_passes 30-80 vs expected_goals 0-1)
     target_scalers: Dict[str, StandardScaler] = {}
 
-    # ── Data quality filter ──────────────────────────────────────────────────
-    # Remove training samples where pre-transfer xG is missing (zero) for
-    # non-GK players.  Sofascore tracks shots for almost all leagues but only
-    # tracks xG for the top ~30 leagues.  When pre_xG = 0 the "delta" label
+    # ── Data quality: per-metric loss masking for missing xG ────────────────
+    # Sofascore tracks shots for almost all leagues but only tracks xG for
+    # the top ~30.  When pre_xG = 0 the "delta" label for expected_goals
     # becomes y_delta = post_xG − 0 = absolute post_xG (not a real delta).
-    # This corrupts the gradient for all attacking metrics for ~17% of samples.
-    # Goalkeepers legitimately score no xG so we exempt position == "G".
+    # Instead of dropping these samples entirely (losing ~17% of all
+    # passing/defending/dribbling labels), we keep them and use per-sample
+    # weight masking: the *shooting* group zeros out the sample weight for
+    # affected rows so only the xG/shots head ignores them, while all other
+    # groups still learn from the full 12 non-shooting metrics.
+    # Goalkeepers legitimately have xG=0 so we exempt position == "G".
     XG_COL = CORE_METRICS.index("expected_goals")
+    xg_zero_mask_train = np.zeros(len(X_train), dtype=bool)
+    xg_zero_mask_val = np.zeros(len(X_val), dtype=bool)
+
     if meta_train:
         gk_mask = np.array([m.get("position", "?") == "G" for m in meta_train])
-        # Drop non-GK samples where pre-transfer xG is 0 (missing, not real)
-        drop_mask = (X_train[:, XG_COL] == 0) & ~gk_mask
-        n_dropped = int(drop_mask.sum())
-        if n_dropped:
-            keep = ~drop_mask
+        xg_zero_mask_train = (X_train[:, XG_COL] == 0) & ~gk_mask
+        n_masked = int(xg_zero_mask_train.sum())
+        if n_masked:
             _log.info(
-                "Data quality filter: dropping %d / %d training samples "
-                "with missing pre-transfer xG (non-GK, xG=0 from league without xG tracking)",
-                n_dropped, len(X_train),
+                "Per-metric loss masking: %d / %d training samples have "
+                "missing pre-transfer xG (non-GK) — shooting group will "
+                "zero-weight these; other groups keep them",
+                n_masked, len(X_train),
             )
-            X_train = X_train[keep]
-            y_train = y_train[keep]
-            meta_train = [m for m, k in zip(meta_train, keep) if k]
-            X_train_scaled = scaler.transform(X_train)   # re-scale filtered set
 
-    # Apply the same quality filter to validation so early-stopping monitors a
-    # clean signal.  Without this, zero-xG non-GK samples in val produce
-    # corrupted delta labels (delta = absolute post_xG) which inflate val_loss
-    # and cause early stopping to fire too soon.
     if meta_val:
         gk_mask_val = np.array([m.get("position", "?") == "G" for m in meta_val])
-        drop_mask_val = (X_val[:, XG_COL] == 0) & ~gk_mask_val
-        n_dropped_val = int(drop_mask_val.sum())
-        if n_dropped_val:
-            keep_val = ~drop_mask_val
+        xg_zero_mask_val = (X_val[:, XG_COL] == 0) & ~gk_mask_val
+        n_masked_val = int(xg_zero_mask_val.sum())
+        if n_masked_val:
             _log.info(
-                "Data quality filter (val): dropping %d / %d validation samples "
-                "with missing pre-transfer xG",
-                n_dropped_val, len(X_val),
+                "Per-metric loss masking (val): %d / %d validation samples "
+                "have missing pre-transfer xG",
+                n_masked_val, len(X_val),
             )
-            X_val = X_val[keep_val]
-            y_val = y_val[keep_val]
-            meta_val = [m for m, k in zip(meta_val, keep_val) if k]
-            X_val_scaled = scaler.transform(X_val)
 
     # Compute deltas: train model to predict (post - pre) instead of absolute
     # post-transfer values.  Pre-transfer per-90 is already an excellent
@@ -2011,6 +2003,31 @@ def train_neural_network(
             _log.warning("All confidence values are zero -- using uniform sample weights")
             sample_weights = None
 
+    # ── LR Warmup callback ─────────────────────────────────────────────────
+    # Linear warmup from a low learning rate to the target over `warmup_epochs`
+    # helps the network find a better loss basin before ReduceLROnPlateau
+    # kicks in.
+    _WARMUP_EPOCHS = 10
+    _WARMUP_START_LR = 1e-5
+    _TARGET_LR = 5e-4
+
+    class _LinearWarmup(tf.keras.callbacks.Callback):
+        """Linear LR warmup from *start_lr* to *target_lr* over *warmup_epochs*."""
+
+        def __init__(self, warmup_epochs: int, start_lr: float, target_lr: float):
+            super().__init__()
+            self.warmup_epochs = warmup_epochs
+            self.start_lr = start_lr
+            self.target_lr = target_lr
+
+        def on_epoch_begin(self, epoch: int, logs: Any = None) -> None:
+            if epoch < self.warmup_epochs:
+                # epoch 0 → start_lr, epoch warmup_epochs-1 → target_lr
+                lr = self.start_lr + (self.target_lr - self.start_lr) * (
+                    (epoch + 1) / self.warmup_epochs
+                )
+                tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
+
     for group_name, targets in MODEL_GROUPS.items():
         # Get target columns
         target_indices = [metric_to_idx[t] for t in targets]
@@ -2032,16 +2049,45 @@ def train_neural_network(
 
         print(f"\n  Group: {group_name} ({len(targets)} targets, {len(group_indices)} features)")
 
+        # Per-group sample weights: start from base weights, then apply
+        # xG-zero mask for the shooting group only.
+        group_weights = sample_weights
+        if group_name == "shooting" and xg_zero_mask_train.any():
+            # Zero out sample weight for rows with missing pre-xG so the
+            # shooting model ignores their corrupted delta labels while
+            # other groups still learn from these samples' valid metrics.
+            if sample_weights is not None:
+                group_weights = sample_weights.copy()
+            else:
+                group_weights = np.ones(len(X_group_train), dtype=np.float32)
+            group_weights[xg_zero_mask_train] = 0.0
+            n_zero = int(xg_zero_mask_train.sum())
+            _log.info(
+                "Shooting group: zero-weighting %d samples with missing xG "
+                "(keeping them in other groups)",
+                n_zero,
+            )
+
         # Recompile with Huber loss (robust to outlier deltas) and lower
         # learning rate for stable convergence on small delta targets.
+        # Start at warmup LR; the _LinearWarmup callback ramps it up.
         model.models[group_name].compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),
+            optimizer=tf.keras.optimizers.Adam(learning_rate=_WARMUP_START_LR),
             loss=tf.keras.losses.Huber(delta=1.0),
             metrics=["mae"],
         )
 
-        # Early stopping + learning rate reduction on plateau
+        # Validation data: for the shooting group, exclude xG-zero samples
+        # from validation too so val_loss is computed on clean deltas only.
+        if group_name == "shooting" and xg_zero_mask_val.any():
+            val_keep = ~xg_zero_mask_val
+            val_data = (X_group_val[val_keep], y_group_val[val_keep])
+        else:
+            val_data = (X_group_val, y_group_val)
+
+        # Early stopping + LR warmup + LR reduction on plateau
         callbacks = [
+            _LinearWarmup(_WARMUP_EPOCHS, _WARMUP_START_LR, _TARGET_LR),
             tf.keras.callbacks.EarlyStopping(
                 monitor="val_loss",
                 patience=15,
@@ -2060,10 +2106,10 @@ def train_neural_network(
         history = model.models[group_name].fit(
             X_group_train,
             y_group_train,
-            sample_weight=sample_weights,
+            sample_weight=group_weights,
             epochs=150,
             batch_size=32,
-            validation_data=(X_group_val, y_group_val),
+            validation_data=val_data,
             callbacks=callbacks,
             verbose=0,
         )
