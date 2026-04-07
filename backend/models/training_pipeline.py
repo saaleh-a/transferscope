@@ -1361,6 +1361,48 @@ def compute_team_position_averages(
     return averages
 
 
+def _compute_team_overall_per90(
+    samples: list[dict],
+) -> dict[int, dict[str, float]]:
+    """Compute overall (all-position) per-90 averages for each club.
+
+    Paper Appendix A.1: the team adjustment model uses the source team's
+    overall per-90 for each metric relative to the league distribution.
+    This function computes the team-level average (across all players at
+    the team, regardless of position) from training samples.
+
+    Parameters
+    ----------
+    samples : list[dict]
+        Each dict must contain:
+          - 'source_club_id' (int)
+          - 'pre_per90'      (dict of metric -> float)
+
+    Returns
+    -------
+    dict keyed by club_id -> dict of metric -> mean per-90 float
+    """
+    from collections import defaultdict
+
+    buckets: dict = defaultdict(list)
+    for s in samples:
+        club_id = s.get("source_club_id")
+        per90 = s.get("pre_per90", {})
+        if club_id and per90:
+            buckets[club_id].append(per90)
+
+    averages: dict = {}
+    for club_id, records in buckets.items():
+        if not records:
+            continue
+        avg = {}
+        for metric in CORE_METRICS:
+            vals = [r[metric] for r in records if metric in r]
+            avg[metric] = float(np.mean(vals)) if vals else 0.0
+        averages[club_id] = avg
+    return averages
+
+
 def inject_team_pos_averages(
     X: np.ndarray,
     metadata: List[Dict[str, Any]],
@@ -1698,6 +1740,12 @@ def train_adjustment_models(
     """
     os.makedirs(_MODELS_DIR, exist_ok=True)
 
+    # ── Paper A.1: compute team-level per-90 averages ────────────────────
+    # The paper's z_{i,j} = team's per-90 for metric j relative to the
+    # source league distribution.  We compute team-level averages from
+    # the training data, then normalise against the source league mean.
+    team_per90_lookup = _compute_team_overall_per90(meta_train)
+
     # Build training rows for TeamAdjustmentModel
     team_rows: List[Dict[str, Any]] = []
     player_rows: List[Dict[str, Any]] = []
@@ -1718,6 +1766,10 @@ def train_adjustment_models(
         to_pos_avg = meta.get("to_pos_avg", {})
         position = normalize_position(meta.get("position", "Unknown"))
 
+        # Source team's overall per-90 (paper A.1: for computing z_{i,j})
+        source_club_id = meta.get("source_club_id")
+        source_team_per90 = team_per90_lookup.get(source_club_id, {})
+
         for j, m in enumerate(CORE_METRICS):
             actual = float(y_train[i, j])
             player_prev = pre_per90.get(m, 0.0)
@@ -1732,7 +1784,19 @@ def train_adjustment_models(
             # Use league mean per-90 if available (Improvement 4); fall back to
             # player's own per-90 as a neutral baseline when league stats unavailable
             league_means = meta.get("league_means", {})
+            source_league_means = meta.get("source_league_means", {})
             naive_expectation = league_means.get(m, player_prev)
+
+            # Paper A.1 z_{i,j}: team's per-90 relative to source league mean.
+            # Positive = team produces more than league average for this metric.
+            # Normalised by source league mean to make values comparable across
+            # metrics with very different scales (e.g. xG ~0.2 vs passes ~30).
+            team_metric_val = source_team_per90.get(m, 0.0)
+            src_league_mean = source_league_means.get(m, 0.0)
+            if src_league_mean > 1e-6:
+                team_relative_feature = (team_metric_val - src_league_mean) / src_league_mean
+            else:
+                team_relative_feature = 0.0
 
             team_rows.append({
                 "metric": m,
@@ -1742,6 +1806,7 @@ def train_adjustment_models(
                 "from_ra": from_ra,
                 "to_ra": to_ra,
                 "naive_league_expectation": naive_expectation,
+                "team_relative_feature": team_relative_feature,
                 "actual": actual,
             })
 
@@ -1814,7 +1879,7 @@ def train_adjustment_models(
             # Get training data for this metric
             m_rows = [r for r in team_rows if r["metric"] == m]
             if len(m_rows) >= 2:
-                X_m = np.array([[r["from_ra"], r["to_ra"]] for r in m_rows])
+                X_m = np.array([[r.get("team_relative_feature", 0.0), r["from_ra"], r["to_ra"]] for r in m_rows])
                 y_m = np.array([r["actual"] - r["naive_league_expectation"] for r in m_rows])
                 r2 = model.score(X_m, y_m)
                 flag = " [!]" if r2 < 0.1 else ""
