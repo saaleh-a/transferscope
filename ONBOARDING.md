@@ -408,7 +408,7 @@ def _fuzzy_find_team(query, teams_dict):
 ### Module: `backend/features/adjustment_models.py` (Prediction Brain)
 
 #### What this does
-Contains three systems: (1) `TeamAdjustmentModel` — 13 Ridge regression models that predict how a team's context changes per-90 output, (2) `PlayerAdjustmentModel` — 13 per-position Ridge models, and (3) `paper_heuristic_predict()` — the hand-tuned fallback used when no trained model exists.
+Contains three systems: (1) `TeamAdjustmentModel` — 13 Ridge regression models (3 features each: team_relative_feature, from_ra, to_ra) that predict how a team's context changes per-90 output, (2) `PlayerAdjustmentModel` — 13 per-position Ridge models, and (3) `paper_heuristic_predict()` — the hand-tuned fallback used when no trained model exists.
 
 #### Why it exists
 The paper argues that a player's per-90 stats are a function of three forces: their individual quality, their team's tactical style, and the opposition quality they face. These models quantify those three forces to predict what happens when one (or more) of those inputs changes.

@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import tensorflow as tf
 
-from backend.data.sofascore_client import CORE_METRICS
+from backend.data.sofascore_client import ADDITIONAL_METRICS, CORE_METRICS
 
 _log = logging.getLogger(__name__)
 
@@ -95,6 +95,10 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "player_shots",
         "player_touches_in_opposition_box",
         "player_chances_created",
+        # Additional metrics — shooting-relevant enrichment
+        "player_xg_on_target",
+        "player_non_penalty_xg",
+        "player_touches",
         "team_ability_current",
         "team_ability_target",
         "league_ability_current",
@@ -135,6 +139,9 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "player_accurate_long_balls",
         "player_chances_created",
         "player_touches_in_opposition_box",
+        # Additional metrics — passing-relevant enrichment
+        "player_touches",
+        "player_fouls_won",
         "team_ability_current",
         "team_ability_target",
         "league_ability_current",
@@ -181,6 +188,11 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
     ],
     "dribbling": [
         "player_successful_dribbles",
+        # Additional metrics — dribbling-relevant enrichment
+        "player_dispossessed",
+        "player_duels_won_pct",
+        "player_fouls_won",
+        "player_touches",
         "team_ability_current",
         "team_ability_target",
         "league_ability_current",
@@ -205,6 +217,12 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "player_clearances",
         "player_interceptions",
         "player_possession_won_final_3rd",
+        # Additional metrics — defending-relevant enrichment
+        "player_recoveries",
+        "player_aerial_duels_won_pct",
+        "player_duels_won_pct",
+        "player_goals_conceded_on_pitch",
+        "player_xg_against_on_pitch",
         "team_ability_current",
         "team_ability_target",
         "league_ability_current",
@@ -774,8 +792,11 @@ class TransferPortalModel:
 def _feature_keys() -> List[str]:
     """Return ordered list of feature keys for the input vector."""
     keys = []
-    # Player per-90 (current club)
+    # Player per-90 (current club) — 13 core metrics
     for m in CORE_METRICS:
+        keys.append(f"player_{m}")
+    # Player per-90 — 10 additional metrics (enrichment features, not targets)
+    for m in ADDITIONAL_METRICS:
         keys.append(f"player_{m}")
     # Team abilities (normalized 0-100)
     keys.append("team_ability_current")
@@ -852,6 +873,11 @@ def build_feature_dict(
         v = player_per90.get(m)
         fd[f"player_{m}"] = float(v) if v is not None else 0.0
 
+    # Additional metrics — enrichment inputs (not prediction targets)
+    for m in ADDITIONAL_METRICS:
+        v = player_per90.get(m)
+        fd[f"player_{m}"] = float(v) if v is not None else 0.0
+
     fd["team_ability_current"] = team_ability_current
     fd["team_ability_target"] = team_ability_target
     fd["league_ability_current"] = league_ability_current
@@ -909,7 +935,7 @@ def build_feature_dict(
     return fd
 
 
-FEATURE_DIM = len(_feature_keys())  # 79 (13 player + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio)
+FEATURE_DIM = len(_feature_keys())  # 89 (13 player_core + 10 player_additional + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio)
 _log.info("Feature vector dimension: %d", FEATURE_DIM)
 
 # Minimum minutes threshold for league mean computation (matches training pipeline)
@@ -999,7 +1025,7 @@ def build_feature_dict_from_player(
         # get_player_match_logs returns ascending (oldest first); reverse so
         # player_rolling_average picks the MOST RECENT 1000 minutes of form.
         rolling = player_rolling_average(list(reversed(match_logs)))
-        player_per90 = {m: (rolling.get(m) or 0.0) for m in CORE_METRICS}
+        player_per90 = {m: (rolling.get(m) or 0.0) for m in CORE_METRICS + ADDITIONAL_METRICS}
         # Infer source club from season stats
         stats = sofascore_client.get_player_stats_for_season(
             player_id, tournament_id, season_id,
@@ -1013,11 +1039,11 @@ def build_feature_dict_from_player(
         )
         if stats:
             per90 = stats.get("per90") or {}
-            player_per90 = {m: float(per90.get(m, 0.0) or 0.0) for m in CORE_METRICS}
+            player_per90 = {m: float(per90.get(m, 0.0) or 0.0) for m in CORE_METRICS + ADDITIONAL_METRICS}
             source_club_id = stats.get("team_id")
 
     if not player_per90:
-        player_per90 = {m: 0.0 for m in CORE_METRICS}
+        player_per90 = {m: 0.0 for m in CORE_METRICS + ADDITIONAL_METRICS}
 
     # Step 2: Power rankings
     try:
