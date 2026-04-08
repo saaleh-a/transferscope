@@ -2582,13 +2582,14 @@ def run_pipeline(
                     "(appending %d position one-hot columns)",
                     _LEGACY_DIM_PHASE7, FEATURE_DIM, _N_POSITION,
                 )
-                # Populate position one-hot from metadata
+                # Populate position one-hot from metadata using vectorized lookup
                 pos_cols = np.zeros((X.shape[0], _N_POSITION), dtype=np.float32)
+                label_to_idx = {label: j for j, label in enumerate(POSITION_LABELS)}
                 for i, m_dict in enumerate(metadata):
                     pos = (m_dict.get("position") or "").strip().upper()[:1]
-                    for j, label in enumerate(POSITION_LABELS):
-                        if pos == label:
-                            pos_cols[i, j] = 1.0
+                    idx = label_to_idx.get(pos)
+                    if idx is not None:
+                        pos_cols[i, idx] = 1.0
                 X = np.concatenate([X, pos_cols], axis=1).astype(np.float32)
                 np.save(X_path, X)
                 _log.info("Migrated and saved — X shape now %s", X.shape)

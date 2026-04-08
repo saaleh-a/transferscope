@@ -1251,7 +1251,9 @@ class TestCachedMatrixMigration(unittest.TestCase):
             os.path.join(self.matrices_dir, "y.npy"),
             rng.rand(self.n_samples, 13).astype(np.float32),
         )
-        metadata = [{"position": "M"} for _ in range(self.n_samples)]
+        # Cover all 4 position labels + an unknown position
+        positions = ["F", "M", "D", "G", "Unknown"]
+        metadata = [{"position": positions[i]} for i in range(self.n_samples)]
         with open(os.path.join(self.matrices_dir, "metadata.json"), "w") as f:
             json.dump(metadata, f)
 
@@ -1325,6 +1327,24 @@ class TestCachedMatrixMigration(unittest.TestCase):
         X_path = os.path.join(self.matrices_dir, "X.npy")
         X_reloaded = np.load(X_path)
         self.assertEqual(X_reloaded.shape[1], FEATURE_DIM)
+
+    def test_migration_populates_position_one_hot(self):
+        """Position one-hot columns should be populated correctly from metadata."""
+        self._run_pipeline_skip_build()
+
+        X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
+        # Position columns are the last 4 columns
+        pos_cols = X_migrated[:, -4:]
+        # Sample 0: "F" → [1, 0, 0, 0]
+        np.testing.assert_array_equal(pos_cols[0], [1, 0, 0, 0])
+        # Sample 1: "M" → [0, 1, 0, 0]
+        np.testing.assert_array_equal(pos_cols[1], [0, 1, 0, 0])
+        # Sample 2: "D" → [0, 0, 1, 0]
+        np.testing.assert_array_equal(pos_cols[2], [0, 0, 1, 0])
+        # Sample 3: "G" → [0, 0, 0, 1]
+        np.testing.assert_array_equal(pos_cols[3], [0, 0, 0, 1])
+        # Sample 4: "Unknown" → [0, 0, 0, 0]
+        np.testing.assert_array_equal(pos_cols[4], [0, 0, 0, 0])
 
     def test_unknown_dimension_forces_rebuild(self):
         """Unexpected column count (not 79 or 89) should clear skip_build."""
