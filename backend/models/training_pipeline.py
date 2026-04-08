@@ -2367,12 +2367,13 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 89-feature vector.
+    """Return the ordered list of feature keys matching the 93-feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
     includes raw Elo, REEP metadata, interaction features, relative
-    dominance features, per-metric league-normalised features, and
-    10 additional player metrics (enrichment inputs).
+    dominance features, per-metric league-normalised features,
+    10 additional player metrics (enrichment inputs), and
+    4 position one-hot features.
     """
     keys = []
     for m in CORE_METRICS:
@@ -2407,6 +2408,9 @@ def _feature_keys_list() -> List[str]:
         keys.append(f"league_norm_{m}")
     for m in CORE_METRICS:
         keys.append(f"league_mean_ratio_{m}")
+    # Position one-hot encoding (Phase 8)
+    for pos in POSITION_LABELS:
+        keys.append(f"position_{pos}")
     return keys
 
 

@@ -1216,7 +1216,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertEqual(tp_keys, ref_keys)
 
     def test_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (89)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (93)."""
         from backend.models.training_pipeline import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
@@ -1232,7 +1232,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
 
 
 class TestCachedMatrixMigration(unittest.TestCase):
-    """Tests for the 79→89 cached feature matrix migration in run_pipeline()."""
+    """Tests for the 79→93 cached feature matrix migration in run_pipeline()."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -1245,14 +1245,15 @@ class TestCachedMatrixMigration(unittest.TestCase):
         rng = np.random.RandomState(42)
         self.X_legacy = rng.rand(self.n_samples, self.legacy_dim).astype(np.float32)
 
-        # Save legacy matrices + minimal metadata
+        # Save legacy matrices + minimal metadata (list of dicts for position migration)
         np.save(os.path.join(self.matrices_dir, "X.npy"), self.X_legacy)
         np.save(
             os.path.join(self.matrices_dir, "y.npy"),
             rng.rand(self.n_samples, 13).astype(np.float32),
         )
+        metadata = [{"position": "M"} for _ in range(self.n_samples)]
         with open(os.path.join(self.matrices_dir, "metadata.json"), "w") as f:
-            json.dump({"version": "legacy"}, f)
+            json.dump(metadata, f)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
@@ -1312,9 +1313,9 @@ class TestCachedMatrixMigration(unittest.TestCase):
         np.testing.assert_array_equal(
             X_migrated[:, :insert_pos], self.X_legacy[:, :insert_pos]
         )
-        # Columns after insert position should be the tail of the original
+        # Columns after insert position (before position one-hot) should be the tail of the original
         np.testing.assert_array_equal(
-            X_migrated[:, insert_pos + 10:], self.X_legacy[:, insert_pos:]
+            X_migrated[:, insert_pos + 10:-4], self.X_legacy[:, insert_pos:]
         )
 
     def test_migration_persists_to_disk(self):

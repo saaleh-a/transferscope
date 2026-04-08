@@ -225,7 +225,7 @@ class TestFeatureKeysConsistency(unittest.TestCase):
         self.assertIn("interaction_league_gap", keys)
 
     def test_feature_keys_list_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (89)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (93)."""
         from backend.models.backtester import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
