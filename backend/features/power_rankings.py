@@ -158,6 +158,13 @@ _opta_team_league_map: Optional[Dict[str, float]] = None
 # fuzzy SequenceMatcher loop over 446 leagues on every training sample.
 _league_code_opta_rating_cache: Dict[str, float] = {}
 
+# ── get_team_ranking() result cache ───────────────────────────────────────────
+# Keyed by (team_name, date_iso_str, tournament_id).  Avoids repeated fuzzy
+# matching + Opta fallback for the same team during a single training run,
+# eliminating duplicate WARNING / INFO log messages.
+_TEAM_RANKING_CACHE_NONE = object()  # sentinel for cached None results
+_team_ranking_result_cache: Dict[tuple, object] = {}
+
 # ── ClubElo canonical name aliases ───────────────────────────────────────────
 # Maps incoming Sofascore/Opta display names → names closer to ClubElo's
 # canonical form so the existing exact + fuzzy pipeline resolves them cleanly.
@@ -2077,6 +2084,26 @@ def get_team_ranking(
         also enables accurate ``league_mean_normalized`` and
         ``relative_ability`` for Opta teams not covered by ClubElo.
     """
+    # ── Result cache — avoid repeated fuzzy matching / Opta fallback ────────
+    _date_str = (query_date.isoformat() if query_date else None)
+    _cache_key = (team_name, _date_str, tournament_id)
+    _cached = _team_ranking_result_cache.get(_cache_key)
+    if _cached is not None:
+        return None if _cached is _TEAM_RANKING_CACHE_NONE else _cached  # type: ignore[return-value]
+
+    result = _resolve_team_ranking(team_name, query_date, tournament_id)
+    _team_ranking_result_cache[_cache_key] = (
+        _TEAM_RANKING_CACHE_NONE if result is None else result
+    )
+    return result
+
+
+def _resolve_team_ranking(
+    team_name: str,
+    query_date: Optional[date],
+    tournament_id: Optional[int],
+) -> Optional[TeamRanking]:
+    """Inner resolver for :func:`get_team_ranking` (no caching)."""
     teams, league_snapshots = compute_daily_rankings(query_date)
 
     if not teams:
