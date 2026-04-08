@@ -536,18 +536,41 @@ def enrich_from_reep(league_code: str) -> Optional[Dict[str, Any]]:
     the full competition metadata from ``competitions.csv``, including
     provider keys (``key_fbref``, ``key_opta``, ``key_fotmob``, etc.).
 
+    Falls back to name-based matching if the stored ``reep_competition_id``
+    is no longer present in the upstream data (the upstream REEP project
+    now uses Wikidata QIDs as primary identifiers for most entities).
+
     Returns *None* if the league has no REEP competition link or the
     REEP data is unavailable.
     """
     info = LEAGUES.get(league_code)
-    if info is None or info.reep_competition_id is None:
+    if info is None:
         return None
     try:
-        from backend.data.reep_registry import lookup_competition
+        from backend.data.reep_registry import (
+            get_competitions_df,
+            lookup_competition,
+        )
 
-        return lookup_competition(info.reep_competition_id)
+        # 1. Try direct lookup by stored reep_competition_id
+        if info.reep_competition_id is not None:
+            result = lookup_competition(info.reep_competition_id)
+            if result is not None:
+                return result
+
+        # 2. Fallback: search competitions.csv by league name
+        df = get_competitions_df()
+        if df is None:
+            return None
+
+        name_lower = info.name.lower().strip()
+        for _, row in df.iterrows():
+            if row.get("name", "").lower().strip() == name_lower:
+                return {k: (v if v else None) for k, v in row.to_dict().items()}
+
     except Exception:
-        return None
+        pass
+    return None
 
 
 def get_seasons(league_code: str) -> List[Dict[str, Any]]:

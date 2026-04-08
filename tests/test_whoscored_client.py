@@ -567,6 +567,7 @@ class TestReepWhoscoredBridge(unittest.TestCase):
         clear_memory_cache()
         mock_df.return_value = pd.DataFrame([{
             "reep_id": "reep_p12345678",
+            "key_wikidata": "Q12345",
             "key_sofascore": "12345",
             "nationality": "Argentina",
             "height_cm": 170.0,
@@ -590,6 +591,7 @@ class TestReepWhoscoredBridge(unittest.TestCase):
         clear_memory_cache()
         mock_df.return_value = pd.DataFrame([{
             "reep_id": "reep_p00000001",
+            "key_wikidata": "Q99999",
             "key_sofascore": "12345",
             "nationality": "England",
             "height_cm": 180.0,
@@ -610,6 +612,7 @@ class TestReepWhoscoredBridge(unittest.TestCase):
         clear_memory_cache()
         mock_df.return_value = pd.DataFrame([{
             "reep_id": "reep_p99999999",
+            "key_wikidata": "Q88888",
             "key_sofascore": "99999",
             "nationality": "Brazil",
             "height_cm": 175.0,

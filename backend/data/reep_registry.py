@@ -409,9 +409,10 @@ def _build_people_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     subset["_sid"] = subset["_sid"].astype(int).astype(str)
 
     index: Dict[str, Dict[str, Any]] = {}
-    for sid, rid, nat, hcm, dob, pos, ws in zip(
+    for sid, rid, qid, nat, hcm, dob, pos, ws in zip(
         subset["_sid"],
         subset["reep_id"],
+        subset["key_wikidata"],
         subset["nationality"],
         subset["height_cm"],
         subset["date_of_birth"],
@@ -420,6 +421,7 @@ def _build_people_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     ):
         index[sid] = {
             "reep_id": rid if rid else None,
+            "key_wikidata": qid if qid else None,
             "nationality": nat if nat else None,
             "height_cm": _safe_int(hcm) if hcm else None,
             "date_of_birth": dob if dob else None,
@@ -474,9 +476,10 @@ def _build_teams_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     subset["_sid"] = subset["_sid"].astype(int).astype(str)
 
     index: Dict[str, Dict[str, Any]] = {}
-    for sid, rid, name, ce, tm, fbref, country in zip(
+    for sid, rid, qid, name, ce, tm, fbref, country in zip(
         subset["_sid"],
         subset["reep_id"],
+        subset["key_wikidata"],
         subset["name"],
         subset["key_clubelo"],
         subset["key_transfermarkt"],
@@ -485,6 +488,7 @@ def _build_teams_index(df: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
     ):
         index[sid] = {
             "reep_id": rid if rid else None,
+            "key_wikidata": qid if qid else None,
             "name": name if name else None,
             "key_clubelo": ce if ce else None,
             "key_transfermarkt": tm if tm else None,
@@ -520,27 +524,59 @@ def enrich_team(sofascore_team_id: int) -> Dict[str, Any]:
 
 
 def lookup_competition(reep_id: str) -> Optional[Dict[str, Any]]:
-    """Look up a competition by its ``reep_id``.  Returns a dict or None."""
+    """Look up a competition by its ``reep_id`` or ``key_wikidata``.
+
+    Tries ``reep_id`` first, then falls back to ``key_wikidata`` since
+    upstream REEP now uses Wikidata QIDs as the primary identifier for
+    most competitions (``reep_id`` is only assigned to non-Wikidata
+    entities).
+
+    Returns a dict or None.
+    """
     df = get_competitions_df()
-    if df is None or "reep_id" not in df.columns:
+    if df is None:
         return None
-    rows = df[df["reep_id"] == reep_id]
-    if rows.empty:
-        return None
-    row = rows.iloc[0]
-    return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+    # Try reep_id first
+    if "reep_id" in df.columns:
+        rows = df[df["reep_id"] == reep_id]
+        if not rows.empty:
+            row = rows.iloc[0]
+            return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+    # Fallback: search key_wikidata
+    if "key_wikidata" in df.columns:
+        rows = df[df["key_wikidata"] == reep_id]
+        if not rows.empty:
+            row = rows.iloc[0]
+            return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+    return None
 
 
 def lookup_season(reep_id: str) -> Optional[Dict[str, Any]]:
-    """Look up a season by its ``reep_id``.  Returns a dict or None."""
+    """Look up a season by its ``reep_id`` or ``key_wikidata``.
+
+    Tries ``reep_id`` first, then falls back to ``key_wikidata``.
+    Returns a dict or None.
+    """
     df = get_seasons_df()
-    if df is None or "reep_id" not in df.columns:
+    if df is None:
         return None
-    rows = df[df["reep_id"] == reep_id]
-    if rows.empty:
-        return None
-    row = rows.iloc[0]
-    return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+    if "reep_id" in df.columns:
+        rows = df[df["reep_id"] == reep_id]
+        if not rows.empty:
+            row = rows.iloc[0]
+            return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+    if "key_wikidata" in df.columns:
+        rows = df[df["key_wikidata"] == reep_id]
+        if not rows.empty:
+            row = rows.iloc[0]
+            return {k: (v if v else None) for k, v in row.to_dict().items()}
+
+    return None
 
 
 def get_competition_by_provider(
