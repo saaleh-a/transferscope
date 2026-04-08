@@ -68,6 +68,10 @@ DELTA_CLIP_FLOOR = 0.5
 # against the clip threshold — the two guards compose naturally.
 DELTA_SHRINKAGE = 0.85
 
+# ── Position labels for one-hot encoding ─────────────────────────────────────
+# Order matters — must be stable across training and inference.
+POSITION_LABELS: List[str] = ["F", "M", "D", "G"]
+
 # ── Target group definitions ─────────────────────────────────────────────────
 
 MODEL_GROUPS: Dict[str, List[str]] = {
@@ -130,6 +134,11 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "league_mean_ratio_shots",
         "league_mean_ratio_touches_in_opposition_box",
         "league_mean_ratio_chances_created",
+        # Position one-hot (Phase 8)
+        "position_F",
+        "position_M",
+        "position_D",
+        "position_G",
     ],
     "passing": [
         "player_expected_assists",
@@ -185,6 +194,11 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "league_mean_ratio_accurate_long_balls",
         "league_mean_ratio_chances_created",
         "league_mean_ratio_touches_in_opposition_box",
+        # Position one-hot (Phase 8)
+        "position_F",
+        "position_M",
+        "position_D",
+        "position_G",
     ],
     "dribbling": [
         "player_successful_dribbles",
@@ -212,6 +226,11 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         # Per-metric league-normalised (Phase 5)
         "league_norm_successful_dribbles",
         "league_mean_ratio_successful_dribbles",
+        # Position one-hot (Phase 8)
+        "position_F",
+        "position_M",
+        "position_D",
+        "position_G",
     ],
     "defending": [
         "player_clearances",
@@ -250,6 +269,11 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "league_mean_ratio_clearances",
         "league_mean_ratio_interceptions",
         "league_mean_ratio_possession_won_final_3rd",
+        # Position one-hot (Phase 8)
+        "position_F",
+        "position_M",
+        "position_D",
+        "position_G",
     ],
 }
 
@@ -261,11 +285,16 @@ _MODELS_DIR = os.path.join(
 
 
 # Per-group architecture overrides.  Groups not listed use the defaults
-# (hidden_units=[128, 64], dropout=0.3).  The dribbling group uses a
-# smaller network with higher dropout to combat overfitting (14 features,
-# 1 target — the default 128→64 architecture is over-parameterised).
+# (hidden_units=[128, 64], dropout=0.3).  Smaller networks with higher
+# dropout are used for groups where the signal-to-noise ratio is low —
+# the default 128→64 architecture tends to overfit noise in these groups.
+#
+# Backtest SNR analysis (delta_mean / delta_std):
+#   shooting: 0.003–0.152 (very low), passing: 0.003–0.063 (very low),
+#   dribbling: 0.247 (moderate), defending: 0.040–0.251 (mixed).
 _GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "dribbling": {"hidden_units": [64, 32], "dropout": 0.4},
+    "defending": {"hidden_units": [96, 48], "dropout": 0.35},
 }
 
 
@@ -830,6 +859,9 @@ def _feature_keys() -> List[str]:
     # Ratio of source-to-target league means per metric
     for m in CORE_METRICS:
         keys.append(f"league_mean_ratio_{m}")
+    # Position one-hot encoding (Phase 8)
+    for pos in POSITION_LABELS:
+        keys.append(f"position_{pos}")
     return keys
 
 
@@ -847,6 +879,7 @@ def build_feature_dict(
     player_age: float = 0.0,
     source_league_means: Optional[Dict[str, float]] = None,
     target_league_means: Optional[Dict[str, float]] = None,
+    position: str = "",
 ) -> Dict[str, float]:
     """Assemble a feature dict from components, ready for predict().
 
@@ -866,6 +899,9 @@ def build_feature_dict(
     source_league_means / target_league_means : dict, optional
         Per-metric league averages for the source/target league.
         When provided, enables per-metric league-normalised features.
+    position : str
+        Single-letter position code ('F', 'M', 'D', 'G') for one-hot
+        encoding.  Empty or unknown positions produce all-zero one-hot.
     """
     fd: Dict[str, float] = {}
 
@@ -932,10 +968,15 @@ def build_feature_dict(
         else:
             fd[f"league_mean_ratio_{m}"] = 1.0
 
+    # Position one-hot encoding (Phase 8)
+    pos_upper = position.strip().upper()[:1] if position else ""
+    for p in POSITION_LABELS:
+        fd[f"position_{p}"] = 1.0 if pos_upper == p else 0.0
+
     return fd
 
 
-FEATURE_DIM = len(_feature_keys())  # 89 (13 player_core + 10 player_additional + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio)
+FEATURE_DIM = len(_feature_keys())  # 93 (13 player_core + 10 player_additional + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio + 4 position_one_hot)
 _log.info("Feature vector dimension: %d", FEATURE_DIM)
 
 # Minimum minutes threshold for league mean computation (matches training pipeline)
@@ -1170,4 +1211,5 @@ def build_feature_dict_from_player(
         player_age=player_age,
         source_league_means=source_league_means,
         target_league_means=target_league_means,
+        position=position,
     )
