@@ -14,6 +14,8 @@ Data files:
     - data/reep/people.csv       (~430,000 players/coaches)
     - data/reep/competitions.csv (~200 competitions)
     - data/reep/seasons.csv      (~1,200 seasons)
+    - data/reep/names.csv        (alternate names/aliases)
+    - data/reep/meta.json        (generation timestamp and counts)
 
 All files are bundled in the repository and loaded from disk on first
 access, then cached in-memory for the process lifetime.
@@ -62,6 +64,7 @@ get_seasons_for_competition(competition_reep_id)
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
@@ -80,18 +83,23 @@ _TEAMS_PATH = os.path.join(_DATA_DIR, "teams.csv")
 _PEOPLE_PATH = os.path.join(_DATA_DIR, "people.csv")
 _COMPETITIONS_PATH = os.path.join(_DATA_DIR, "competitions.csv")
 _SEASONS_PATH = os.path.join(_DATA_DIR, "seasons.csv")
+_NAMES_PATH = os.path.join(_DATA_DIR, "names.csv")
+_META_PATH = os.path.join(_DATA_DIR, "meta.json")
 
 # ── In-memory singletons (populated on first access) ────────────────────────
 _teams_df_mem: Optional[pd.DataFrame] = None
 _people_df_mem: Optional[pd.DataFrame] = None
 _competitions_df_mem: Optional[pd.DataFrame] = None
 _seasons_df_mem: Optional[pd.DataFrame] = None
+_names_df_mem: Optional[pd.DataFrame] = None
 # Pre-indexed lookup: sofascore_player_id (str) → dict of row values.
 _people_index: Optional[Dict[str, Dict[str, Any]]] = None
 # Pre-indexed lookup: sofascore_team_id (str) → dict of row values.
 _teams_index: Optional[Dict[str, Dict[str, Any]]] = None
 # Cached ClubElo → display-name mapping.
 _clubelo_map_mem: Optional[Dict[str, str]] = None
+# Cached team name → list of alternate name variants (built from REEP).
+_team_name_variants_cache: Optional[Dict[str, List[str]]] = None
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -99,14 +107,17 @@ _clubelo_map_mem: Optional[Dict[str, str]] = None
 def clear_memory_cache() -> None:
     """Reset all in-memory caches.  Useful in tests."""
     global _teams_df_mem, _people_df_mem, _competitions_df_mem, _seasons_df_mem
-    global _people_index, _teams_index, _clubelo_map_mem
+    global _names_df_mem
+    global _people_index, _teams_index, _clubelo_map_mem, _team_name_variants_cache
     _teams_df_mem = None
     _people_df_mem = None
     _competitions_df_mem = None
     _seasons_df_mem = None
+    _names_df_mem = None
     _people_index = None
     _teams_index = None
     _clubelo_map_mem = None
+    _team_name_variants_cache = None
 
 
 def _load_csv(path: str) -> Optional[pd.DataFrame]:
@@ -171,6 +182,134 @@ def get_seasons_df() -> Optional[pd.DataFrame]:
     if df is not None:
         _seasons_df_mem = df
     return df
+
+
+def get_names_df() -> Optional[pd.DataFrame]:
+    """Return the REEP names/aliases DataFrame (cached after first load).
+
+    The upstream ``names.csv`` maps ``key_wikidata`` + ``name`` to
+    ``alias`` (alternate names).  May be empty if the upstream file has
+    no alias rows yet.
+    """
+    global _names_df_mem
+    if _names_df_mem is not None:
+        return _names_df_mem
+    df = _load_csv(_NAMES_PATH)
+    if df is not None:
+        _names_df_mem = df
+    return df
+
+
+def get_meta() -> Optional[Dict[str, Any]]:
+    """Return the REEP meta.json contents (generation timestamp, counts)."""
+    if not os.path.isfile(_META_PATH):
+        return None
+    try:
+        with open(_META_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def build_team_name_variants() -> Dict[str, List[str]]:
+    """Build a mapping from every known team name variant → all other variants.
+
+    Sources:
+    - ``name`` column (canonical REEP display name)
+    - ``key_clubelo`` (ClubElo slug, e.g. "ManCity", "Arsenal")
+    - ``key_worldfootball`` (slug-format, e.g. "borussia-dortmund" → "borussia dortmund")
+    - ``names.csv`` aliases (when populated upstream)
+
+    The result is a ``Dict[normalized_lower_name, List[str]]`` where each key
+    maps to all known raw name variants for that team.  Useful for
+    feeding the fuzzy matching alias table.
+
+    Cached in-memory after first successful build.
+    """
+    global _team_name_variants_cache
+    if _team_name_variants_cache is not None:
+        return _team_name_variants_cache
+
+    df = get_teams_df()
+    if df is None:
+        return {}
+
+    # Collect all name variants per team row
+    # We use columns that contain actual human-readable names (not numeric IDs)
+    variant_groups: List[List[str]] = []
+
+    for _, row in df.iterrows():
+        variants: List[str] = []
+
+        # 1. Canonical REEP name
+        name = row.get("name", "")
+        if name and isinstance(name, str) and name.strip():
+            variants.append(name.strip())
+
+        # 2. ClubElo slug (verified correct: "ManCity", "Arsenal", etc.)
+        clubelo = row.get("key_clubelo", "")
+        if clubelo and isinstance(clubelo, str) and clubelo.strip():
+            variants.append(clubelo.strip())
+
+        # 3. WorldFootball.net slug → readable name
+        #    e.g. "borussia-dortmund" → "borussia dortmund"
+        wf = row.get("key_worldfootball", "")
+        if wf and isinstance(wf, str) and wf.strip():
+            readable = wf.strip().replace("-", " ")
+            # Skip women's/youth suffixes from worldfootball
+            if "frauen" not in readable:
+                variants.append(readable)
+
+        if len(variants) >= 2:
+            variant_groups.append(variants)
+
+    # Also integrate names.csv aliases
+    names_df = get_names_df()
+    if names_df is not None and not names_df.empty:
+        # Group aliases by key_wikidata
+        wikidata_aliases: Dict[str, List[str]] = {}
+        for _, row in names_df.iterrows():
+            qid = row.get("key_wikidata", "")
+            name_val = row.get("name", "")
+            alias_val = row.get("alias", "")
+            if qid and name_val:
+                wikidata_aliases.setdefault(qid, [])
+                if name_val not in wikidata_aliases[qid]:
+                    wikidata_aliases[qid].append(name_val)
+                if alias_val and alias_val not in wikidata_aliases[qid]:
+                    wikidata_aliases[qid].append(alias_val)
+
+        # Cross-reference with teams.csv by key_wikidata
+        if wikidata_aliases:
+            for _, row in df.iterrows():
+                qid = row.get("key_wikidata", "")
+                if qid and qid in wikidata_aliases:
+                    name_val = row.get("name", "")
+                    alias_names = wikidata_aliases[qid]
+                    all_variants = ([name_val] if name_val else []) + alias_names
+                    all_variants = list(dict.fromkeys(all_variants))
+                    if len(all_variants) >= 2:
+                        variant_groups.append(all_variants)
+
+    # Build the reverse index: normalized_name → [raw_variants]
+    result: Dict[str, List[str]] = {}
+    for variants in variant_groups:
+        for v in variants:
+            key = v.lower().strip()
+            if not key:
+                continue
+            existing = result.setdefault(key, [])
+            for other in variants:
+                if other not in existing:
+                    existing.append(other)
+
+    _log.info(
+        "Built REEP team name variants index: %d entries, %d total variants",
+        len(result),
+        sum(len(v) for v in result.values()),
+    )
+    _team_name_variants_cache = result
+    return result
 
 
 def lookup_team(reep_id: str) -> Optional[Dict[str, Any]]:
