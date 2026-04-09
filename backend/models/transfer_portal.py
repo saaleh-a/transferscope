@@ -293,6 +293,7 @@ _MODELS_DIR = os.path.join(
 #   shooting: 0.003–0.152 (very low), passing: 0.003–0.063 (very low),
 #   dribbling: 0.247 (moderate), defending: 0.040–0.251 (mixed).
 _GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "shooting": {"hidden_units": [64, 32], "dropout": 0.45},
     "dribbling": {"hidden_units": [64, 32], "dropout": 0.4},
     "defending": {"hidden_units": [96, 48], "dropout": 0.35},
 }
