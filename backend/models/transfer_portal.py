@@ -285,16 +285,17 @@ _MODELS_DIR = os.path.join(
 
 
 # Per-group architecture overrides.  Groups not listed use the defaults
-# (hidden_units=[128, 64], dropout=0.3).  Smaller networks with higher
-# dropout are used for groups where the signal-to-noise ratio is low —
-# the default 128→64 architecture tends to overfit noise in these groups.
+# (hidden_units=[128, 64], dropout=0.3, l2=1e-4).  Smaller networks with
+# higher dropout / stronger L2 are used for groups where the signal-to-noise
+# ratio is low — the default 128→64 architecture tends to overfit noise in
+# these groups.
 #
 # Backtest SNR analysis (delta_mean / delta_std):
 #   shooting: 0.003–0.152 (very low), passing: 0.003–0.063 (very low),
 #   dribbling: 0.247 (moderate), defending: 0.040–0.251 (mixed).
 _GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    "shooting": {"hidden_units": [64, 32], "dropout": 0.45},
-    "dribbling": {"hidden_units": [64, 32], "dropout": 0.4},
+    "shooting": {"hidden_units": [32, 16], "dropout": 0.45, "l2": 5e-4},
+    "dribbling": {"hidden_units": [64, 32], "dropout": 0.4, "l2": 3e-4},
     "defending": {"hidden_units": [96, 48], "dropout": 0.35},
 }
 
@@ -307,13 +308,14 @@ def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.
 
     ``group_name`` selects per-group architecture overrides from
     ``_GROUP_ARCH_OVERRIDES``.  Groups without an override entry use
-    the defaults (128→64 hidden units, 0.3 dropout).
+    the defaults (128→64 hidden units, 0.3 dropout, 1e-4 L2).
     """
     overrides = _GROUP_ARCH_OVERRIDES.get(group_name, {})
     hidden_units = overrides.get("hidden_units", [128, 64])
     dropout_rate = overrides.get("dropout", 0.3)
+    l2_strength = overrides.get("l2", 1e-4)
 
-    l2_reg = tf.keras.regularizers.l2(1e-4)
+    l2_reg = tf.keras.regularizers.l2(l2_strength)
 
     inp = tf.keras.Input(shape=(input_dim,), name=f"{group_name}_input")
     x = tf.keras.layers.Dense(
