@@ -50,6 +50,7 @@ from backend.models.transfer_portal import (
     FEATURE_DIM,
     GROUP_FEATURE_SUBSETS,
     MODEL_GROUPS,
+    POSITION_LABELS,
     TransferPortalModel,
     _feature_keys,
     build_feature_dict,
@@ -700,10 +701,13 @@ def build_training_sample(
         else:
             league_mean_ratio_features.append(1.0)
 
-    # Assemble the 89-feature vector
+    # Assemble the feature vector
     ability_gap = team_ability_target - team_ability_current
     rel_current = team_ability_current - league_ability_current
     rel_target = team_ability_target - league_ability_target
+    # Position one-hot encoding (Phase 8)
+    pos_code = record.position.strip().upper()[:1] if record.position else ""
+    position_one_hot = [1.0 if p == pos_code else 0.0 for p in POSITION_LABELS]
     features = np.array(
         player_metrics
         + additional_player_metrics
@@ -717,7 +721,8 @@ def build_training_sample(
            league_ability_target - league_ability_current]
         + [rel_current, rel_target, rel_target - rel_current]
         + league_norm_features
-        + league_mean_ratio_features,
+        + league_mean_ratio_features
+        + position_one_hot,
         dtype=np.float32,
     )
 
@@ -1236,6 +1241,9 @@ def build_non_transfer_sample(
     # Same team → current == target for all ability and position features
     # Interaction features are all zero (no gap when staying at same club)
     nt_rel = team_ability - league_ability
+    # Position one-hot encoding (Phase 8)
+    pos_code = record.position.strip().upper()[:1] if record.position else ""
+    position_one_hot = [1.0 if p == pos_code else 0.0 for p in POSITION_LABELS]
     features = np.array(
         player_metrics
         + additional_player_metrics
@@ -1247,7 +1255,8 @@ def build_non_transfer_sample(
         + [0.0, 0.0, 0.0]  # interaction: gap=0, gap²=0, league_gap=0
         + [nt_rel, nt_rel, 0.0]  # relative: current==target, gap=0
         + league_norm_features
-        + league_mean_ratio_features,
+        + league_mean_ratio_features
+        + position_one_hot,
         dtype=np.float32,
     )
 
@@ -1461,13 +1470,15 @@ def inject_team_pos_averages(
     """
     team_pos_lookup = compute_team_position_averages(train_metadata)
 
-    # Layout: [0:13] player, [13:17] abilities, [17:19] raw_elo,
-    #          [19:21] reep, [21:34] pos_current,
-    #          [34:47] pos_target, [47:50] interactions.
-    _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4 + 2 + 2   # 21
-    _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 34
-    assert _POS_CURRENT_OFFSET == 21, f"Expected 21, got {_POS_CURRENT_OFFSET}"
-    assert _POS_TARGET_OFFSET == 34, f"Expected 34, got {_POS_TARGET_OFFSET}"
+    # Layout: [0:13] player_core, [13:23] player_additional,
+    #          [23:27] abilities, [27:29] raw_elo, [29:31] reep,
+    #          [31:44] pos_current, [44:57] pos_target, [57:60] interactions.
+    _POS_CURRENT_OFFSET = (
+        len(CORE_METRICS) + len(ADDITIONAL_METRICS) + 4 + 2 + 2  # 31
+    )
+    _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 44
+    assert _POS_CURRENT_OFFSET == 31, f"Expected 31, got {_POS_CURRENT_OFFSET}"
+    assert _POS_TARGET_OFFSET == 44, f"Expected 44, got {_POS_TARGET_OFFSET}"
     assert _POS_TARGET_OFFSET + len(CORE_METRICS) <= FEATURE_DIM, (
         f"team_pos slots exceed FEATURE_DIM ({FEATURE_DIM})"
     )
@@ -2053,9 +2064,14 @@ def train_neural_network(
     y_train_delta = y_train - X_train[:, :len(CORE_METRICS)]
     y_val_delta = y_val - X_val[:, :len(CORE_METRICS)]
 
-    # Sample weights: combine class-balance correction (10:1 transfer ratio)
-    # with confidence weighting (more pre-transfer minutes → more reliable).
-    # Without class balancing the model ignores non-transfer samples entirely.
+    # Sample weights: combine class-balance correction with confidence
+    # weighting (more pre-transfer minutes → more reliable).
+    #
+    # Transfer emphasis: transfers carry the actual adaptation signal while
+    # non-transfers are zero-delta anchors.  A 65/35 budget split (instead
+    # of the naive inverse-frequency 50/50) prioritises learning from real
+    # context changes while still benefiting from stability anchoring.
+    _TRANSFER_BUDGET = 0.65  # fraction of total loss budget for transfers
     sample_weights = None
     if meta_train:
         n_total = len(meta_train)
@@ -2063,11 +2079,13 @@ def train_neural_network(
         n_non_transfer = n_total - n_transfer
 
         if n_non_transfer > 0 and n_transfer > 0:
-            # Inverse-frequency class weights so both classes contribute equally.
-            w_transfer = n_total / (2.0 * n_transfer)
-            w_non_transfer = n_total / (2.0 * n_non_transfer)
+            # Weighted class balance: transfers get _TRANSFER_BUDGET share
+            # of total loss, non-transfers get the remainder.
+            w_transfer = (_TRANSFER_BUDGET * n_total) / n_transfer
+            w_non_transfer = ((1 - _TRANSFER_BUDGET) * n_total) / n_non_transfer
             _log.info(
-                "Class balance: %d transfer (w=%.3f), %d non-transfer (w=%.3f)",
+                "Class balance (%.0f/%.0f): %d transfer (w=%.3f), %d non-transfer (w=%.3f)",
+                _TRANSFER_BUDGET * 100, (1 - _TRANSFER_BUDGET) * 100,
                 n_transfer, w_transfer, n_non_transfer, w_non_transfer,
             )
             class_w = np.array(
@@ -2349,12 +2367,13 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 89-feature vector.
+    """Return the ordered list of feature keys matching the 93-feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
     includes raw Elo, REEP metadata, interaction features, relative
-    dominance features, per-metric league-normalised features, and
-    10 additional player metrics (enrichment inputs).
+    dominance features, per-metric league-normalised features,
+    10 additional player metrics (enrichment inputs), and
+    4 position one-hot features.
     """
     keys = []
     for m in CORE_METRICS:
@@ -2389,6 +2408,9 @@ def _feature_keys_list() -> List[str]:
         keys.append(f"league_norm_{m}")
     for m in CORE_METRICS:
         keys.append(f"league_mean_ratio_{m}")
+    # Position one-hot encoding (Phase 8)
+    for pos in POSITION_LABELS:
+        keys.append(f"position_{pos}")
     return keys
 
 
@@ -2531,22 +2553,44 @@ def run_pipeline(
             #
             # Phase 7: 79→89 migration — insert 10 zero-filled additional
             # player metric columns after the 13 core player metrics.
-            # Phase 6 (76→79) migration is no longer needed as all
-            # cached matrices should already be at 79 columns.
+            # Phase 8: 89→93 migration — append 4 position one-hot columns.
+            # Combined 79→93 migration is also supported.
             _LEGACY_DIM_PHASE6 = 79
+            _LEGACY_DIM_PHASE7 = 89
             _N_ADDITIONAL = len(ADDITIONAL_METRICS)  # 10
+            _N_POSITION = len(POSITION_LABELS)  # 4
             _ADDITIONAL_INSERT_POS = len(CORE_METRICS)  # after 13 core player metrics
-            if X.shape[1] == _LEGACY_DIM_PHASE6 and FEATURE_DIM == _LEGACY_DIM_PHASE6 + _N_ADDITIONAL:
+
+            if X.shape[1] == _LEGACY_DIM_PHASE6:
+                # Full migration: 79 → 93
                 _log.info(
                     "Migrating cached matrices from %d to %d features "
-                    "(adding %d additional player metric columns)",
-                    _LEGACY_DIM_PHASE6, FEATURE_DIM, _N_ADDITIONAL,
+                    "(adding %d additional metric + %d position columns)",
+                    _LEGACY_DIM_PHASE6, FEATURE_DIM, _N_ADDITIONAL, _N_POSITION,
                 )
-                zeros = np.zeros((X.shape[0], _N_ADDITIONAL), dtype=np.float32)
+                additional_zeros = np.zeros((X.shape[0], _N_ADDITIONAL), dtype=np.float32)
                 X = np.concatenate(
-                    [X[:, :_ADDITIONAL_INSERT_POS], zeros,
+                    [X[:, :_ADDITIONAL_INSERT_POS], additional_zeros,
                      X[:, _ADDITIONAL_INSERT_POS:]], axis=1,
                 ).astype(np.float32)
+                # Now at 89 cols — fall through to append position cols below
+
+            if X.shape[1] == _LEGACY_DIM_PHASE7:
+                # Phase 8 migration: 89 → 93 (append position one-hot)
+                _log.info(
+                    "Migrating cached matrices from %d to %d features "
+                    "(appending %d position one-hot columns)",
+                    _LEGACY_DIM_PHASE7, FEATURE_DIM, _N_POSITION,
+                )
+                # Populate position one-hot from metadata using vectorized lookup
+                pos_cols = np.zeros((X.shape[0], _N_POSITION), dtype=np.float32)
+                label_to_idx = {label: j for j, label in enumerate(POSITION_LABELS)}
+                for i, m_dict in enumerate(metadata):
+                    pos = (m_dict.get("position") or "").strip().upper()[:1]
+                    idx = label_to_idx.get(pos)
+                    if idx is not None:
+                        pos_cols[i, idx] = 1.0
+                X = np.concatenate([X, pos_cols], axis=1).astype(np.float32)
                 np.save(X_path, X)
                 _log.info("Migrated and saved — X shape now %s", X.shape)
 

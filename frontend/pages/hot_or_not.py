@@ -282,6 +282,7 @@ def render():
                 raw_elo_target=_raw_elo_target,
                 player_height_cm=_player_height_cm,
                 player_age=_player_age,
+                position=position,
             )
             predicted = model.predict(fd)
             # Paper Section 4: dual simulation — predict at current club too
@@ -297,6 +298,7 @@ def render():
                 raw_elo_target=_raw_elo_current,
                 player_height_cm=_player_height_cm,
                 player_age=_player_age,
+                position=position,
             )
             predicted_current = model.predict(fd_current)
     except Exception as e:

@@ -225,7 +225,7 @@ class TestFeatureKeysConsistency(unittest.TestCase):
         self.assertIn("interaction_league_gap", keys)
 
     def test_feature_keys_list_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (89)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (93)."""
         from backend.models.backtester import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
@@ -239,10 +239,11 @@ class TestInjectTeamPosAverages(unittest.TestCase):
 
     def test_injects_from_train_only(self):
         """Val/test team-pos averages should come from training data only."""
+        from backend.data.sofascore_client import ADDITIONAL_METRICS
         from backend.models.training_pipeline import inject_team_pos_averages
 
-        # 13 player + 4 ability + 2 raw_elo + 2 reep = 21
-        _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4 + 2 + 2  # 21
+        # 13 core + 10 additional + 4 ability + 2 raw_elo + 2 reep = 31
+        _POS_CURRENT_OFFSET = len(CORE_METRICS) + len(ADDITIONAL_METRICS) + 4 + 2 + 2  # 31
 
         # Train metadata: club_id=1, position=Forward, xG=0.5 per90
         train_meta = [
@@ -280,10 +281,11 @@ class TestInjectTeamPosAverages(unittest.TestCase):
 
     def test_missing_club_defaults_to_zero(self):
         """Unknown club/position combo should leave zeros."""
+        from backend.data.sofascore_client import ADDITIONAL_METRICS
         from backend.models.training_pipeline import inject_team_pos_averages
 
-        # 13 player + 4 ability + 2 raw_elo + 2 reep = 21
-        _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4 + 2 + 2
+        # 13 core + 10 additional + 4 ability + 2 raw_elo + 2 reep = 31
+        _POS_CURRENT_OFFSET = len(CORE_METRICS) + len(ADDITIONAL_METRICS) + 4 + 2 + 2
 
         train_meta = [
             {

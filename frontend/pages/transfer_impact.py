@@ -408,6 +408,7 @@ def render():
                 player_age=_player_age,
                 source_league_means=_source_league_means,
                 target_league_means=_target_league_means,
+                position=position,
             )
             predicted_target = model.predict(fd_target)
             # Paper Section 4: simulate at CURRENT club as baseline
@@ -427,6 +428,7 @@ def render():
                 player_age=_player_age,
                 source_league_means=_source_league_means,
                 target_league_means=_source_league_means,  # same league baseline
+                position=position,
             )
             predicted_current = model.predict(fd_current)
     except Exception as e:

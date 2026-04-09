@@ -1216,7 +1216,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertEqual(tp_keys, ref_keys)
 
     def test_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (89)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (93)."""
         from backend.models.training_pipeline import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
@@ -1232,7 +1232,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
 
 
 class TestCachedMatrixMigration(unittest.TestCase):
-    """Tests for the 79→89 cached feature matrix migration in run_pipeline()."""
+    """Tests for the 79→93 cached feature matrix migration in run_pipeline()."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -1245,14 +1245,17 @@ class TestCachedMatrixMigration(unittest.TestCase):
         rng = np.random.RandomState(42)
         self.X_legacy = rng.rand(self.n_samples, self.legacy_dim).astype(np.float32)
 
-        # Save legacy matrices + minimal metadata
+        # Save legacy matrices + minimal metadata (list of dicts for position migration)
         np.save(os.path.join(self.matrices_dir, "X.npy"), self.X_legacy)
         np.save(
             os.path.join(self.matrices_dir, "y.npy"),
             rng.rand(self.n_samples, 13).astype(np.float32),
         )
+        # Cover all 4 position labels + an unknown position
+        positions = ["F", "M", "D", "G", "Unknown"]
+        metadata = [{"position": positions[i]} for i in range(self.n_samples)]
         with open(os.path.join(self.matrices_dir, "metadata.json"), "w") as f:
-            json.dump({"version": "legacy"}, f)
+            json.dump(metadata, f)
 
     def tearDown(self):
         shutil.rmtree(self.tmpdir)
@@ -1312,9 +1315,9 @@ class TestCachedMatrixMigration(unittest.TestCase):
         np.testing.assert_array_equal(
             X_migrated[:, :insert_pos], self.X_legacy[:, :insert_pos]
         )
-        # Columns after insert position should be the tail of the original
+        # Columns after insert position (before position one-hot) should be the tail of the original
         np.testing.assert_array_equal(
-            X_migrated[:, insert_pos + 10:], self.X_legacy[:, insert_pos:]
+            X_migrated[:, insert_pos + 10:-4], self.X_legacy[:, insert_pos:]
         )
 
     def test_migration_persists_to_disk(self):
@@ -1324,6 +1327,24 @@ class TestCachedMatrixMigration(unittest.TestCase):
         X_path = os.path.join(self.matrices_dir, "X.npy")
         X_reloaded = np.load(X_path)
         self.assertEqual(X_reloaded.shape[1], FEATURE_DIM)
+
+    def test_migration_populates_position_one_hot(self):
+        """Position one-hot columns should be populated correctly from metadata."""
+        self._run_pipeline_skip_build()
+
+        X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
+        # Position columns are the last 4 columns
+        pos_cols = X_migrated[:, -4:]
+        # Sample 0: "F" → [1, 0, 0, 0]
+        np.testing.assert_array_equal(pos_cols[0], [1, 0, 0, 0])
+        # Sample 1: "M" → [0, 1, 0, 0]
+        np.testing.assert_array_equal(pos_cols[1], [0, 1, 0, 0])
+        # Sample 2: "D" → [0, 0, 1, 0]
+        np.testing.assert_array_equal(pos_cols[2], [0, 0, 1, 0])
+        # Sample 3: "G" → [0, 0, 0, 1]
+        np.testing.assert_array_equal(pos_cols[3], [0, 0, 0, 1])
+        # Sample 4: "Unknown" → [0, 0, 0, 0]
+        np.testing.assert_array_equal(pos_cols[4], [0, 0, 0, 0])
 
     def test_unknown_dimension_forces_rebuild(self):
         """Unexpected column count (not 79 or 89) should clear skip_build."""
