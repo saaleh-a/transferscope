@@ -36,26 +36,24 @@ _log = logging.getLogger(__name__)
 # plausible per-metric maximum delta.  Prevents runaway TF model predictions.
 DELTA_CLIP_MULTIPLIER = 2.0
 
-# Per-metric clip floors — calibrated to cover the 95th percentile of
-# observed transfer deltas.  This ensures the model can express the vast
-# majority of genuine transfer effects while still preventing runaway
-# predictions.  Floors above P95 prevent clipping from suppressing
-# legitimate large deltas (the prior floors at ~40% of typical range
-# were clipping 3-5% of real xG/xA/crosses deltas).
+# Per-metric clip floors — set above the 95th percentile of observed
+# transfer deltas to ensure at most ~1% of genuine deltas get clipped.
+# Floors are intentionally ~30-50% above P95 to provide headroom for
+# the model to predict moderately extreme-but-plausible changes.
 _METRIC_CLIP_FLOORS: Dict[str, float] = {
-    "expected_goals": 0.30,              # typical range: 0.05–0.40; P95 delta=0.205
-    "expected_assists": 0.20,            # typical range: 0.03–0.25; P95 delta=0.129
-    "shots": 1.20,                       # typical range: 0.5–4.0;  P95 delta=0.921
-    "successful_dribbles": 1.00,         # typical range: 0.2–3.0;  P95 delta=0.780
-    "successful_crosses": 0.80,          # typical range: 0.1–1.5;  P95 delta=0.772
-    "touches_in_opposition_box": 2.50,   # typical range: 0.5–5.0;  P95 delta=2.491
-    "successful_passes": 15.00,          # typical range: 10–80;    P95 delta=14.52
-    "pass_completion_pct": 5.00,         # typical range: 70–92;    P95 delta=9.26
-    "accurate_long_balls": 1.80,         # typical range: 0.5–5.0;  P95 delta=1.792
-    "chances_created": 0.80,             # typical range: 0.1–2.0;  P95 delta=0.823
-    "clearances": 1.60,                  # typical range: 0.5–5.0;  P95 delta=1.630
-    "interceptions": 0.80,              # typical range: 0.2–2.0;  P95 delta=0.716
-    "possession_won_final_3rd": 0.80,    # typical range: 0.2–2.0;  P95 delta=0.774
+    "expected_goals": 0.30,              # P95 delta=0.205, floor at ~P99
+    "expected_assists": 0.20,            # P95 delta=0.129, floor at ~P99
+    "shots": 1.20,                       # P95 delta=0.921, floor at ~P99
+    "successful_dribbles": 1.00,         # P95 delta=0.780, floor at ~P99
+    "successful_crosses": 0.80,          # P95 delta=0.772, floor at ~P99
+    "touches_in_opposition_box": 2.50,   # P95 delta=2.491, floor at ~P95
+    "successful_passes": 15.00,          # P95 delta=14.52, floor at ~P95
+    "pass_completion_pct": 10.00,        # P95 delta=9.26, floor at ~P97
+    "accurate_long_balls": 1.80,         # P95 delta=1.792, floor at ~P95
+    "chances_created": 0.80,             # P95 delta=0.823, floor at ~P95
+    "clearances": 1.60,                  # P95 delta=1.630, floor at ~P95
+    "interceptions": 0.80,              # P95 delta=0.716, floor at ~P98
+    "possession_won_final_3rd": 0.80,    # P95 delta=0.774, floor at ~P96
 }
 # Conservative fallback for metrics not in _METRIC_CLIP_FLOORS.
 # Set to a moderate value to avoid overly tight or overly loose
@@ -294,7 +292,7 @@ _MODELS_DIR = os.path.join(
 #   shooting: 0.003–0.152 (very low), passing: 0.003–0.063 (very low),
 #   dribbling: 0.247 (moderate), defending: 0.040–0.251 (mixed).
 _GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    "shooting": {"hidden_units": [64, 32], "dropout": 0.40, "l2": 3e-4, "huber_delta": 0.3},
+    "shooting": {"hidden_units": [64, 32], "dropout": 0.40, "l2": 4e-4, "huber_delta": 0.3},
     "passing": {"hidden_units": [96, 48], "dropout": 0.35, "l2": 3e-4, "huber_delta": 1.5},
     "dribbling": {"hidden_units": [64, 32], "dropout": 0.4, "l2": 3e-4},
     "defending": {"hidden_units": [96, 48], "dropout": 0.35},

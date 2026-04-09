@@ -381,10 +381,12 @@ class TestGroupArchOverrides(unittest.TestCase):
             )
 
     def test_shooting_has_strong_regularization(self):
-        """Shooting (lowest SNR, xG masking) should have strong regularization."""
+        """Shooting (lowest SNR, xG masking) should have the strongest regularization."""
         from backend.models.transfer_portal import _GROUP_ARCH_OVERRIDES
         shooting_l2 = _GROUP_ARCH_OVERRIDES["shooting"]["l2"]
+        passing_l2 = _GROUP_ARCH_OVERRIDES["passing"]["l2"]
         dribbling_l2 = _GROUP_ARCH_OVERRIDES["dribbling"]["l2"]
+        self.assertGreater(shooting_l2, passing_l2)
         self.assertGreaterEqual(shooting_l2, dribbling_l2)
 
 
