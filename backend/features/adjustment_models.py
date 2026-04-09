@@ -56,6 +56,11 @@ class TeamAdjustmentModel:
     # Number of features: team_relative_feature + from_ra + to_ra
     _N_FEATURES = 3
 
+    # Minimum samples per metric to fit a linear model.  With 3 features an
+    # OLS fit on <10 samples risks severe overfitting (R² ≈ 1.0, zero
+    # generalisation).
+    _MIN_SAMPLES = 10
+
     def __init__(self):
         self.models: Dict[str, LinearRegression] = {}
         self.fitted = False
@@ -97,10 +102,16 @@ class TeamAdjustmentModel:
         for metric in CORE_METRICS:
             xs, ys = by_metric[metric]
             model = LinearRegression()
-            if len(xs) >= 2:
+            if len(xs) >= self._MIN_SAMPLES:
                 model.fit(np.array(xs), np.array(ys))
             else:
                 # Not enough data — identity model (predict 0 adjustment)
+                if len(xs) >= 2:
+                    _log.info(
+                        "Team metric %s: only %d samples (< %d), "
+                        "skipping regression (identity fallback)",
+                        metric, len(xs), self._MIN_SAMPLES,
+                    )
                 model.coef_ = np.array([0.0] * self._N_FEATURES)
                 model.intercept_ = 0.0
             self.models[metric] = model
@@ -200,7 +211,7 @@ _PLAYER_TARGET_STD_THRESHOLD = 0.01  # Skip fitting if target std is below this
 class PlayerAdjustmentModel:
     """13 sklearn Ridge models per position.
 
-    Uses Ridge regression (alpha=1.0) instead of OLS to handle
+    Uses Ridge regression (alpha=10.0) instead of OLS to handle
     multicollinearity from the polynomial change_relative_ability
     features (cra, cra², cra³).
 
@@ -266,7 +277,7 @@ class PlayerAdjustmentModel:
             self.models[pos] = {}
             self._scalers[pos] = {}
             for metric in CORE_METRICS:
-                model = Ridge(alpha=1.0)
+                model = Ridge(alpha=10.0)
                 scaler = StandardScaler()
                 if (
                     metric in metrics
