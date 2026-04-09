@@ -11,10 +11,9 @@ Default architecture per group:
   -> Dense(64, relu) -> BatchNormalization -> Dropout(0.3)
   -> [Linear output head per target]
 
-Dribbling group override (smaller feature/target ratio):
-  Input -> Dense(64, relu) -> BatchNormalization -> Dropout(0.4)
-  -> Dense(32, relu) -> BatchNormalization -> Dropout(0.4)
-  -> [Linear output head]
+Per-group overrides in _GROUP_ARCH_OVERRIDES (see below for current values).
+Shooting uses LayerNorm instead of BatchNorm to avoid bias from
+zero-weighted xG-masked samples.
 """
 
 from __future__ import annotations
@@ -37,36 +36,36 @@ _log = logging.getLogger(__name__)
 # plausible per-metric maximum delta.  Prevents runaway TF model predictions.
 DELTA_CLIP_MULTIPLIER = 2.0
 
-# Per-metric clip floors — calibrated to ~40% of each metric's typical per-90
-# upper bound.  This represents the maximum plausible single-transfer change
-# for a player.  For metrics with small absolute values (xG, xA), tight floors
-# prevent the model from making absurdly large predictions when pre_val ≈ 0.
+# Per-metric clip floors — set above the 95th percentile of observed
+# transfer deltas to ensure at most ~1% of genuine deltas get clipped.
+# Floors are intentionally ~30-50% above P95 to provide headroom for
+# the model to predict moderately extreme-but-plausible changes.
 _METRIC_CLIP_FLOORS: Dict[str, float] = {
-    "expected_goals": 0.15,              # typical range: 0.05–0.40
-    "expected_assists": 0.10,            # typical range: 0.03–0.25
-    "shots": 0.80,                       # typical range: 0.5–4.0
-    "successful_dribbles": 0.60,         # typical range: 0.2–3.0
-    "successful_crosses": 0.30,          # typical range: 0.1–1.5
-    "touches_in_opposition_box": 1.00,   # typical range: 0.5–5.0
-    "successful_passes": 8.00,           # typical range: 10–80
-    "pass_completion_pct": 3.00,         # typical range: 70–92
-    "accurate_long_balls": 0.60,         # typical range: 0.5–5.0
-    "chances_created": 0.30,             # typical range: 0.1–2.0
-    "clearances": 0.80,                  # typical range: 0.5–5.0
-    "interceptions": 0.40,               # typical range: 0.2–2.0
-    "possession_won_final_3rd": 0.40,    # typical range: 0.2–2.0
+    "expected_goals": 0.30,              # P95 delta=0.205, floor at ~P99
+    "expected_assists": 0.20,            # P95 delta=0.129, floor at ~P99
+    "shots": 1.20,                       # P95 delta=0.921, floor at ~P99
+    "successful_dribbles": 1.00,         # P95 delta=0.780, floor at ~P99
+    "successful_crosses": 0.80,          # P95 delta=0.772, floor at ~P99
+    "touches_in_opposition_box": 2.50,   # P95 delta=2.491, floor at ~P95
+    "successful_passes": 15.00,          # P95 delta=14.52, floor at ~P95
+    "pass_completion_pct": 10.00,        # P95 delta=9.26, floor at ~P97
+    "accurate_long_balls": 1.80,         # P95 delta=1.792, floor at ~P95
+    "chances_created": 0.80,             # P95 delta=0.823, floor at ~P95
+    "clearances": 1.60,                  # P95 delta=1.630, floor at ~P95
+    "interceptions": 0.80,              # P95 delta=0.716, floor at ~P98
+    "possession_won_final_3rd": 0.80,    # P95 delta=0.774, floor at ~P96
 }
 # Conservative fallback for metrics not in _METRIC_CLIP_FLOORS.
-# Set to the median of documented floors (~0.5) to avoid overly tight
-# or overly loose clipping on unknown metrics.
-DELTA_CLIP_FLOOR = 0.5
+# Set to a moderate value to avoid overly tight or overly loose
+# clipping on unknown metrics.
+DELTA_CLIP_FLOOR = 1.0
 
 # ── Delta shrinkage ──────────────────────────────────────────────────────────
 # Multiply predicted deltas by this factor to pull toward naive baseline
 # (zero delta).  Prevents systematic overshoot when the model is uncertain.
 # Applied *before* clipping so that the shrunken delta is what gets compared
 # against the clip threshold — the two guards compose naturally.
-DELTA_SHRINKAGE = 0.85
+DELTA_SHRINKAGE = 0.90
 
 # ── Position labels for one-hot encoding ─────────────────────────────────────
 # Order matters — must be stable across training and inference.
@@ -100,9 +99,8 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "player_touches_in_opposition_box",
         "player_chances_created",
         # Additional metrics — shooting-relevant enrichment
-        "player_xg_on_target",
-        "player_non_penalty_xg",
         "player_touches",
+        "player_fouls_won",
         "team_ability_current",
         "team_ability_target",
         "league_ability_current",
@@ -110,6 +108,7 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "raw_elo_current",
         "raw_elo_target",
         "player_height_cm",
+        "player_age",
         "team_pos_current_expected_goals",
         "team_pos_current_shots",
         "team_pos_current_touches_in_opposition_box",
@@ -241,7 +240,6 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "player_aerial_duels_won_pct",
         "player_duels_won_pct",
         "player_goals_conceded_on_pitch",
-        "player_xg_against_on_pitch",
         "team_ability_current",
         "team_ability_target",
         "league_ability_current",
@@ -294,8 +292,8 @@ _MODELS_DIR = os.path.join(
 #   shooting: 0.003–0.152 (very low), passing: 0.003–0.063 (very low),
 #   dribbling: 0.247 (moderate), defending: 0.040–0.251 (mixed).
 _GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    "shooting": {"hidden_units": [32, 16], "dropout": 0.45, "l2": 5e-4, "huber_delta": 0.3},
-    "passing": {"hidden_units": [48, 32], "dropout": 0.40, "l2": 4e-4, "huber_delta": 1.5},
+    "shooting": {"hidden_units": [64, 32], "dropout": 0.40, "l2": 4e-4, "huber_delta": 0.3},
+    "passing": {"hidden_units": [96, 48], "dropout": 0.35, "l2": 3e-4, "huber_delta": 1.5},
     "dribbling": {"hidden_units": [64, 32], "dropout": 0.4, "l2": 3e-4},
     "defending": {"hidden_units": [96, 48], "dropout": 0.35},
 }
