@@ -2288,17 +2288,17 @@ def main() -> None:
         help="Number of historical seasons to use (default: 5)",
     )
     parser.add_argument(
-        "--skip-discovery",
+        "--skip-discovery", "--skip_discovery",
         action="store_true",
         help="Load cached transfer records from data/models/transfer_records.json",
     )
     parser.add_argument(
-        "--skip-training",
+        "--skip-training", "--skip_training",
         action="store_true",
         help="Skip training, run backtesting only (requires existing weights)",
     )
     parser.add_argument(
-        "--skip-build",
+        "--skip-build", "--skip_build", "--skip-building", "--skip_building",
         action="store_true",
         help="Load pre-built feature matrices from data/models/matrices/ instead of rebuilding from API",
     )
