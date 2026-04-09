@@ -49,10 +49,12 @@ from backend.features.rolling_windows import blend_weight
 from backend.models.transfer_portal import (
     FEATURE_DIM,
     GROUP_FEATURE_SUBSETS,
+    LOG_SCALE_GROUPS,
     MODEL_GROUPS,
     POSITION_LABELS,
     TransferPortalModel,
     _GROUP_ARCH_OVERRIDES,
+    _LOG_EPS,
     _feature_keys,
     build_feature_dict,
 )
@@ -2077,6 +2079,22 @@ def train_neural_network(
     y_train_delta = y_train - X_train[:, :len(CORE_METRICS)]
     y_val_delta = y_val - X_val[:, :len(CORE_METRICS)]
 
+    # Direction labels: binary indicator (post > pre) used by the auxiliary
+    # classification head to learn P(metric increases after transfer).
+    y_train_direction = (y_train_delta > 0).astype(np.float32)
+    y_val_direction = (y_val_delta > 0).astype(np.float32)
+
+    # Log-ratio targets for LOG_SCALE_GROUPS: predict log(post+ε) - log(pre+ε)
+    # instead of additive deltas.  This naturally scales the loss relative to
+    # the metric's magnitude so that a 0.05→0.10 change (100% increase) is
+    # penalised as much as a 0.50→1.00 change.
+    y_train_log_ratio = np.log(y_train + _LOG_EPS) - np.log(
+        X_train[:, :len(CORE_METRICS)] + _LOG_EPS
+    )
+    y_val_log_ratio = np.log(y_val + _LOG_EPS) - np.log(
+        X_val[:, :len(CORE_METRICS)] + _LOG_EPS
+    )
+
     # Sample weights: combine class-balance correction with confidence
     # weighting (more pre-transfer minutes → more reliable).
     #
@@ -2172,11 +2190,27 @@ def train_neural_network(
     for group_name, targets in MODEL_GROUPS.items():
         # Get target columns
         target_indices = [metric_to_idx[t] for t in targets]
-        y_group_train_raw = y_train_delta[:, target_indices]
-        y_group_val_raw = y_val_delta[:, target_indices]
 
-        # Scale targets per metric (not per group) so each metric's loss
-        # landscape is comparable regardless of its natural magnitude.
+        # Select raw regression targets: log-ratio for LOG_SCALE_GROUPS,
+        # additive delta for all others.
+        if group_name in LOG_SCALE_GROUPS:
+            y_group_train_raw = y_train_log_ratio[:, target_indices]
+            y_group_val_raw = y_val_log_ratio[:, target_indices]
+            _log.info(
+                "Group %s uses log-scale targets (log(post+ε)-log(pre+ε))",
+                group_name,
+            )
+        else:
+            y_group_train_raw = y_train_delta[:, target_indices]
+            y_group_val_raw = y_val_delta[:, target_indices]
+
+        # Direction labels: binary P(post > pre) per metric
+        y_dir_train = y_train_direction[:, target_indices]
+        y_dir_val = y_val_direction[:, target_indices]
+
+        # Scale regression targets per metric (not per group) so each
+        # metric's loss landscape is comparable regardless of its natural
+        # magnitude.
         # E.g. successful_passes (30–80 range) vs expected_goals (0–1).
         metric_scalers: Dict[str, StandardScaler] = {}
         y_group_train = np.zeros_like(y_group_train_raw)
@@ -2200,6 +2234,8 @@ def train_neural_network(
         X_group_val = X_val_scaled[:, group_indices]
 
         print(f"\n  Group: {group_name} ({len(targets)} targets, {len(group_indices)} features)")
+        if group_name in LOG_SCALE_GROUPS:
+            print(f"    [log-scale targets enabled]")
 
         # Per-group sample weights: start from a copy of base weights so
         # per-group modifications (e.g. xG masking) don't alias back.
@@ -2224,11 +2260,19 @@ def train_neural_network(
         # Recompile with per-group Huber delta (robust to outlier deltas) and
         # lower learning rate for stable convergence on small delta targets.
         # Start at warmup LR; the _WarmupCosineAnnealing callback ramps up.
+        # Log-scale groups get a slightly larger Huber delta because
+        # log-ratios have a different scale than raw deltas.
         huber_delta = _GROUP_ARCH_OVERRIDES.get(group_name, {}).get("huber_delta", 1.0)
+        if group_name in LOG_SCALE_GROUPS:
+            huber_delta = max(huber_delta, 0.5)  # log-space needs wider Huber
         model.models[group_name].compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=_WARMUP_START_LR),
-            loss=tf.keras.losses.Huber(delta=huber_delta),
-            metrics=["mae"],
+            loss=[
+                tf.keras.losses.Huber(delta=huber_delta),
+                tf.keras.losses.BinaryCrossentropy(),
+            ],
+            loss_weights=[1.0, 0.15],
+            metrics={"regression": ["mae"], "direction": ["accuracy"]},
         )
 
         # Validation data: for the shooting group, zero-weight xG-missing
@@ -2244,10 +2288,15 @@ def train_neural_network(
                 "with missing xG",
                 n_masked_val_group, len(X_group_val),
             )
+
+        # Training targets: [regression, direction] for the dual-head model
+        y_train_pair = [y_group_train, y_dir_train]
+        y_val_pair = [y_group_val, y_dir_val]
+
         if val_weights is not None:
-            val_data = (X_group_val, y_group_val, val_weights)
+            val_data = (X_group_val, y_val_pair, val_weights)
         else:
-            val_data = (X_group_val, y_group_val)
+            val_data = (X_group_val, y_val_pair)
 
         # Early stopping + warmup → cosine annealing LR schedule
         callbacks = [
@@ -2266,7 +2315,7 @@ def train_neural_network(
 
         history = model.models[group_name].fit(
             X_group_train,
-            y_group_train,
+            y_train_pair,
             sample_weight=group_weights,
             epochs=_MAX_EPOCHS,
             batch_size=32,
@@ -2285,6 +2334,11 @@ def train_neural_network(
         final_train_loss = history.history["loss"][-1]
         final_val_loss = history.history["val_loss"][-1]
         best_val_loss = min(history.history["val_loss"])
+
+        print(f"    Epochs: {epochs_trained}")
+        print(f"    Train loss (scaled): {final_train_loss:.6f}")
+        print(f"    Val loss (scaled):   {final_val_loss:.6f}")
+        print(f"    Best val loss (scaled): {best_val_loss:.6f}")
 
         print(f"    Epochs: {epochs_trained}")
         print(f"    Train loss (scaled): {final_train_loss:.6f}")

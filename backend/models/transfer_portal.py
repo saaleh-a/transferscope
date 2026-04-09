@@ -67,6 +67,26 @@ DELTA_CLIP_FLOOR = 1.0
 # against the clip threshold — the two guards compose naturally.
 DELTA_SHRINKAGE = 0.90
 
+# ── Direction-aware shrinkage ────────────────────────────────────────────────
+# When the direction head is available, modulate shrinkage based on
+# direction confidence.  High-confidence predictions get less shrinkage,
+# allowing strong directional signals through.
+# Final shrinkage = DELTA_SHRINKAGE * (1 - DIRECTION_SHRINKAGE_ALPHA * (dir_conf - 0.5))
+# where dir_conf ∈ [0, 1].  At conf=1.0 (certain increase) shrinkage is
+# loosened; at conf=0.5 (coin flip) shrinkage = DELTA_SHRINKAGE.
+DIRECTION_SHRINKAGE_ALPHA = 0.30  # max ±15% adjustment to base shrinkage
+
+# ── Log-scale target transform ───────────────────────────────────────────────
+# For low-base-rate metrics (xG, shots), predict multiplicative changes
+# in log-space: log(post + ε) - log(pre + ε).  This naturally scales loss
+# relative to metric magnitude so a 0.05→0.10 change (100% increase) is
+# penalised as much as a 0.50→1.00 change.
+_LOG_EPS = 0.01  # floor to avoid log(0)
+
+# Groups whose targets are transformed to log-ratios during training.
+# Other groups continue to use additive deltas.
+LOG_SCALE_GROUPS = frozenset({"shooting"})
+
 # ── Position labels for one-hot encoding ─────────────────────────────────────
 # Order matters — must be stable across training and inference.
 POSITION_LABELS: List[str] = ["F", "M", "D", "G"]
@@ -300,7 +320,17 @@ _GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
 
 
 def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.keras.Model:
-    """Build a multi-head model for one target group.
+    """Build a dual-head model for one target group.
+
+    Architecture per group:
+      Input → Dense(H1, relu) → Norm → Dropout
+            → Dense(H2, relu) → Norm → Dropout
+            → [regression heads: Linear × num_targets]  (output 0)
+            → [direction head: Sigmoid × num_targets]   (output 1)
+
+    The regression head predicts scaled deltas (or log-ratios for
+    LOG_SCALE_GROUPS).  The direction head predicts P(post > pre) per
+    metric via binary cross-entropy.
 
     Uses BatchNormalization + L2 regularization on Dense layers and Huber
     loss for robustness to outlier deltas in training data.
@@ -341,26 +371,53 @@ def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.
         x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn2")(x)
     x = tf.keras.layers.Dropout(dropout_rate, name=f"{group_name}_drop2")(x)
 
-    outputs = []
+    # ── Regression head: scaled delta (or log-ratio) per target ──────────
+    reg_outputs = []
     targets = MODEL_GROUPS[group_name]
     for target in targets:
         out = tf.keras.layers.Dense(
             1, activation="linear", kernel_regularizer=l2_reg,
             name=f"head_{target}",
         )(x)
-        outputs.append(out)
+        reg_outputs.append(out)
 
-    if len(outputs) > 1:
-        combined = tf.keras.layers.Concatenate(name=f"{group_name}_out")(outputs)
+    if len(reg_outputs) > 1:
+        regression = tf.keras.layers.Concatenate(name=f"{group_name}_reg")(reg_outputs)
     else:
-        combined = outputs[0]
+        regression = reg_outputs[0]
 
-    model = tf.keras.Model(inputs=inp, outputs=combined, name=f"{group_name}_model")
+    # ── Direction head: P(post > pre) per target via sigmoid ─────────────
+    dir_outputs = []
+    for target in targets:
+        d = tf.keras.layers.Dense(
+            1, activation="sigmoid", kernel_regularizer=l2_reg,
+            name=f"dir_{target}",
+        )(x)
+        dir_outputs.append(d)
+
+    if len(dir_outputs) > 1:
+        direction = tf.keras.layers.Concatenate(name=f"{group_name}_dir")(dir_outputs)
+    else:
+        direction = dir_outputs[0]
+
+    model = tf.keras.Model(
+        inputs=inp,
+        outputs=[regression, direction],
+        name=f"{group_name}_model",
+    )
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),
-        loss=tf.keras.losses.Huber(delta=huber_delta),
-        metrics=["mae"],
+        loss=[
+            tf.keras.losses.Huber(delta=huber_delta),
+            tf.keras.losses.BinaryCrossentropy(),
+        ],
+        loss_weights=[1.0, 0.15],  # direction loss at 15% of regression
+        metrics={"regression": ["mae"], "direction": ["accuracy"]},
     )
+    # Rename outputs for clarity in training — Keras uses output names to
+    # key into the loss/metrics dicts.
+    model.output_names[0] = "regression"
+    model.output_names[1] = "direction"
     return model
 
 
@@ -513,8 +570,11 @@ class TransferPortalModel:
                 metric_scalers[metric_name] = col_scaler
             self._target_scalers[group_name] = metric_scalers
 
+            # Direction labels: binary P(post > pre) per metric
+            y_dir = (y_group_raw > 0).astype(np.float32)
+
             hist = self.models[group_name].fit(
-                X_group, y_group,
+                X_group, [y_group, y_dir],
                 epochs=epochs,
                 batch_size=batch_size,
                 validation_split=validation_split,
@@ -543,6 +603,15 @@ class TransferPortalModel:
         """Predict per-90 metrics for a single transfer scenario.
 
         Returns dict mapping metric name -> predicted per-90 value.
+
+        The model outputs two heads per group:
+          1. Regression: scaled delta (or log-ratio for LOG_SCALE_GROUPS)
+          2. Direction:  P(post > pre) per metric (sigmoid)
+
+        Direction confidence modulates delta shrinkage — high-confidence
+        direction predictions receive less shrinkage, letting strong
+        directional signals through.  If the direction head disagrees with
+        the regression sign at high confidence (>0.7), the delta is flipped.
 
         If trained weights and a feature scaler exist in data/models/,
         loads them and runs the neural network.  Otherwise falls back
@@ -600,21 +669,58 @@ class TransferPortalModel:
             # Use direct model call instead of model.predict() for
             # single-sample inference to avoid tf.function retracing
             # warnings caused by varying input shapes.
-            preds = self.models[group_name](X_group, training=False).numpy()
+            raw_out = self.models[group_name](X_group, training=False)
 
-            # Inverse-transform predictions if target scalers are available
+            # Dual-head model returns [regression, direction]
+            if isinstance(raw_out, (list, tuple)) and len(raw_out) == 2:
+                reg_preds = raw_out[0].numpy()
+                dir_preds = raw_out[1].numpy().flatten()
+            else:
+                # Legacy single-output model (backwards compat)
+                reg_preds = raw_out.numpy()
+                dir_preds = np.full(len(targets), 0.5)
+
+            # Inverse-transform regression predictions
             target_scaler = self._target_scalers.get(group_name)
-            preds = self._inverse_scale_targets(preds, target_scaler, targets)
+            reg_preds = self._inverse_scale_targets(reg_preds, target_scaler, targets)
 
-            preds = preds.flatten()
+            reg_preds = reg_preds.flatten()
             for i, target in enumerate(targets):
-                if i < len(preds):
-                    # Model predicts delta (post − pre); add pre-transfer value
-                    # back to recover the absolute post-transfer per-90 stat.
-                    # Uses safe_pre which falls back to training mean if the
-                    # API returned an implausibly low value (> 3σ below mean).
+                if i < len(reg_preds):
                     pre_val = safe_pre.get(target, 0.0)
-                    raw_delta = float(preds[i]) * DELTA_SHRINKAGE
+
+                    if group_name in LOG_SCALE_GROUPS:
+                        # Model predicted log-ratio: log(post+ε) - log(pre+ε)
+                        # Inverse-transform to recover absolute post value.
+                        log_ratio = float(reg_preds[i])
+                        log_pre = np.log(pre_val + _LOG_EPS)
+                        post_val = np.exp(log_pre + log_ratio) - _LOG_EPS
+                        raw_delta = post_val - pre_val
+                    else:
+                        raw_delta = float(reg_preds[i])
+
+                    # Direction-aware shrinkage: modulate based on direction
+                    # confidence.  At dir_conf=0.5 (coin flip), shrinkage
+                    # equals DELTA_SHRINKAGE.  High confidence loosens it.
+                    dir_conf = float(dir_preds[i]) if i < len(dir_preds) else 0.5
+                    # dir_conf > 0.5 means model predicts increase
+                    signed_conf = dir_conf - 0.5  # [-0.5, +0.5]
+                    shrinkage = DELTA_SHRINKAGE * (
+                        1.0 - DIRECTION_SHRINKAGE_ALPHA * signed_conf * 2.0
+                    )
+                    # Clamp shrinkage to [0.5, 1.0] for safety
+                    shrinkage = max(0.5, min(1.0, shrinkage))
+
+                    raw_delta *= shrinkage
+
+                    # Direction gating: if direction head strongly disagrees
+                    # with regression sign, flip the delta.
+                    _DIR_FLIP_THRESHOLD = 0.70
+                    if raw_delta > 0 and dir_conf < (1 - _DIR_FLIP_THRESHOLD):
+                        raw_delta = -abs(raw_delta)
+                    elif raw_delta < 0 and dir_conf > _DIR_FLIP_THRESHOLD:
+                        raw_delta = abs(raw_delta)
+
                     delta = self._clip_delta(raw_delta, pre_val, target)
                     result[target] = max(0.0, pre_val + delta)
 
@@ -677,20 +783,52 @@ class TransferPortalModel:
                 continue
             group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
             X_group = X_full[:, group_indices]
-            preds = self.models[group_name].predict(X_group, verbose=0)
+            raw_out = self.models[group_name].predict(X_group, verbose=0)
 
-            # Inverse-transform predictions if target scalers are available
+            # Dual-head model returns [regression, direction]
+            if isinstance(raw_out, (list, tuple)) and len(raw_out) == 2:
+                reg_preds = raw_out[0]
+                dir_preds = raw_out[1]
+            else:
+                reg_preds = raw_out
+                dir_preds = np.full((n, len(targets)), 0.5)
+
+            # Inverse-transform regression predictions
             target_scaler = self._target_scalers.get(group_name)
-            preds = self._inverse_scale_targets(preds, target_scaler, targets)
-            if preds.ndim == 1:
-                preds = preds.reshape(-1, 1)
+            reg_preds = self._inverse_scale_targets(reg_preds, target_scaler, targets)
+            if reg_preds.ndim == 1:
+                reg_preds = reg_preds.reshape(-1, 1)
+            if dir_preds.ndim == 1:
+                dir_preds = dir_preds.reshape(-1, 1)
             for i in range(n):
                 for j, target in enumerate(targets):
-                    if j < preds.shape[1]:
-                        # Model predicts delta (post − pre); add pre-transfer
-                        # value back to recover absolute post-transfer per-90.
-                        pre_val = feature_dicts[i].get(f"player_{target}", 0.0)
-                        raw_delta = float(preds[i, j]) * DELTA_SHRINKAGE
+                    if j < reg_preds.shape[1]:
+                        pre_val = max(0.0, feature_dicts[i].get(f"player_{target}", 0.0))
+
+                        if group_name in LOG_SCALE_GROUPS:
+                            log_ratio = float(reg_preds[i, j])
+                            log_pre = np.log(pre_val + _LOG_EPS)
+                            post_val = np.exp(log_pre + log_ratio) - _LOG_EPS
+                            raw_delta = post_val - pre_val
+                        else:
+                            raw_delta = float(reg_preds[i, j])
+
+                        # Direction-aware shrinkage
+                        dir_conf = float(dir_preds[i, j]) if j < dir_preds.shape[1] else 0.5
+                        signed_conf = dir_conf - 0.5
+                        shrinkage = DELTA_SHRINKAGE * (
+                            1.0 - DIRECTION_SHRINKAGE_ALPHA * signed_conf * 2.0
+                        )
+                        shrinkage = max(0.5, min(1.0, shrinkage))
+                        raw_delta *= shrinkage
+
+                        # Direction gating
+                        _DIR_FLIP_THRESHOLD = 0.70
+                        if raw_delta > 0 and dir_conf < (1 - _DIR_FLIP_THRESHOLD):
+                            raw_delta = -abs(raw_delta)
+                        elif raw_delta < 0 and dir_conf > _DIR_FLIP_THRESHOLD:
+                            raw_delta = abs(raw_delta)
+
                         delta = self._clip_delta(raw_delta, pre_val, target)
                         results[i][target] = max(0.0, pre_val + delta)
 
@@ -772,7 +910,12 @@ class TransferPortalModel:
             x_tensor = tf.Variable(x_np.reshape(1, -1))
 
             with tf.GradientTape() as tape:
-                preds = self.models[group_name](x_tensor, training=False)
+                raw_out = self.models[group_name](x_tensor, training=False)
+                # Dual-head: use regression output for importance
+                if isinstance(raw_out, (list, tuple)) and len(raw_out) == 2:
+                    preds = raw_out[0]
+                else:
+                    preds = raw_out
                 # Sum all output heads to get a scalar for gradient computation
                 total = tf.reduce_sum(preds)
 
@@ -838,16 +981,41 @@ class TransferPortalModel:
                 X_group = full_X[:, group_indices]
 
                 # training=True keeps dropout active for MC sampling
-                preds = self.models[group_name](X_group, training=True).numpy()
+                raw_out = self.models[group_name](X_group, training=True)
+
+                # Dual-head model returns [regression, direction]
+                if isinstance(raw_out, (list, tuple)) and len(raw_out) == 2:
+                    reg_preds = raw_out[0].numpy()
+                    dir_preds = raw_out[1].numpy().flatten()
+                else:
+                    reg_preds = raw_out.numpy()
+                    dir_preds = np.full(len(targets), 0.5)
 
                 target_scaler = self._target_scalers.get(group_name)
-                preds = self._inverse_scale_targets(preds, target_scaler, targets)
+                reg_preds = self._inverse_scale_targets(reg_preds, target_scaler, targets)
 
-                preds = preds.flatten()
+                reg_preds = reg_preds.flatten()
                 for i, target in enumerate(targets):
-                    if i < len(preds):
+                    if i < len(reg_preds):
                         pre_val = pre_per90.get(target, 0.0)
-                        raw_delta = float(preds[i]) * DELTA_SHRINKAGE
+
+                        if group_name in LOG_SCALE_GROUPS:
+                            log_ratio = float(reg_preds[i])
+                            log_pre = np.log(max(0.0, pre_val) + _LOG_EPS)
+                            post_val = np.exp(log_pre + log_ratio) - _LOG_EPS
+                            raw_delta = post_val - pre_val
+                        else:
+                            raw_delta = float(reg_preds[i])
+
+                        # Direction-aware shrinkage
+                        dir_conf = float(dir_preds[i]) if i < len(dir_preds) else 0.5
+                        signed_conf = dir_conf - 0.5
+                        shrinkage = DELTA_SHRINKAGE * (
+                            1.0 - DIRECTION_SHRINKAGE_ALPHA * signed_conf * 2.0
+                        )
+                        shrinkage = max(0.5, min(1.0, shrinkage))
+                        raw_delta *= shrinkage
+
                         delta = self._clip_delta(raw_delta, pre_val, target)
                         samples[target].append(max(0.0, pre_val + delta))
 
