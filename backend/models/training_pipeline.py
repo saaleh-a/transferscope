@@ -1983,6 +1983,16 @@ def train_neural_network(
         If provided, 'confidence' values are used as sample weights so
         high-quality samples (more pre-transfer minutes) contribute more.
 
+        The ``confidence`` field is produced by ``blend_weight(pre_minutes)``
+        in ``backend.features.rolling_windows``.  It equals
+        ``min(1.0, pre_transfer_minutes / PRIOR_CONSTANT)`` where
+        ``PRIOR_CONSTANT`` defaults to 900 minutes (~10 full matches).
+        Players with fewer pre-transfer minutes have lower confidence
+        (0 → 1 ramp) because their per-90 statistics are noisier.  The
+        value is multiplied with class-balance weights (transfer vs
+        non-transfer) to form the final ``sample_weight`` array passed to
+        ``model.fit()``.
+
     Returns the fitted model (already saved to data/models/).
     """
     import joblib
@@ -2015,9 +2025,11 @@ def train_neural_network(
     print(f"  Training samples: {X_train_scaled.shape[0]}")
     print(f"  Validation samples: {X_val_scaled.shape[0]}")
 
-    # Per-group target scalers to normalise y across different scales
-    # (e.g. successful_passes 30-80 vs expected_goals 0-1)
-    target_scalers: Dict[str, StandardScaler] = {}
+    # Per-group, per-metric target scalers to normalise y across different
+    # scales (e.g. successful_passes 30-80 vs expected_goals 0-1).
+    # Using one scaler per metric (instead of one for the whole group)
+    # preserves relative metric magnitudes better.
+    target_scalers: Dict[str, Any] = {}
 
     # ── Data quality: per-metric loss masking for missing xG ────────────────
     # Sofascore tracks shots for almost all leagues but only tracks xG for
@@ -2112,30 +2124,49 @@ def train_neural_network(
             _log.warning("All confidence values are zero -- using uniform sample weights")
             sample_weights = None
 
-    # ── LR Warmup callback ─────────────────────────────────────────────────
-    # Linear warmup from a low learning rate to the target over `warmup_epochs`
-    # helps the network find a better loss basin before ReduceLROnPlateau
-    # kicks in.
+    # ── LR schedule: linear warmup → cosine annealing ────────────────────────
+    # Linear warmup for the first `warmup_epochs` epochs, then cosine
+    # annealing from the peak LR down to `min_lr`.  Cosine annealing tends
+    # to find flatter loss minima that generalise better than
+    # ReduceLROnPlateau's staircase schedule.
     _WARMUP_EPOCHS = 10
     _WARMUP_START_LR = 1e-5
     _TARGET_LR = 5e-4
+    _MIN_LR = 1e-5
+    _MAX_EPOCHS = 150
 
-    class _LinearWarmup(tf.keras.callbacks.Callback):
-        """Linear LR warmup from *start_lr* to *target_lr* over *warmup_epochs*."""
+    class _WarmupCosineAnnealing(tf.keras.callbacks.Callback):
+        """Linear warmup then cosine annealing LR schedule."""
 
-        def __init__(self, warmup_epochs: int, start_lr: float, target_lr: float):
+        def __init__(
+            self,
+            warmup_epochs: int,
+            start_lr: float,
+            target_lr: float,
+            min_lr: float,
+            max_epochs: int,
+        ):
             super().__init__()
             self.warmup_epochs = warmup_epochs
             self.start_lr = start_lr
             self.target_lr = target_lr
+            self.min_lr = min_lr
+            self.max_epochs = max_epochs
 
         def on_epoch_begin(self, epoch: int, logs: Any = None) -> None:
             if epoch < self.warmup_epochs:
-                # epoch 0 → start_lr, epoch warmup_epochs-1 → target_lr
+                # Linear ramp: epoch 0 → start_lr, epoch warmup-1 → target_lr
                 lr = self.start_lr + (self.target_lr - self.start_lr) * (
                     (epoch + 1) / self.warmup_epochs
                 )
-                self.model.optimizer.learning_rate.assign(lr)
+            else:
+                # Cosine annealing from target_lr down to min_lr
+                cosine_epochs = self.max_epochs - self.warmup_epochs
+                progress = (epoch - self.warmup_epochs) / max(cosine_epochs, 1)
+                lr = self.min_lr + 0.5 * (self.target_lr - self.min_lr) * (
+                    1 + np.cos(np.pi * progress)
+                )
+            self.model.optimizer.learning_rate.assign(lr)
 
     for group_name, targets in MODEL_GROUPS.items():
         # Get target columns
@@ -2143,11 +2174,22 @@ def train_neural_network(
         y_group_train_raw = y_train_delta[:, target_indices]
         y_group_val_raw = y_val_delta[:, target_indices]
 
-        # Scale targets so all groups train on comparable loss scales
-        y_scaler = StandardScaler()
-        y_group_train = y_scaler.fit_transform(y_group_train_raw)
-        y_group_val = y_scaler.transform(y_group_val_raw)
-        target_scalers[group_name] = y_scaler
+        # Scale targets per metric (not per group) so each metric's loss
+        # landscape is comparable regardless of its natural magnitude.
+        # E.g. successful_passes (30–80 range) vs expected_goals (0–1).
+        metric_scalers: Dict[str, StandardScaler] = {}
+        y_group_train = np.zeros_like(y_group_train_raw)
+        y_group_val = np.zeros_like(y_group_val_raw)
+        for col_idx, metric_name in enumerate(targets):
+            col_scaler = StandardScaler()
+            y_group_train[:, col_idx:col_idx + 1] = col_scaler.fit_transform(
+                y_group_train_raw[:, col_idx:col_idx + 1]
+            )
+            y_group_val[:, col_idx:col_idx + 1] = col_scaler.transform(
+                y_group_val_raw[:, col_idx:col_idx + 1]
+            )
+            metric_scalers[metric_name] = col_scaler
+        target_scalers[group_name] = metric_scalers
 
         # Extract per-group feature subset from the full scaled array
         all_keys = _feature_keys()
@@ -2178,12 +2220,13 @@ def train_neural_network(
                 n_zero,
             )
 
-        # Recompile with Huber loss (robust to outlier deltas) and lower
-        # learning rate for stable convergence on small delta targets.
-        # Start at warmup LR; the _LinearWarmup callback ramps it up.
+        # Recompile with per-group Huber delta (robust to outlier deltas) and
+        # lower learning rate for stable convergence on small delta targets.
+        # Start at warmup LR; the _WarmupCosineAnnealing callback ramps up.
+        huber_delta = _GROUP_ARCH_OVERRIDES.get(group_name, {}).get("huber_delta", 1.0)
         model.models[group_name].compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=_WARMUP_START_LR),
-            loss=tf.keras.losses.Huber(delta=1.0),
+            loss=tf.keras.losses.Huber(delta=huber_delta),
             metrics=["mae"],
         )
 
@@ -2205,21 +2248,17 @@ def train_neural_network(
         else:
             val_data = (X_group_val, y_group_val)
 
-        # Early stopping + LR warmup + LR reduction on plateau
+        # Early stopping + warmup → cosine annealing LR schedule
         callbacks = [
-            _LinearWarmup(_WARMUP_EPOCHS, _WARMUP_START_LR, _TARGET_LR),
+            _WarmupCosineAnnealing(
+                _WARMUP_EPOCHS, _WARMUP_START_LR, _TARGET_LR,
+                _MIN_LR, _MAX_EPOCHS,
+            ),
             tf.keras.callbacks.EarlyStopping(
                 monitor="val_loss",
                 patience=15,
                 min_delta=0.001,
                 restore_best_weights=True,
-                verbose=0,
-            ),
-            tf.keras.callbacks.ReduceLROnPlateau(
-                monitor="val_loss",
-                factor=0.5,
-                patience=5,
-                min_lr=1e-5,
                 verbose=0,
             ),
         ]
@@ -2228,7 +2267,7 @@ def train_neural_network(
             X_group_train,
             y_group_train,
             sample_weight=group_weights,
-            epochs=150,
+            epochs=_MAX_EPOCHS,
             batch_size=32,
             validation_data=val_data,
             callbacks=callbacks,

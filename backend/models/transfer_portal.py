@@ -294,8 +294,8 @@ _MODELS_DIR = os.path.join(
 #   shooting: 0.003–0.152 (very low), passing: 0.003–0.063 (very low),
 #   dribbling: 0.247 (moderate), defending: 0.040–0.251 (mixed).
 _GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    "shooting": {"hidden_units": [32, 16], "dropout": 0.45, "l2": 5e-4},
-    "passing": {"hidden_units": [48, 32], "dropout": 0.40, "l2": 4e-4},
+    "shooting": {"hidden_units": [32, 16], "dropout": 0.45, "l2": 5e-4, "huber_delta": 0.3},
+    "passing": {"hidden_units": [48, 32], "dropout": 0.40, "l2": 4e-4, "huber_delta": 1.5},
     "dribbling": {"hidden_units": [64, 32], "dropout": 0.4, "l2": 3e-4},
     "defending": {"hidden_units": [96, 48], "dropout": 0.35},
 }
@@ -315,6 +315,7 @@ def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.
     hidden_units = overrides.get("hidden_units", [128, 64])
     dropout_rate = overrides.get("dropout", 0.3)
     l2_strength = overrides.get("l2", 1e-4)
+    huber_delta = overrides.get("huber_delta", 1.0)
 
     l2_reg = tf.keras.regularizers.l2(l2_strength)
 
@@ -323,13 +324,23 @@ def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.
         hidden_units[0], activation="relu", kernel_regularizer=l2_reg,
         name=f"{group_name}_dense1",
     )(inp)
-    x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn1")(x)
+    # Use LayerNormalization for the shooting group: BatchNorm computes
+    # statistics on ALL samples including zero-weighted ones (~17% of
+    # shooting samples).  LayerNorm normalises per-sample, avoiding this
+    # bias.  Other groups keep BatchNorm for faster convergence.
+    if group_name == "shooting":
+        x = tf.keras.layers.LayerNormalization(name=f"{group_name}_ln1")(x)
+    else:
+        x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn1")(x)
     x = tf.keras.layers.Dropout(dropout_rate, name=f"{group_name}_drop1")(x)
     x = tf.keras.layers.Dense(
         hidden_units[1], activation="relu", kernel_regularizer=l2_reg,
         name=f"{group_name}_dense2",
     )(x)
-    x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn2")(x)
+    if group_name == "shooting":
+        x = tf.keras.layers.LayerNormalization(name=f"{group_name}_ln2")(x)
+    else:
+        x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn2")(x)
     x = tf.keras.layers.Dropout(dropout_rate, name=f"{group_name}_drop2")(x)
 
     outputs = []
@@ -349,7 +360,7 @@ def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.
     model = tf.keras.Model(inputs=inp, outputs=combined, name=f"{group_name}_model")
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),
-        loss=tf.keras.losses.Huber(delta=1.0),
+        loss=tf.keras.losses.Huber(delta=huber_delta),
         metrics=["mae"],
     )
     return model
@@ -384,6 +395,35 @@ class TransferPortalModel:
             )
             return max(-max_delta, min(max_delta, delta))
         return delta
+
+    @staticmethod
+    def _inverse_scale_targets(
+        preds: np.ndarray,
+        target_scaler: Any,
+        targets: List[str],
+    ) -> np.ndarray:
+        """Inverse-transform scaled predictions back to original units.
+
+        Handles both legacy single-``StandardScaler`` (fitted on all columns
+        jointly) and the new per-metric dict-of-scalers format.
+        """
+        if target_scaler is None:
+            return preds
+        # New format: dict mapping metric name → per-metric StandardScaler
+        if isinstance(target_scaler, dict):
+            out = np.array(preds, copy=True, dtype=np.float64)
+            if out.ndim == 1:
+                out = out.reshape(1, -1)
+            for col_idx, metric in enumerate(targets):
+                if metric in target_scaler and col_idx < out.shape[1]:
+                    out[:, col_idx:col_idx + 1] = target_scaler[metric].inverse_transform(
+                        out[:, col_idx:col_idx + 1]
+                    )
+            return out
+        # Legacy format: single StandardScaler for the whole group
+        if preds.ndim == 1:
+            preds = preds.reshape(1, -1)
+        return target_scaler.inverse_transform(preds)
 
     def build(self, input_dim: int) -> None:
         """Build all 4 group models with per-group feature dimensions."""
@@ -464,10 +504,16 @@ class TransferPortalModel:
                 for t in targets
             ])
 
-            # Scale targets per-group to equalise loss across groups
-            y_scaler = StandardScaler()
-            y_group = y_scaler.fit_transform(y_group_raw)
-            self._target_scalers[group_name] = y_scaler
+            # Scale targets per metric to equalise loss across groups
+            metric_scalers: Dict[str, StandardScaler] = {}
+            y_group = np.zeros_like(y_group_raw)
+            for col_idx, metric_name in enumerate(targets):
+                col_scaler = StandardScaler()
+                y_group[:, col_idx:col_idx + 1] = col_scaler.fit_transform(
+                    y_group_raw[:, col_idx:col_idx + 1]
+                )
+                metric_scalers[metric_name] = col_scaler
+            self._target_scalers[group_name] = metric_scalers
 
             hist = self.models[group_name].fit(
                 X_group, y_group,
@@ -560,8 +606,7 @@ class TransferPortalModel:
 
             # Inverse-transform predictions if target scalers are available
             target_scaler = self._target_scalers.get(group_name)
-            if target_scaler is not None:
-                preds = target_scaler.inverse_transform(preds)
+            preds = self._inverse_scale_targets(preds, target_scaler, targets)
 
             preds = preds.flatten()
             for i, target in enumerate(targets):
@@ -638,11 +683,8 @@ class TransferPortalModel:
 
             # Inverse-transform predictions if target scalers are available
             target_scaler = self._target_scalers.get(group_name)
-            if target_scaler is not None:
-                if preds.ndim == 1:
-                    preds = preds.reshape(-1, 1)
-                preds = target_scaler.inverse_transform(preds)
-            elif preds.ndim == 1:
+            preds = self._inverse_scale_targets(preds, target_scaler, targets)
+            if preds.ndim == 1:
                 preds = preds.reshape(-1, 1)
             for i in range(n):
                 for j, target in enumerate(targets):
@@ -801,8 +843,7 @@ class TransferPortalModel:
                 preds = self.models[group_name](X_group, training=True).numpy()
 
                 target_scaler = self._target_scalers.get(group_name)
-                if target_scaler is not None:
-                    preds = target_scaler.inverse_transform(preds)
+                preds = self._inverse_scale_targets(preds, target_scaler, targets)
 
                 preds = preds.flatten()
                 for i, target in enumerate(targets):
