@@ -71,10 +71,16 @@ DELTA_SHRINKAGE = 0.90
 # When the direction head is available, modulate shrinkage based on
 # direction confidence.  High-confidence predictions get less shrinkage,
 # allowing strong directional signals through.
-# Final shrinkage = DELTA_SHRINKAGE * (1 - DIRECTION_SHRINKAGE_ALPHA * (dir_conf - 0.5))
+# Final shrinkage = DELTA_SHRINKAGE * (1 - DIRECTION_SHRINKAGE_ALPHA * (dir_conf - 0.5) * 2)
 # where dir_conf ∈ [0, 1].  At conf=1.0 (certain increase) shrinkage is
-# loosened; at conf=0.5 (coin flip) shrinkage = DELTA_SHRINKAGE.
-DIRECTION_SHRINKAGE_ALPHA = 0.30  # max ±15% adjustment to base shrinkage
+# loosened by up to 30%; at conf=0.5 (coin flip) shrinkage = DELTA_SHRINKAGE.
+DIRECTION_SHRINKAGE_ALPHA = 0.30  # max ±30% adjustment to base shrinkage
+
+# ── Direction gating ─────────────────────────────────────────────────────────
+# When the direction head's confidence exceeds this threshold in the
+# opposite direction to the regression sign, the delta sign is flipped.
+# E.g. if regression predicts +0.02 but P(increase) < 0.30, flip to −0.02.
+DIRECTION_FLIP_THRESHOLD = 0.70
 
 # ── Log-scale target transform ───────────────────────────────────────────────
 # For low-base-rate metrics (xG, shots), predict multiplicative changes
@@ -715,10 +721,9 @@ class TransferPortalModel:
 
                     # Direction gating: if direction head strongly disagrees
                     # with regression sign, flip the delta.
-                    _DIR_FLIP_THRESHOLD = 0.70
-                    if raw_delta > 0 and dir_conf < (1 - _DIR_FLIP_THRESHOLD):
+                    if raw_delta > 0 and dir_conf < (1 - DIRECTION_FLIP_THRESHOLD):
                         raw_delta = -abs(raw_delta)
-                    elif raw_delta < 0 and dir_conf > _DIR_FLIP_THRESHOLD:
+                    elif raw_delta < 0 and dir_conf > DIRECTION_FLIP_THRESHOLD:
                         raw_delta = abs(raw_delta)
 
                     delta = self._clip_delta(raw_delta, pre_val, target)
@@ -823,10 +828,9 @@ class TransferPortalModel:
                         raw_delta *= shrinkage
 
                         # Direction gating
-                        _DIR_FLIP_THRESHOLD = 0.70
-                        if raw_delta > 0 and dir_conf < (1 - _DIR_FLIP_THRESHOLD):
+                        if raw_delta > 0 and dir_conf < (1 - DIRECTION_FLIP_THRESHOLD):
                             raw_delta = -abs(raw_delta)
-                        elif raw_delta < 0 and dir_conf > _DIR_FLIP_THRESHOLD:
+                        elif raw_delta < 0 and dir_conf > DIRECTION_FLIP_THRESHOLD:
                             raw_delta = abs(raw_delta)
 
                         delta = self._clip_delta(raw_delta, pre_val, target)
