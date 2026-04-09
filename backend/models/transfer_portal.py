@@ -295,6 +295,7 @@ _MODELS_DIR = os.path.join(
 #   dribbling: 0.247 (moderate), defending: 0.040–0.251 (mixed).
 _GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "shooting": {"hidden_units": [32, 16], "dropout": 0.45, "l2": 5e-4},
+    "passing": {"hidden_units": [48, 32], "dropout": 0.40, "l2": 4e-4},
     "dribbling": {"hidden_units": [64, 32], "dropout": 0.4, "l2": 3e-4},
     "defending": {"hidden_units": [96, 48], "dropout": 0.35},
 }
@@ -334,7 +335,10 @@ def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.
     outputs = []
     targets = MODEL_GROUPS[group_name]
     for target in targets:
-        out = tf.keras.layers.Dense(1, activation="linear", name=f"head_{target}")(x)
+        out = tf.keras.layers.Dense(
+            1, activation="linear", kernel_regularizer=l2_reg,
+            name=f"head_{target}",
+        )(x)
         outputs.append(out)
 
     if len(outputs) > 1:

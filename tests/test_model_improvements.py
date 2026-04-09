@@ -350,5 +350,144 @@ class TestPredictWithConfidenceTrained(unittest.TestCase):
             self.assertGreaterEqual(val, 0.0, f"Negative mean for {metric}")
 
 
+# ── Training pipeline improvement tests ─────────────────────────────────────
+
+
+class TestGroupArchOverrides(unittest.TestCase):
+    """Tests for per-group architecture overrides."""
+
+    def test_all_low_snr_groups_have_overrides(self):
+        """Both shooting and passing have very low SNR — both must have overrides."""
+        from backend.models.transfer_portal import _GROUP_ARCH_OVERRIDES
+        self.assertIn("shooting", _GROUP_ARCH_OVERRIDES)
+        self.assertIn("passing", _GROUP_ARCH_OVERRIDES)
+
+    def test_passing_uses_smaller_arch_than_default(self):
+        """Passing override should use smaller hidden units than the 128→64 default."""
+        from backend.models.transfer_portal import _GROUP_ARCH_OVERRIDES
+        override = _GROUP_ARCH_OVERRIDES["passing"]
+        hidden = override["hidden_units"]
+        self.assertLess(hidden[0], 128, "Passing first hidden should be < 128")
+        self.assertLess(hidden[1], 64, "Passing second hidden should be < 64")
+
+    def test_all_overrides_have_l2(self):
+        """Groups with explicit overrides should specify L2 where SNR is low."""
+        from backend.models.transfer_portal import _GROUP_ARCH_OVERRIDES
+        for name in ("shooting", "passing", "dribbling"):
+            self.assertIn(
+                "l2", _GROUP_ARCH_OVERRIDES[name],
+                f"{name} override should have explicit L2",
+            )
+
+    def test_shooting_strongest_regularization(self):
+        """Shooting (lowest SNR, xG masking) should have the strongest regularization."""
+        from backend.models.transfer_portal import _GROUP_ARCH_OVERRIDES
+        shooting_l2 = _GROUP_ARCH_OVERRIDES["shooting"]["l2"]
+        passing_l2 = _GROUP_ARCH_OVERRIDES["passing"]["l2"]
+        dribbling_l2 = _GROUP_ARCH_OVERRIDES["dribbling"]["l2"]
+        self.assertGreater(shooting_l2, passing_l2)
+        self.assertGreater(shooting_l2, dribbling_l2)
+
+
+class TestOutputHeadRegularization(unittest.TestCase):
+    """Tests that output heads have L2 regularization."""
+
+    def test_output_heads_have_l2_regularization(self):
+        """Each output head Dense layer should have kernel_regularizer set."""
+        model = TransferPortalModel()
+        model.build(FEATURE_DIM)
+        for group_name, keras_model in model.models.items():
+            for layer in keras_model.layers:
+                if layer.name.startswith("head_"):
+                    config = layer.get_config()
+                    reg = config.get("kernel_regularizer")
+                    self.assertIsNotNone(
+                        reg,
+                        f"Output head {layer.name} in {group_name} has no "
+                        f"kernel_regularizer",
+                    )
+
+
+class TestTeamAdjustmentMinSamples(unittest.TestCase):
+    """Tests for team adjustment model minimum sample requirement."""
+
+    def test_min_samples_at_least_10(self):
+        """TeamAdjustmentModel should require ≥10 samples, not ≥2."""
+        from backend.features.adjustment_models import TeamAdjustmentModel
+        self.assertGreaterEqual(TeamAdjustmentModel._MIN_SAMPLES, 10)
+
+    def test_identity_fallback_with_few_samples(self):
+        """With only 5 samples per metric, model should use identity (zero coef)."""
+        from backend.features.adjustment_models import TeamAdjustmentModel
+        model = TeamAdjustmentModel()
+        # Build 5 training rows per metric — below _MIN_SAMPLES
+        training_data = []
+        for metric in CORE_METRICS:
+            for i in range(5):
+                training_data.append({
+                    "metric": metric,
+                    "from_ra": float(i),
+                    "to_ra": float(i + 1),
+                    "naive_league_expectation": 0.5,
+                    "actual": 0.6 + i * 0.01,
+                    "team_relative_feature": 0.1 * i,
+                })
+        model.fit(training_data)
+        for metric in CORE_METRICS:
+            np.testing.assert_array_equal(
+                model.models[metric].coef_,
+                [0.0, 0.0, 0.0],
+                f"{metric} should use identity fallback with <10 samples",
+            )
+
+    def test_fits_with_enough_samples(self):
+        """With ≥10 samples per metric, model should actually fit."""
+        from backend.features.adjustment_models import TeamAdjustmentModel
+        model = TeamAdjustmentModel()
+        training_data = []
+        for metric in CORE_METRICS:
+            for i in range(15):
+                training_data.append({
+                    "metric": metric,
+                    "from_ra": float(i),
+                    "to_ra": float(i + 1),
+                    "naive_league_expectation": 0.5,
+                    "actual": 0.6 + i * 0.05,
+                    "team_relative_feature": 0.1 * i,
+                })
+        model.fit(training_data)
+        # At least one metric should have non-zero coefficients
+        any_fitted = any(
+            not np.allclose(model.models[m].coef_, 0.0)
+            for m in CORE_METRICS
+        )
+        self.assertTrue(any_fitted, "With 15 samples, at least one metric should fit")
+
+
+class TestPlayerAdjustmentRidgeAlpha(unittest.TestCase):
+    """Tests for player adjustment model Ridge alpha."""
+
+    def test_ridge_alpha_is_10(self):
+        """Ridge alpha should be 10.0 to handle polynomial multicollinearity."""
+        from backend.features.adjustment_models import PlayerAdjustmentModel
+        model = PlayerAdjustmentModel()
+        # Build enough training data to actually fit
+        training_data = []
+        for i in range(40):
+            training_data.append({
+                "position": "F",
+                "metric": CORE_METRICS[0],
+                "player_previous_per90": 0.5 + i * 0.01,
+                "change_relative_ability": float(i - 20),
+                "from_ra": float(50 + i),
+                "to_ra": float(55 + i),
+                "actual": 0.6 + i * 0.02,
+            })
+        model.fit(training_data)
+        if "F" in model.models and CORE_METRICS[0] in model.models["F"]:
+            ridge = model.models["F"][CORE_METRICS[0]]
+            self.assertEqual(ridge.alpha, 10.0)
+
+
 if __name__ == "__main__":
     unittest.main()

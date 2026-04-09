@@ -2158,16 +2158,17 @@ def train_neural_network(
 
         print(f"\n  Group: {group_name} ({len(targets)} targets, {len(group_indices)} features)")
 
-        # Per-group sample weights: start from base weights, then apply
-        # xG-zero mask for the shooting group only.
-        group_weights = sample_weights
+        # Per-group sample weights: start from a copy of base weights so
+        # per-group modifications (e.g. xG masking) don't alias back.
+        if sample_weights is not None:
+            group_weights = sample_weights.copy()
+        else:
+            group_weights = None
         if group_name == "shooting" and xg_zero_mask_train.any():
             # Zero out sample weight for rows with missing pre-xG so the
             # shooting model ignores their corrupted delta labels while
             # other groups still learn from these samples' valid metrics.
-            if sample_weights is not None:
-                group_weights = sample_weights.copy()
-            else:
+            if group_weights is None:
                 group_weights = np.ones(len(X_group_train), dtype=np.float32)
             group_weights[xg_zero_mask_train] = 0.0
             n_zero = int(xg_zero_mask_train.sum())
@@ -2186,11 +2187,21 @@ def train_neural_network(
             metrics=["mae"],
         )
 
-        # Validation data: for the shooting group, exclude xG-zero samples
-        # from validation too so val_loss is computed on clean deltas only.
+        # Validation data: for the shooting group, zero-weight xG-missing
+        # samples instead of dropping them so val_loss stays comparable
+        # across groups (same dataset size / structure).
+        val_weights = None
         if group_name == "shooting" and xg_zero_mask_val.any():
-            val_keep = ~xg_zero_mask_val
-            val_data = (X_group_val[val_keep], y_group_val[val_keep])
+            val_weights = np.ones(len(X_group_val), dtype=np.float32)
+            val_weights[xg_zero_mask_val] = 0.0
+            n_masked_val_group = int(xg_zero_mask_val.sum())
+            _log.info(
+                "Shooting group: zero-weighting %d / %d validation samples "
+                "with missing xG",
+                n_masked_val_group, len(X_group_val),
+            )
+        if val_weights is not None:
+            val_data = (X_group_val, y_group_val, val_weights)
         else:
             val_data = (X_group_val, y_group_val)
 
@@ -2200,6 +2211,7 @@ def train_neural_network(
             tf.keras.callbacks.EarlyStopping(
                 monitor="val_loss",
                 patience=15,
+                min_delta=0.001,
                 restore_best_weights=True,
                 verbose=0,
             ),
