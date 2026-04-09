@@ -52,6 +52,7 @@ from backend.models.transfer_portal import (
     MODEL_GROUPS,
     POSITION_LABELS,
     TransferPortalModel,
+    _GROUP_ARCH_OVERRIDES,
     _feature_keys,
     build_feature_dict,
 )
