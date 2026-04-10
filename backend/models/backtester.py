@@ -107,13 +107,13 @@ def _prediction_confidence(X_row: np.ndarray) -> float:
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 93-feature vector.
+    """Return the ordered list of feature keys matching the feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
     includes raw Elo, REEP metadata, interaction features, relative
     dominance features, per-metric league-normalised features,
-    10 additional player metrics (enrichment inputs), and
-    4 position one-hot features.
+    10 additional player metrics (enrichment inputs),
+    4 position one-hot features, and minutes-per-match.
     """
     keys = []
     for m in CORE_METRICS:
@@ -151,6 +151,8 @@ def _feature_keys_list() -> List[str]:
     # Position one-hot encoding (Phase 8)
     for pos in POSITION_LABELS:
         keys.append(f"position_{pos}")
+    # Minutes-per-match (Phase 9)
+    keys.append("pre_minutes_per_match")
     return keys
 
 

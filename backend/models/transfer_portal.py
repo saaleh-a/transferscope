@@ -193,6 +193,8 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "position_M",
         "position_D",
         "position_G",
+        # Minutes-per-match (Phase 9)
+        "pre_minutes_per_match",
     ],
     "creation": [
         "player_expected_assists",
@@ -235,6 +237,8 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "position_M",
         "position_D",
         "position_G",
+        # Minutes-per-match (Phase 9)
+        "pre_minutes_per_match",
     ],
     "distribution": [
         "player_successful_passes",
@@ -304,6 +308,8 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "position_M",
         "position_D",
         "position_G",
+        # Minutes-per-match (Phase 9)
+        "pre_minutes_per_match",
     ],
     "dribbling": [
         "player_successful_dribbles",
@@ -1209,6 +1215,8 @@ def _feature_keys() -> List[str]:
     # Position one-hot encoding (Phase 8)
     for pos in POSITION_LABELS:
         keys.append(f"position_{pos}")
+    # Minutes-per-match proxy for starter/sub distinction (Phase 9)
+    keys.append("pre_minutes_per_match")
     return keys
 
 
@@ -1227,6 +1235,7 @@ def build_feature_dict(
     source_league_means: Optional[Dict[str, float]] = None,
     target_league_means: Optional[Dict[str, float]] = None,
     position: str = "",
+    pre_minutes_per_match: float = 0.0,
 ) -> Dict[str, float]:
     """Assemble a feature dict from components, ready for predict().
 
@@ -1249,6 +1258,10 @@ def build_feature_dict(
     position : str
         Single-letter position code ('F', 'M', 'D', 'G') for one-hot
         encoding.  Empty or unknown positions produce all-zero one-hot.
+    pre_minutes_per_match : float
+        Average minutes played per match at the source club.
+        Helps distinguish starters (~75+ min) from substitutes (~20 min).
+        0.0 when unavailable.
     """
     fd: Dict[str, float] = {}
 
@@ -1320,10 +1333,13 @@ def build_feature_dict(
     for p in POSITION_LABELS:
         fd[f"position_{p}"] = 1.0 if pos_upper == p else 0.0
 
+    # Minutes-per-match: starter/sub distinction (Phase 9)
+    fd["pre_minutes_per_match"] = max(0.0, pre_minutes_per_match)
+
     return fd
 
 
-FEATURE_DIM = len(_feature_keys())  # 93 (13 player_core + 10 player_additional + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio + 4 position_one_hot)
+FEATURE_DIM = len(_feature_keys())  # 94 (13 player_core + 10 player_additional + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio + 4 position_one_hot + 1 minutes_per_match)
 _log.info("Feature vector dimension: %d", FEATURE_DIM)
 
 # Minimum minutes threshold for league mean computation (matches training pipeline)
