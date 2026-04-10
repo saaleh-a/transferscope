@@ -583,42 +583,68 @@ class TestGetTeamRankingTournamentId(unittest.TestCase):
         self.assertEqual(result.league_code, "UNK")
 
 
-# ── Verify key_clubelo excluded from dynamic aliases ──────────────────────────
+# ── Verify key_clubelo integration with safety guards ──────────────────────────
 
-class TestDynamicAliasesExcludeClubElo(unittest.TestCase):
-    """Ensure _build_dynamic_aliases does NOT use key_clubelo column."""
+class TestDynamicAliasesClubEloIntegration(unittest.TestCase):
+    """Ensure _build_dynamic_aliases uses key_clubelo but guards against bad data."""
 
-    def test_key_clubelo_not_in_name_columns(self):
-        """The name_columns list should not include key_clubelo."""
+    def test_key_clubelo_used_when_correct(self):
+        """Correct key_clubelo values should create aliases."""
         import backend.features.power_rankings as pr
 
         # Reset cache so function re-evaluates
         old_cache = pr._dynamic_aliases_cache
         pr._dynamic_aliases_cache = None
         try:
-            # Mock the get_teams_df to return a small DataFrame
             import pandas as pd
             mock_df = pd.DataFrame({
-                "name": ["Arsenal F.C.", "Chelsea F.C."],
-                "key_clubelo": ["SomeWrongValue", "AnotherWrong"],
-                "key_fbref": ["Arsenal", "Chelsea"],
-                "key_transfermarkt": ["arsenal", "chelsea-fc"],
+                "name": ["Arsenal F.C.", "Manchester City F.C."],
+                "key_clubelo": ["Arsenal", "ManCity"],
+                "key_worldfootball": ["", ""],
             })
 
             with patch("backend.data.reep_registry.get_teams_df", return_value=mock_df):
-                aliases = pr._build_dynamic_aliases()
+                with patch("backend.data.reep_registry.build_team_name_variants", return_value={}):
+                    aliases = pr._build_dynamic_aliases()
 
-            # Verify that misaligned key_clubelo values did NOT create aliases
+            # Arsenal F.C. → Arsenal should create a cross-link
             all_alias_values = set()
             for key, vals in aliases.items():
                 all_alias_values.add(key)
                 all_alias_values.update(vals)
 
-            # Normalized versions of the wrong values should not appear
-            self.assertNotIn("somewrongvalue", all_alias_values,
-                "key_clubelo value should not appear in aliases")
-            self.assertNotIn("anotherwrong", all_alias_values,
-                "key_clubelo value should not appear in aliases")
+            self.assertIn("arsenal", all_alias_values,
+                "key_clubelo 'Arsenal' should appear in aliases for 'Arsenal F.C.'")
+        finally:
+            pr._dynamic_aliases_cache = old_cache
+
+    def test_guards_prevent_misaligned_values(self):
+        """Misaligned key_clubelo values should be filtered by overlap guards."""
+        import backend.features.power_rankings as pr
+
+        old_cache = pr._dynamic_aliases_cache
+        pr._dynamic_aliases_cache = None
+        try:
+            import pandas as pd
+            # Simulate misaligned data: "Lille OSC" with clubelo="Fulham"
+            mock_df = pd.DataFrame({
+                "name": ["Lille OSC"],
+                "key_clubelo": ["Fulham"],
+                "key_worldfootball": [""],
+            })
+
+            with patch("backend.data.reep_registry.get_teams_df", return_value=mock_df):
+                with patch("backend.data.reep_registry.build_team_name_variants", return_value={}):
+                    aliases = pr._build_dynamic_aliases()
+
+            # "fulham" should NOT be linked to "lille" (no token overlap, low similarity)
+            all_alias_values = set()
+            for key, vals in aliases.items():
+                all_alias_values.add(key)
+                all_alias_values.update(vals)
+
+            self.assertNotIn("fulham", all_alias_values,
+                "Misaligned key_clubelo 'Fulham' should not appear in aliases for 'Lille OSC'")
         finally:
             pr._dynamic_aliases_cache = old_cache
 

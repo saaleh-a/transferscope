@@ -313,9 +313,11 @@ league/position priors.
                     rows.append({
                         "Metric": metric.replace("_", " ").title(),
                         "MAE": f"{data.get('mae', 0):.3f}",
+                        "MPE%": f"{data.get('mean_pct_error', 0):.1f}%",
                         "Within 10%": f"{data.get('within_10_pct', 0):.0f}%",
                         "Within 20%": f"{data.get('within_20_pct', 0):.0f}%",
                         "Direction Acc.": f"{data.get('direction_accuracy', 0):.0f}%",
+                        "Naive MAE": f"{data.get('naive_mae', 0):.3f}",
                         "vs Naive": f"{data.get('improvement_vs_naive', 0):+.1f}%",
                     })
                 import pandas as pd

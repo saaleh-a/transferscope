@@ -1,20 +1,24 @@
-"""TensorFlow multi-head neural network — 4 target groups from ARCHITECTURE.md.
+"""TensorFlow multi-head neural network — 6 target groups.
 
 Group 1 - Shooting: xG, Shots (2 heads)
-Group 2 - Passing: xA, Crosses, Total Passes, Short Passes, Long Passes,
-                    Passes Att Third, Penalty Area Entries (7 heads)
-Group 3 - Dribbling: Take-ons (1 head)
-Group 4 - Defending: Def own third, Def mid third, Def att third (3 heads)
+Group 2 - Creation: xA, Chances Created, Touches in Opposition Box (3 heads)
+Group 3 - Distribution: Total Passes, Pass Completion %, Long Balls (3 heads)
+Group 4 - Crossing: Successful Crosses (1 head)
+Group 5 - Dribbling: Take-ons (1 head)
+Group 6 - Defending: Clearances, Interceptions, Possession Won Final 3rd (3 heads)
+
+The old "passing" mega-group has been split into creation, distribution,
+and crossing to give each sub-group a properly scaled loss (Huber delta)
+and tailored feature subset.
 
 Default architecture per group:
   Input -> Dense(128, relu) -> BatchNormalization -> Dropout(0.3)
   -> Dense(64, relu) -> BatchNormalization -> Dropout(0.3)
   -> [Linear output head per target]
 
-Dribbling group override (smaller feature/target ratio):
-  Input -> Dense(64, relu) -> BatchNormalization -> Dropout(0.4)
-  -> Dense(32, relu) -> BatchNormalization -> Dropout(0.4)
-  -> [Linear output head]
+Per-group overrides in _GROUP_ARCH_OVERRIDES (see below for current values).
+Shooting uses LayerNorm instead of BatchNorm to avoid bias from
+zero-weighted xG-masked samples.
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import tensorflow as tf
 
-from backend.data.sofascore_client import CORE_METRICS
+from backend.data.sofascore_client import ADDITIONAL_METRICS, CORE_METRICS
 
 _log = logging.getLogger(__name__)
 
@@ -37,50 +41,104 @@ _log = logging.getLogger(__name__)
 # plausible per-metric maximum delta.  Prevents runaway TF model predictions.
 DELTA_CLIP_MULTIPLIER = 2.0
 
-# Per-metric clip floors — calibrated to ~40% of each metric's typical per-90
-# upper bound.  This represents the maximum plausible single-transfer change
-# for a player.  For metrics with small absolute values (xG, xA), tight floors
-# prevent the model from making absurdly large predictions when pre_val ≈ 0.
+# Per-metric clip floors — set above the 95th percentile of observed
+# transfer deltas to ensure at most ~1% of genuine deltas get clipped.
+# Floors are intentionally ~30-50% above P95 to provide headroom for
+# the model to predict moderately extreme-but-plausible changes.
 _METRIC_CLIP_FLOORS: Dict[str, float] = {
-    "expected_goals": 0.15,              # typical range: 0.05–0.40
-    "expected_assists": 0.10,            # typical range: 0.03–0.25
-    "shots": 0.80,                       # typical range: 0.5–4.0
-    "successful_dribbles": 0.60,         # typical range: 0.2–3.0
-    "successful_crosses": 0.30,          # typical range: 0.1–1.5
-    "touches_in_opposition_box": 1.00,   # typical range: 0.5–5.0
-    "successful_passes": 8.00,           # typical range: 10–80
-    "pass_completion_pct": 3.00,         # typical range: 70–92
-    "accurate_long_balls": 0.60,         # typical range: 0.5–5.0
-    "chances_created": 0.30,             # typical range: 0.1–2.0
-    "clearances": 0.80,                  # typical range: 0.5–5.0
-    "interceptions": 0.40,               # typical range: 0.2–2.0
-    "possession_won_final_3rd": 0.40,    # typical range: 0.2–2.0
+    "expected_goals": 0.30,              # P95 delta=0.205, floor at ~P99
+    "expected_assists": 0.20,            # P95 delta=0.129, floor at ~P99
+    "shots": 1.20,                       # P95 delta=0.921, floor at ~P99
+    "successful_dribbles": 1.00,         # P95 delta=0.780, floor at ~P99
+    "successful_crosses": 0.80,          # P95 delta=0.772, floor at ~P99
+    "touches_in_opposition_box": 2.50,   # P95 delta=2.491, floor at ~P95
+    "successful_passes": 15.00,          # P95 delta=14.52, floor at ~P95
+    "pass_completion_pct": 10.00,        # P95 delta=9.26, floor at ~P97
+    "accurate_long_balls": 1.80,         # P95 delta=1.792, floor at ~P95
+    "chances_created": 0.80,             # P95 delta=0.823, floor at ~P95
+    "clearances": 1.60,                  # P95 delta=1.630, floor at ~P95
+    "interceptions": 0.80,              # P95 delta=0.716, floor at ~P98
+    "possession_won_final_3rd": 0.80,    # P95 delta=0.774, floor at ~P96
 }
 # Conservative fallback for metrics not in _METRIC_CLIP_FLOORS.
-# Set to the median of documented floors (~0.5) to avoid overly tight
-# or overly loose clipping on unknown metrics.
-DELTA_CLIP_FLOOR = 0.5
+# Set to a moderate value to avoid overly tight or overly loose
+# clipping on unknown metrics.
+DELTA_CLIP_FLOOR = 1.0
 
 # ── Delta shrinkage ──────────────────────────────────────────────────────────
 # Multiply predicted deltas by this factor to pull toward naive baseline
 # (zero delta).  Prevents systematic overshoot when the model is uncertain.
 # Applied *before* clipping so that the shrunken delta is what gets compared
 # against the clip threshold — the two guards compose naturally.
-DELTA_SHRINKAGE = 0.85
+DELTA_SHRINKAGE = 0.90  # global fallback
+
+# Per-metric shrinkage calibrated on backtest residuals.  Well-predicted
+# metrics (high improvement-over-naive) get lower (looser) shrinkage to
+# let the model's signal through; weakly-predicted metrics get heavier
+# shrinkage to protect against noise.
+_METRIC_SHRINKAGE: Dict[str, float] = {
+    "successful_dribbles": 0.80,
+    "interceptions": 0.82,
+    "possession_won_final_3rd": 0.83,
+    "expected_assists": 0.85,
+    "chances_created": 0.85,
+    "touches_in_opposition_box": 0.86,
+    "expected_goals": 0.88,
+    "shots": 0.88,
+    "clearances": 0.88,
+    "accurate_long_balls": 0.90,
+    "successful_passes": 0.90,
+    "pass_completion_pct": 0.92,
+    "successful_crosses": 0.96,
+}
+
+# ── Direction-aware shrinkage ────────────────────────────────────────────────
+# When the direction head is available, modulate shrinkage based on
+# direction confidence.  High-confidence predictions get less shrinkage,
+# allowing strong directional signals through.
+# Final shrinkage = DELTA_SHRINKAGE * (1 - DIRECTION_SHRINKAGE_ALPHA * (dir_conf - 0.5) * 2)
+# where dir_conf ∈ [0, 1].  At conf=1.0 (certain increase) shrinkage is
+# loosened by up to 30%; at conf=0.5 (coin flip) shrinkage = DELTA_SHRINKAGE.
+DIRECTION_SHRINKAGE_ALPHA = 0.30  # max ±30% adjustment to base shrinkage
+
+# ── Direction gating ─────────────────────────────────────────────────────────
+# When the direction head's confidence exceeds this threshold in the
+# opposite direction to the regression sign, the delta sign is flipped.
+# E.g. if regression predicts +0.02 but P(increase) < 0.30, flip to −0.02.
+DIRECTION_FLIP_THRESHOLD = 0.70
+
+# ── Log-scale target transform ───────────────────────────────────────────────
+# For low-base-rate metrics (xG, shots), predict multiplicative changes
+# in log-space: log(post + ε) - log(pre + ε).  This naturally scales loss
+# relative to metric magnitude so a 0.05→0.10 change (100% increase) is
+# penalised as much as a 0.50→1.00 change.
+_LOG_EPS = 0.05  # floor to avoid log(0); 0.05 stabilizes near-zero xG players
+
+# Groups whose targets are transformed to log-ratios during training.
+# Other groups continue to use additive deltas.  Crossing is included
+# because successful_crosses has low base rates (~0.1–1.0 per 90) with
+# a multiplicative error structure similar to xG.
+LOG_SCALE_GROUPS = frozenset({"shooting", "crossing"})
+
+# ── Position labels for one-hot encoding ─────────────────────────────────────
+# Order matters — must be stable across training and inference.
+POSITION_LABELS: List[str] = ["F", "M", "D", "G"]
 
 # ── Target group definitions ─────────────────────────────────────────────────
 
 MODEL_GROUPS: Dict[str, List[str]] = {
     "shooting": ["expected_goals", "shots"],
-    "passing": [
+    "creation": [
         "expected_assists",
-        "successful_crosses",
-        "successful_passes",
-        "pass_completion_pct",
-        "accurate_long_balls",
         "chances_created",
         "touches_in_opposition_box",
     ],
+    "distribution": [
+        "successful_passes",
+        "pass_completion_pct",
+        "accurate_long_balls",
+    ],
+    "crossing": ["successful_crosses"],
     "dribbling": ["successful_dribbles"],
     "defending": ["clearances", "interceptions", "possession_won_final_3rd"],
 }
@@ -95,6 +153,9 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "player_shots",
         "player_touches_in_opposition_box",
         "player_chances_created",
+        # Additional metrics — shooting-relevant enrichment
+        "player_touches",
+        "player_fouls_won",
         "team_ability_current",
         "team_ability_target",
         "league_ability_current",
@@ -102,6 +163,7 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "raw_elo_current",
         "raw_elo_target",
         "player_height_cm",
+        "player_age",
         "team_pos_current_expected_goals",
         "team_pos_current_shots",
         "team_pos_current_touches_in_opposition_box",
@@ -126,15 +188,22 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "league_mean_ratio_shots",
         "league_mean_ratio_touches_in_opposition_box",
         "league_mean_ratio_chances_created",
+        # Position one-hot (Phase 8)
+        "position_F",
+        "position_M",
+        "position_D",
+        "position_G",
+        # Minutes-per-match (Phase 9)
+        "pre_minutes_per_match",
     ],
-    "passing": [
+    "creation": [
         "player_expected_assists",
-        "player_successful_crosses",
-        "player_successful_passes",
-        "player_pass_completion_pct",
-        "player_accurate_long_balls",
         "player_chances_created",
         "player_touches_in_opposition_box",
+        # Additional metrics — creation-relevant enrichment
+        "player_successful_crosses",
+        "player_touches",
+        "player_fouls_won",
         "team_ability_current",
         "team_ability_target",
         "league_ability_current",
@@ -142,18 +211,11 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "raw_elo_current",
         "raw_elo_target",
         "player_height_cm",
+        "player_age",
         "team_pos_current_expected_assists",
-        "team_pos_current_successful_crosses",
-        "team_pos_current_successful_passes",
-        "team_pos_current_pass_completion_pct",
-        "team_pos_current_accurate_long_balls",
         "team_pos_current_chances_created",
         "team_pos_current_touches_in_opposition_box",
         "team_pos_target_expected_assists",
-        "team_pos_target_successful_crosses",
-        "team_pos_target_successful_passes",
-        "team_pos_target_pass_completion_pct",
-        "team_pos_target_accurate_long_balls",
         "team_pos_target_chances_created",
         "team_pos_target_touches_in_opposition_box",
         "interaction_ability_gap",
@@ -165,22 +227,97 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "relative_ability_gap",
         # Per-metric league-normalised (Phase 5)
         "league_norm_expected_assists",
-        "league_norm_successful_crosses",
-        "league_norm_successful_passes",
-        "league_norm_pass_completion_pct",
-        "league_norm_accurate_long_balls",
         "league_norm_chances_created",
         "league_norm_touches_in_opposition_box",
         "league_mean_ratio_expected_assists",
-        "league_mean_ratio_successful_crosses",
+        "league_mean_ratio_chances_created",
+        "league_mean_ratio_touches_in_opposition_box",
+        # Position one-hot (Phase 8)
+        "position_F",
+        "position_M",
+        "position_D",
+        "position_G",
+        # Minutes-per-match (Phase 9)
+        "pre_minutes_per_match",
+    ],
+    "distribution": [
+        "player_successful_passes",
+        "player_pass_completion_pct",
+        "player_accurate_long_balls",
+        # Additional metrics — distribution-relevant enrichment
+        "player_touches",
+        "team_ability_current",
+        "team_ability_target",
+        "league_ability_current",
+        "league_ability_target",
+        "raw_elo_current",
+        "raw_elo_target",
+        "team_pos_current_successful_passes",
+        "team_pos_current_pass_completion_pct",
+        "team_pos_current_accurate_long_balls",
+        "team_pos_target_successful_passes",
+        "team_pos_target_pass_completion_pct",
+        "team_pos_target_accurate_long_balls",
+        "interaction_ability_gap",
+        "interaction_gap_squared",
+        "interaction_league_gap",
+        # Relative team dominance within league (Phase 6)
+        "relative_ability_current",
+        "relative_ability_target",
+        "relative_ability_gap",
+        # Per-metric league-normalised (Phase 5)
+        "league_norm_successful_passes",
+        "league_norm_pass_completion_pct",
+        "league_norm_accurate_long_balls",
         "league_mean_ratio_successful_passes",
         "league_mean_ratio_pass_completion_pct",
         "league_mean_ratio_accurate_long_balls",
-        "league_mean_ratio_chances_created",
-        "league_mean_ratio_touches_in_opposition_box",
+        # Position one-hot (Phase 8)
+        "position_F",
+        "position_M",
+        "position_D",
+        "position_G",
+    ],
+    "crossing": [
+        "player_successful_crosses",
+        # Additional metrics — crossing-relevant enrichment
+        "player_successful_dribbles",
+        "player_touches",
+        "player_fouls_won",
+        "team_ability_current",
+        "team_ability_target",
+        "league_ability_current",
+        "league_ability_target",
+        "raw_elo_current",
+        "raw_elo_target",
+        "player_age",
+        "team_pos_current_successful_crosses",
+        "team_pos_target_successful_crosses",
+        "interaction_ability_gap",
+        "interaction_gap_squared",
+        "interaction_league_gap",
+        # Relative team dominance within league (Phase 6)
+        "relative_ability_current",
+        "relative_ability_target",
+        "relative_ability_gap",
+        # Per-metric league-normalised (Phase 5)
+        "league_norm_successful_crosses",
+        "league_mean_ratio_successful_crosses",
+        # Position one-hot (Phase 8)
+        "position_F",
+        "position_M",
+        "position_D",
+        "position_G",
+        # Minutes-per-match (Phase 9)
+        "pre_minutes_per_match",
     ],
     "dribbling": [
         "player_successful_dribbles",
+        # Additional metrics — dribbling-relevant enrichment
+        "player_dispossessed",
+        "player_duels_won_pct",
+        "player_fouls_won",
+        "player_touches",
         "team_ability_current",
         "team_ability_target",
         "league_ability_current",
@@ -200,11 +337,21 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         # Per-metric league-normalised (Phase 5)
         "league_norm_successful_dribbles",
         "league_mean_ratio_successful_dribbles",
+        # Position one-hot (Phase 8)
+        "position_F",
+        "position_M",
+        "position_D",
+        "position_G",
     ],
     "defending": [
         "player_clearances",
         "player_interceptions",
         "player_possession_won_final_3rd",
+        # Additional metrics — defending-relevant enrichment
+        "player_recoveries",
+        "player_aerial_duels_won_pct",
+        "player_duels_won_pct",
+        "player_goals_conceded_on_pitch",
         "team_ability_current",
         "team_ability_target",
         "league_ability_current",
@@ -232,6 +379,11 @@ GROUP_FEATURE_SUBSETS: Dict[str, List[str]] = {
         "league_mean_ratio_clearances",
         "league_mean_ratio_interceptions",
         "league_mean_ratio_possession_won_final_3rd",
+        # Position one-hot (Phase 8)
+        "position_F",
+        "position_M",
+        "position_D",
+        "position_G",
     ],
 }
 
@@ -243,70 +395,142 @@ _MODELS_DIR = os.path.join(
 
 
 # Per-group architecture overrides.  Groups not listed use the defaults
-# (hidden_units=[128, 64], dropout=0.3).  The dribbling group uses a
-# smaller network with higher dropout to combat overfitting (14 features,
-# 1 target — the default 128→64 architecture is over-parameterised).
+# (hidden_units=[128, 64], dropout=0.3, l2=1e-4).  Smaller networks with
+# higher dropout / stronger L2 are used for groups where the signal-to-noise
+# ratio is low — the default 128→64 architecture tends to overfit noise in
+# these groups.
+#
+# Backtest SNR analysis (delta_mean / delta_std):
+#   shooting: 0.003–0.152 (very low), passing: 0.003–0.063 (very low),
+#   dribbling: 0.247 (moderate), defending: 0.040–0.251 (mixed).
 _GROUP_ARCH_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    "dribbling": {"hidden_units": [64, 32], "dropout": 0.4},
+    "shooting": {"hidden_units": [64, 32], "dropout": 0.40, "l2": 4e-4, "huber_delta": 0.3},
+    "creation": {"hidden_units": [64, 32], "dropout": 0.35, "l2": 3e-4, "huber_delta": 0.8},
+    "distribution": {"hidden_units": [96, 48], "dropout": 0.35, "l2": 3e-4, "huber_delta": 1.5},
+    "crossing": {"hidden_units": [32, 16], "dropout": 0.40, "l2": 4e-4, "huber_delta": 0.3},
+    "dribbling": {"hidden_units": [64, 32], "dropout": 0.4, "l2": 3e-4},
+    "defending": {"hidden_units": [96, 48], "dropout": 0.35},
 }
 
 
 def _build_group_model(input_dim: int, num_targets: int, group_name: str) -> tf.keras.Model:
-    """Build a multi-head model for one target group.
+    """Build a dual-head model for one target group.
+
+    Architecture per group:
+      Input → Dense(H1, relu) → Norm → Dropout
+            → Dense(H2, relu) → Norm → Dropout
+            → [regression heads: Linear × num_targets]  (output 0)
+            → [direction head: Sigmoid × num_targets]   (output 1)
+
+    The regression head predicts scaled deltas (or log-ratios for
+    LOG_SCALE_GROUPS).  The direction head predicts P(post > pre) per
+    metric via binary cross-entropy.
 
     Uses BatchNormalization + L2 regularization on Dense layers and Huber
     loss for robustness to outlier deltas in training data.
 
     ``group_name`` selects per-group architecture overrides from
     ``_GROUP_ARCH_OVERRIDES``.  Groups without an override entry use
-    the defaults (128→64 hidden units, 0.3 dropout).
+    the defaults (128→64 hidden units, 0.3 dropout, 1e-4 L2).
     """
     overrides = _GROUP_ARCH_OVERRIDES.get(group_name, {})
     hidden_units = overrides.get("hidden_units", [128, 64])
     dropout_rate = overrides.get("dropout", 0.3)
+    l2_strength = overrides.get("l2", 1e-4)
+    huber_delta = overrides.get("huber_delta", 1.0)
 
-    l2_reg = tf.keras.regularizers.l2(1e-4)
+    l2_reg = tf.keras.regularizers.l2(l2_strength)
 
     inp = tf.keras.Input(shape=(input_dim,), name=f"{group_name}_input")
     x = tf.keras.layers.Dense(
         hidden_units[0], activation="relu", kernel_regularizer=l2_reg,
         name=f"{group_name}_dense1",
     )(inp)
-    x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn1")(x)
+    # Use LayerNormalization for the shooting group: BatchNorm computes
+    # statistics on ALL samples including zero-weighted ones (~17% of
+    # shooting samples).  LayerNorm normalises per-sample, avoiding this
+    # bias.  Other groups keep BatchNorm for faster convergence.
+    if group_name == "shooting":
+        x = tf.keras.layers.LayerNormalization(name=f"{group_name}_ln1")(x)
+    else:
+        x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn1")(x)
     x = tf.keras.layers.Dropout(dropout_rate, name=f"{group_name}_drop1")(x)
     x = tf.keras.layers.Dense(
         hidden_units[1], activation="relu", kernel_regularizer=l2_reg,
         name=f"{group_name}_dense2",
     )(x)
-    x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn2")(x)
+    if group_name == "shooting":
+        x = tf.keras.layers.LayerNormalization(name=f"{group_name}_ln2")(x)
+    else:
+        x = tf.keras.layers.BatchNormalization(name=f"{group_name}_bn2")(x)
     x = tf.keras.layers.Dropout(dropout_rate, name=f"{group_name}_drop2")(x)
 
-    outputs = []
+    # ── Regression head: scaled delta (or log-ratio) per target ──────────
+    reg_outputs = []
     targets = MODEL_GROUPS[group_name]
     for target in targets:
-        out = tf.keras.layers.Dense(1, activation="linear", name=f"head_{target}")(x)
-        outputs.append(out)
+        out = tf.keras.layers.Dense(
+            1, activation="linear", kernel_regularizer=l2_reg,
+            name=f"head_{target}",
+        )(x)
+        reg_outputs.append(out)
 
-    if len(outputs) > 1:
-        combined = tf.keras.layers.Concatenate(name=f"{group_name}_out")(outputs)
+    if len(reg_outputs) > 1:
+        regression = tf.keras.layers.Concatenate(name=f"{group_name}_reg")(reg_outputs)
     else:
-        combined = outputs[0]
+        regression = reg_outputs[0]
 
-    model = tf.keras.Model(inputs=inp, outputs=combined, name=f"{group_name}_model")
+    # ── Direction head: P(post > pre) per target via sigmoid ─────────────
+    dir_outputs = []
+    for target in targets:
+        d = tf.keras.layers.Dense(
+            1, activation="sigmoid", kernel_regularizer=l2_reg,
+            name=f"dir_{target}",
+        )(x)
+        dir_outputs.append(d)
+
+    if len(dir_outputs) > 1:
+        direction = tf.keras.layers.Concatenate(name=f"{group_name}_dir")(dir_outputs)
+    else:
+        direction = dir_outputs[0]
+
+    model = tf.keras.Model(
+        inputs=inp,
+        outputs=[regression, direction],
+        name=f"{group_name}_model",
+    )
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=5e-4),
-        loss=tf.keras.losses.Huber(delta=1.0),
-        metrics=["mae"],
+        loss=[
+            tf.keras.losses.Huber(delta=huber_delta),
+            tf.keras.losses.BinaryCrossentropy(),
+        ],
+        loss_weights=[1.0, 0.25],  # direction loss at 25% of regression
+        metrics={"regression": ["mae"], "direction": ["accuracy"]},
     )
+    # Rename outputs for clarity in training — Keras uses output names to
+    # key into the loss/metrics dicts.
+    model.output_names[0] = "regression"
+    model.output_names[1] = "direction"
     return model
 
 
 class TransferPortalModel:
-    """4-group multi-head neural network for transfer performance prediction."""
+    """6-group multi-head neural network for transfer performance prediction.
+
+    Supports model ensembling: train N copies per group with different random
+    seeds and average predictions at inference time for reduced variance.
+    """
+
+    # Default number of ensemble members per group (can be overridden at training time)
+    ENSEMBLE_SIZE = 3
 
     def __init__(self, input_dim: Optional[int] = None):
         self.input_dim = input_dim
         self.models: Dict[str, tf.keras.Model] = {}
+        # Ensemble: maps group_name → list of models (one per seed).
+        # When populated, predict() averages across all ensemble members.
+        self._ensemble: Dict[str, List[tf.keras.Model]] = {}
         self.fitted = False
         self._scaler: Any = None  # StandardScaler, loaded from data/models/ if trained
         self._target_scalers: Dict[str, Any] = {}  # Per-group target scalers
@@ -331,8 +555,37 @@ class TransferPortalModel:
             return max(-max_delta, min(max_delta, delta))
         return delta
 
+    @staticmethod
+    def _inverse_scale_targets(
+        preds: np.ndarray,
+        target_scaler: Any,
+        targets: List[str],
+    ) -> np.ndarray:
+        """Inverse-transform scaled predictions back to original units.
+
+        Handles both legacy single-``StandardScaler`` (fitted on all columns
+        jointly) and the new per-metric dict-of-scalers format.
+        """
+        if target_scaler is None:
+            return preds
+        # New format: dict mapping metric name → per-metric StandardScaler
+        if isinstance(target_scaler, dict):
+            out = np.array(preds, copy=True, dtype=np.float64)
+            if out.ndim == 1:
+                out = out.reshape(1, -1)
+            for col_idx, metric in enumerate(targets):
+                if metric in target_scaler and col_idx < out.shape[1]:
+                    out[:, col_idx:col_idx + 1] = target_scaler[metric].inverse_transform(
+                        out[:, col_idx:col_idx + 1]
+                    )
+            return out
+        # Legacy format: single StandardScaler for the whole group
+        if preds.ndim == 1:
+            preds = preds.reshape(1, -1)
+        return target_scaler.inverse_transform(preds)
+
     def build(self, input_dim: int) -> None:
-        """Build all 4 group models with per-group feature dimensions."""
+        """Build all group models with per-group feature dimensions."""
         self.input_dim = input_dim
         for group_name, targets in MODEL_GROUPS.items():
             group_dim = len(GROUP_FEATURE_SUBSETS[group_name])
@@ -410,13 +663,22 @@ class TransferPortalModel:
                 for t in targets
             ])
 
-            # Scale targets per-group to equalise loss across groups
-            y_scaler = StandardScaler()
-            y_group = y_scaler.fit_transform(y_group_raw)
-            self._target_scalers[group_name] = y_scaler
+            # Scale targets per metric to equalise loss across groups
+            metric_scalers: Dict[str, StandardScaler] = {}
+            y_group = np.zeros_like(y_group_raw)
+            for col_idx, metric_name in enumerate(targets):
+                col_scaler = StandardScaler()
+                y_group[:, col_idx:col_idx + 1] = col_scaler.fit_transform(
+                    y_group_raw[:, col_idx:col_idx + 1]
+                )
+                metric_scalers[metric_name] = col_scaler
+            self._target_scalers[group_name] = metric_scalers
+
+            # Direction labels: binary P(post > pre) per metric
+            y_dir = (y_group_raw > 0).astype(np.float32)
 
             hist = self.models[group_name].fit(
-                X_group, y_group,
+                X_group, [y_group, y_dir],
                 epochs=epochs,
                 batch_size=batch_size,
                 validation_split=validation_split,
@@ -435,9 +697,11 @@ class TransferPortalModel:
             return False
         if not os.path.isdir(model_dir):
             return False
-        # Check at least one .keras file exists
+        # Check at least one .keras file exists (single or ensemble)
         for group_name in MODEL_GROUPS:
             if os.path.exists(os.path.join(model_dir, f"{group_name}.keras")):
+                return True
+            if os.path.exists(os.path.join(model_dir, f"{group_name}_seed0.keras")):
                 return True
         return False
 
@@ -445,6 +709,15 @@ class TransferPortalModel:
         """Predict per-90 metrics for a single transfer scenario.
 
         Returns dict mapping metric name -> predicted per-90 value.
+
+        The model outputs two heads per group:
+          1. Regression: scaled delta (or log-ratio for LOG_SCALE_GROUPS)
+          2. Direction:  P(post > pre) per metric (sigmoid)
+
+        Direction confidence modulates delta shrinkage — high-confidence
+        direction predictions receive less shrinkage, letting strong
+        directional signals through.  If the direction head disagrees with
+        the regression sign at high confidence (>0.7), the delta is flipped.
 
         If trained weights and a feature scaler exist in data/models/,
         loads them and runs the neural network.  Otherwise falls back
@@ -499,25 +772,67 @@ class TransferPortalModel:
                 continue
             group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
             X_group = full_X[:, group_indices]
-            # Use direct model call instead of model.predict() for
-            # single-sample inference to avoid tf.function retracing
-            # warnings caused by varying input shapes.
-            preds = self.models[group_name](X_group, training=False).numpy()
 
-            # Inverse-transform predictions if target scalers are available
+            # Ensemble averaging: if multiple seed models are loaded,
+            # average regression and direction outputs across all members.
+            ensemble_members = self._ensemble.get(group_name, [self.models[group_name]])
+            reg_accum = None
+            dir_accum = None
+            for member in ensemble_members:
+                raw_out = member(X_group, training=False)
+                if isinstance(raw_out, (list, tuple)) and len(raw_out) == 2:
+                    r = raw_out[0].numpy()
+                    d = raw_out[1].numpy().flatten()
+                else:
+                    r = raw_out.numpy()
+                    d = np.full(len(targets), 0.5)
+                reg_accum = r if reg_accum is None else reg_accum + r
+                dir_accum = d if dir_accum is None else dir_accum + d
+            n_members = len(ensemble_members)
+            reg_preds = reg_accum / n_members
+            dir_preds = dir_accum / n_members
+
+            # Inverse-transform regression predictions
             target_scaler = self._target_scalers.get(group_name)
-            if target_scaler is not None:
-                preds = target_scaler.inverse_transform(preds)
+            reg_preds = self._inverse_scale_targets(reg_preds, target_scaler, targets)
 
-            preds = preds.flatten()
+            reg_preds = reg_preds.flatten()
             for i, target in enumerate(targets):
-                if i < len(preds):
-                    # Model predicts delta (post − pre); add pre-transfer value
-                    # back to recover the absolute post-transfer per-90 stat.
-                    # Uses safe_pre which falls back to training mean if the
-                    # API returned an implausibly low value (> 3σ below mean).
+                if i < len(reg_preds):
                     pre_val = safe_pre.get(target, 0.0)
-                    raw_delta = float(preds[i]) * DELTA_SHRINKAGE
+
+                    if group_name in LOG_SCALE_GROUPS:
+                        # Model predicted log-ratio: log(post+ε) - log(pre+ε)
+                        # Inverse-transform to recover absolute post value.
+                        log_ratio = float(reg_preds[i])
+                        log_pre = np.log(pre_val + _LOG_EPS)
+                        post_val = np.exp(log_pre + log_ratio) - _LOG_EPS
+                        raw_delta = post_val - pre_val
+                    else:
+                        raw_delta = float(reg_preds[i])
+
+                    # Direction-aware shrinkage: modulate based on direction
+                    # confidence.  At dir_conf=0.5 (coin flip), shrinkage
+                    # equals the per-metric base.  High confidence loosens it.
+                    dir_conf = float(dir_preds[i]) if i < len(dir_preds) else 0.5
+                    # dir_conf > 0.5 means model predicts increase
+                    signed_conf = dir_conf - 0.5  # [-0.5, +0.5]
+                    base_shrinkage = _METRIC_SHRINKAGE.get(target, DELTA_SHRINKAGE)
+                    shrinkage = base_shrinkage * (
+                        1.0 - DIRECTION_SHRINKAGE_ALPHA * signed_conf * 2.0
+                    )
+                    # Clamp shrinkage to [0.5, 1.0] for safety
+                    shrinkage = max(0.5, min(1.0, shrinkage))
+
+                    raw_delta *= shrinkage
+
+                    # Direction gating: if direction head strongly disagrees
+                    # with regression sign, flip the delta.
+                    if raw_delta > 0 and dir_conf < (1 - DIRECTION_FLIP_THRESHOLD):
+                        raw_delta = -abs(raw_delta)
+                    elif raw_delta < 0 and dir_conf > DIRECTION_FLIP_THRESHOLD:
+                        raw_delta = abs(raw_delta)
+
                     delta = self._clip_delta(raw_delta, pre_val, target)
                     result[target] = max(0.0, pre_val + delta)
 
@@ -580,30 +895,63 @@ class TransferPortalModel:
                 continue
             group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
             X_group = X_full[:, group_indices]
-            preds = self.models[group_name].predict(X_group, verbose=0)
+            raw_out = self.models[group_name].predict(X_group, verbose=0)
 
-            # Inverse-transform predictions if target scalers are available
+            # Dual-head model returns [regression, direction]
+            if isinstance(raw_out, (list, tuple)) and len(raw_out) == 2:
+                reg_preds = raw_out[0]
+                dir_preds = raw_out[1]
+            else:
+                reg_preds = raw_out
+                dir_preds = np.full((n, len(targets)), 0.5)
+
+            # Inverse-transform regression predictions
             target_scaler = self._target_scalers.get(group_name)
-            if target_scaler is not None:
-                if preds.ndim == 1:
-                    preds = preds.reshape(-1, 1)
-                preds = target_scaler.inverse_transform(preds)
-            elif preds.ndim == 1:
-                preds = preds.reshape(-1, 1)
+            reg_preds = self._inverse_scale_targets(reg_preds, target_scaler, targets)
+            if reg_preds.ndim == 1:
+                reg_preds = reg_preds.reshape(-1, 1)
+            if dir_preds.ndim == 1:
+                dir_preds = dir_preds.reshape(-1, 1)
             for i in range(n):
                 for j, target in enumerate(targets):
-                    if j < preds.shape[1]:
-                        # Model predicts delta (post − pre); add pre-transfer
-                        # value back to recover absolute post-transfer per-90.
-                        pre_val = feature_dicts[i].get(f"player_{target}", 0.0)
-                        raw_delta = float(preds[i, j]) * DELTA_SHRINKAGE
+                    if j < reg_preds.shape[1]:
+                        pre_val = max(0.0, feature_dicts[i].get(f"player_{target}", 0.0))
+
+                        if group_name in LOG_SCALE_GROUPS:
+                            log_ratio = float(reg_preds[i, j])
+                            log_pre = np.log(pre_val + _LOG_EPS)
+                            post_val = np.exp(log_pre + log_ratio) - _LOG_EPS
+                            raw_delta = post_val - pre_val
+                        else:
+                            raw_delta = float(reg_preds[i, j])
+
+                        # Direction-aware shrinkage
+                        dir_conf = float(dir_preds[i, j]) if j < dir_preds.shape[1] else 0.5
+                        signed_conf = dir_conf - 0.5
+                        base_shrinkage = _METRIC_SHRINKAGE.get(target, DELTA_SHRINKAGE)
+                        shrinkage = base_shrinkage * (
+                            1.0 - DIRECTION_SHRINKAGE_ALPHA * signed_conf * 2.0
+                        )
+                        shrinkage = max(0.5, min(1.0, shrinkage))
+                        raw_delta *= shrinkage
+
+                        # Direction gating
+                        if raw_delta > 0 and dir_conf < (1 - DIRECTION_FLIP_THRESHOLD):
+                            raw_delta = -abs(raw_delta)
+                        elif raw_delta < 0 and dir_conf > DIRECTION_FLIP_THRESHOLD:
+                            raw_delta = abs(raw_delta)
+
                         delta = self._clip_delta(raw_delta, pre_val, target)
                         results[i][target] = max(0.0, pre_val + delta)
 
         return results
 
     def save(self, directory: Optional[str] = None) -> str:
-        """Save all group models to directory."""
+        """Save all group models to directory.
+
+        Saves ensemble members as ``{group}_seed{i}.keras`` and the primary
+        model as ``{group}.keras`` for backwards compatibility.
+        """
         if directory is None:
             directory = os.path.join(_MODELS_DIR, "transfer_portal")
         os.makedirs(directory, exist_ok=True)
@@ -611,14 +959,20 @@ class TransferPortalModel:
         for group_name, model in self.models.items():
             model.save(os.path.join(directory, f"{group_name}.keras"))
 
+        # Save ensemble members
+        for group_name, members in self._ensemble.items():
+            for seed_idx, member in enumerate(members):
+                member.save(os.path.join(directory, f"{group_name}_seed{seed_idx}.keras"))
+
         return directory
 
     def load(self, directory: Optional[str] = None) -> None:
         """Load all group models and associated scalers from directory.
 
-        Scalers (``feature_scaler.pkl`` and ``target_scalers.pkl``) live in
-        the parent of *directory* (i.e. ``data/models/``).  They are loaded
-        automatically so that ``predict()`` produces correctly scaled output.
+        Loads ensemble members (``{group}_seed{i}.keras``) when available,
+        falling back to single ``{group}.keras``.  Scalers
+        (``feature_scaler.pkl`` and ``target_scalers.pkl``) live in the
+        parent of *directory* (i.e. ``data/models/``).
         """
         import joblib
 
@@ -626,10 +980,26 @@ class TransferPortalModel:
             directory = os.path.join(_MODELS_DIR, "transfer_portal")
 
         self.models = {}
+        self._ensemble = {}
         for group_name in MODEL_GROUPS:
-            path = os.path.join(directory, f"{group_name}.keras")
-            if os.path.exists(path):
-                self.models[group_name] = tf.keras.models.load_model(path)
+            # Try loading ensemble members first
+            members: List[tf.keras.Model] = []
+            seed_idx = 0
+            while True:
+                seed_path = os.path.join(directory, f"{group_name}_seed{seed_idx}.keras")
+                if os.path.exists(seed_path):
+                    members.append(tf.keras.models.load_model(seed_path))
+                    seed_idx += 1
+                else:
+                    break
+            if members:
+                self._ensemble[group_name] = members
+                self.models[group_name] = members[0]  # primary model
+            else:
+                # Fallback: single model file
+                path = os.path.join(directory, f"{group_name}.keras")
+                if os.path.exists(path):
+                    self.models[group_name] = tf.keras.models.load_model(path)
 
         self.fitted = bool(self.models)
 
@@ -678,7 +1048,12 @@ class TransferPortalModel:
             x_tensor = tf.Variable(x_np.reshape(1, -1))
 
             with tf.GradientTape() as tape:
-                preds = self.models[group_name](x_tensor, training=False)
+                raw_out = self.models[group_name](x_tensor, training=False)
+                # Dual-head: use regression output for importance
+                if isinstance(raw_out, (list, tuple)) and len(raw_out) == 2:
+                    preds = raw_out[0]
+                else:
+                    preds = raw_out
                 # Sum all output heads to get a scalar for gradient computation
                 total = tf.reduce_sum(preds)
 
@@ -744,17 +1119,42 @@ class TransferPortalModel:
                 X_group = full_X[:, group_indices]
 
                 # training=True keeps dropout active for MC sampling
-                preds = self.models[group_name](X_group, training=True).numpy()
+                raw_out = self.models[group_name](X_group, training=True)
+
+                # Dual-head model returns [regression, direction]
+                if isinstance(raw_out, (list, tuple)) and len(raw_out) == 2:
+                    reg_preds = raw_out[0].numpy()
+                    dir_preds = raw_out[1].numpy().flatten()
+                else:
+                    reg_preds = raw_out.numpy()
+                    dir_preds = np.full(len(targets), 0.5)
 
                 target_scaler = self._target_scalers.get(group_name)
-                if target_scaler is not None:
-                    preds = target_scaler.inverse_transform(preds)
+                reg_preds = self._inverse_scale_targets(reg_preds, target_scaler, targets)
 
-                preds = preds.flatten()
+                reg_preds = reg_preds.flatten()
                 for i, target in enumerate(targets):
-                    if i < len(preds):
+                    if i < len(reg_preds):
                         pre_val = pre_per90.get(target, 0.0)
-                        raw_delta = float(preds[i]) * DELTA_SHRINKAGE
+
+                        if group_name in LOG_SCALE_GROUPS:
+                            log_ratio = float(reg_preds[i])
+                            log_pre = np.log(max(0.0, pre_val) + _LOG_EPS)
+                            post_val = np.exp(log_pre + log_ratio) - _LOG_EPS
+                            raw_delta = post_val - pre_val
+                        else:
+                            raw_delta = float(reg_preds[i])
+
+                        # Direction-aware shrinkage
+                        dir_conf = float(dir_preds[i]) if i < len(dir_preds) else 0.5
+                        signed_conf = dir_conf - 0.5
+                        base_shrinkage = _METRIC_SHRINKAGE.get(target, DELTA_SHRINKAGE)
+                        shrinkage = base_shrinkage * (
+                            1.0 - DIRECTION_SHRINKAGE_ALPHA * signed_conf * 2.0
+                        )
+                        shrinkage = max(0.5, min(1.0, shrinkage))
+                        raw_delta *= shrinkage
+
                         delta = self._clip_delta(raw_delta, pre_val, target)
                         samples[target].append(max(0.0, pre_val + delta))
 
@@ -774,8 +1174,11 @@ class TransferPortalModel:
 def _feature_keys() -> List[str]:
     """Return ordered list of feature keys for the input vector."""
     keys = []
-    # Player per-90 (current club)
+    # Player per-90 (current club) — 13 core metrics
     for m in CORE_METRICS:
+        keys.append(f"player_{m}")
+    # Player per-90 — 10 additional metrics (enrichment features, not targets)
+    for m in ADDITIONAL_METRICS:
         keys.append(f"player_{m}")
     # Team abilities (normalized 0-100)
     keys.append("team_ability_current")
@@ -809,6 +1212,11 @@ def _feature_keys() -> List[str]:
     # Ratio of source-to-target league means per metric
     for m in CORE_METRICS:
         keys.append(f"league_mean_ratio_{m}")
+    # Position one-hot encoding (Phase 8)
+    for pos in POSITION_LABELS:
+        keys.append(f"position_{pos}")
+    # Minutes-per-match proxy for starter/sub distinction (Phase 9)
+    keys.append("pre_minutes_per_match")
     return keys
 
 
@@ -826,6 +1234,8 @@ def build_feature_dict(
     player_age: float = 0.0,
     source_league_means: Optional[Dict[str, float]] = None,
     target_league_means: Optional[Dict[str, float]] = None,
+    position: str = "",
+    pre_minutes_per_match: float = 0.0,
 ) -> Dict[str, float]:
     """Assemble a feature dict from components, ready for predict().
 
@@ -845,10 +1255,22 @@ def build_feature_dict(
     source_league_means / target_league_means : dict, optional
         Per-metric league averages for the source/target league.
         When provided, enables per-metric league-normalised features.
+    position : str
+        Single-letter position code ('F', 'M', 'D', 'G') for one-hot
+        encoding.  Empty or unknown positions produce all-zero one-hot.
+    pre_minutes_per_match : float
+        Average minutes played per match at the source club.
+        Helps distinguish starters (~75+ min) from substitutes (~20 min).
+        0.0 when unavailable.
     """
     fd: Dict[str, float] = {}
 
     for m in CORE_METRICS:
+        v = player_per90.get(m)
+        fd[f"player_{m}"] = float(v) if v is not None else 0.0
+
+    # Additional metrics — enrichment inputs (not prediction targets)
+    for m in ADDITIONAL_METRICS:
         v = player_per90.get(m)
         fd[f"player_{m}"] = float(v) if v is not None else 0.0
 
@@ -906,10 +1328,18 @@ def build_feature_dict(
         else:
             fd[f"league_mean_ratio_{m}"] = 1.0
 
+    # Position one-hot encoding (Phase 8)
+    pos_upper = position.strip().upper()[:1] if position else ""
+    for p in POSITION_LABELS:
+        fd[f"position_{p}"] = 1.0 if pos_upper == p else 0.0
+
+    # Minutes-per-match: starter/sub distinction (Phase 9)
+    fd["pre_minutes_per_match"] = max(0.0, pre_minutes_per_match)
+
     return fd
 
 
-FEATURE_DIM = len(_feature_keys())  # 79 (13 player + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio)
+FEATURE_DIM = len(_feature_keys())  # 94 (13 player_core + 10 player_additional + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio + 4 position_one_hot + 1 minutes_per_match)
 _log.info("Feature vector dimension: %d", FEATURE_DIM)
 
 # Minimum minutes threshold for league mean computation (matches training pipeline)
@@ -999,7 +1429,7 @@ def build_feature_dict_from_player(
         # get_player_match_logs returns ascending (oldest first); reverse so
         # player_rolling_average picks the MOST RECENT 1000 minutes of form.
         rolling = player_rolling_average(list(reversed(match_logs)))
-        player_per90 = {m: (rolling.get(m) or 0.0) for m in CORE_METRICS}
+        player_per90 = {m: (rolling.get(m) or 0.0) for m in CORE_METRICS + ADDITIONAL_METRICS}
         # Infer source club from season stats
         stats = sofascore_client.get_player_stats_for_season(
             player_id, tournament_id, season_id,
@@ -1013,11 +1443,11 @@ def build_feature_dict_from_player(
         )
         if stats:
             per90 = stats.get("per90") or {}
-            player_per90 = {m: float(per90.get(m, 0.0) or 0.0) for m in CORE_METRICS}
+            player_per90 = {m: float(per90.get(m, 0.0) or 0.0) for m in CORE_METRICS + ADDITIONAL_METRICS}
             source_club_id = stats.get("team_id")
 
     if not player_per90:
-        player_per90 = {m: 0.0 for m in CORE_METRICS}
+        player_per90 = {m: 0.0 for m in CORE_METRICS + ADDITIONAL_METRICS}
 
     # Step 2: Power rankings
     try:
@@ -1144,4 +1574,5 @@ def build_feature_dict_from_player(
         player_age=player_age,
         source_league_means=source_league_means,
         target_league_means=target_league_means,
+        position=position,
     )

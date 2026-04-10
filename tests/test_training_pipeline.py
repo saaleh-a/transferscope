@@ -605,12 +605,13 @@ class TestErrorHandling(unittest.TestCase):
 
         result = build_training_sample(record)
         self.assertIsNotNone(result)
-        # Team-position features should be zeros (indices 21-47 in new layout)
-        # Layout: [0:13] player, [13:17] abilities, [17:19] raw_elo,
-        #          [19:21] reep, [21:34] pos_current,
-        #          [34:47] pos_target, [47:50] interactions.
+        # Team-position features should be zeros (indices 31-57 in new layout)
+        # Layout: [0:13] player_core, [13:23] player_additional,
+        #          [23:27] abilities, [27:29] raw_elo,
+        #          [29:31] reep, [31:44] pos_current,
+        #          [44:57] pos_target, [57:60] interactions.
         features = result["features"]
-        team_pos_slice = features[21:47]
+        team_pos_slice = features[31:57]
         np.testing.assert_array_equal(team_pos_slice, 0.0)
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
@@ -869,7 +870,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_team_name="Target FC",
         )
 
-        # Should have all 50 keys (FEATURE_DIM)
+        # Should have all keys (FEATURE_DIM = 89)
         self.assertEqual(len(result), FEATURE_DIM)
 
         # Player metrics should reflect match log rolling values (1.5), not season agg (0.3)
@@ -907,7 +908,7 @@ class TestBuildFeatureDictFromPlayer(unittest.TestCase):
             target_team_name="Target FC",
         )
 
-        # Should have all 50 keys (FEATURE_DIM)
+        # Should have all keys (FEATURE_DIM = 89)
         self.assertEqual(len(result), FEATURE_DIM)
 
         # Player metrics should reflect season agg (0.8)
@@ -1215,7 +1216,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertEqual(tp_keys, ref_keys)
 
     def test_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (79)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (94)."""
         from backend.models.training_pipeline import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
@@ -1228,3 +1229,160 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertIn("interaction_ability_gap", keys)
         self.assertIn("interaction_gap_squared", keys)
         self.assertIn("interaction_league_gap", keys)
+
+
+class TestCachedMatrixMigration(unittest.TestCase):
+    """Tests for the 79→94 cached feature matrix migration in run_pipeline()."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.matrices_dir = os.path.join(self.tmpdir, "models", "matrices")
+        os.makedirs(self.matrices_dir)
+
+        # Build a deterministic legacy (79-col) matrix.
+        self.legacy_dim = 79
+        self.n_samples = 5
+        rng = np.random.RandomState(42)
+        self.X_legacy = rng.rand(self.n_samples, self.legacy_dim).astype(np.float32)
+
+        # Save legacy matrices + minimal metadata (list of dicts for position migration)
+        np.save(os.path.join(self.matrices_dir, "X.npy"), self.X_legacy)
+        np.save(
+            os.path.join(self.matrices_dir, "y.npy"),
+            rng.rand(self.n_samples, 13).astype(np.float32),
+        )
+        # Cover all 4 position labels + an unknown position
+        positions = ["F", "M", "D", "G", "Unknown"]
+        metadata = [{"position": positions[i]} for i in range(self.n_samples)]
+        with open(os.path.join(self.matrices_dir, "metadata.json"), "w") as f:
+            json.dump(metadata, f)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir)
+
+    def _run_pipeline_skip_build(self):
+        """Run pipeline with skip_build=True, patching paths to tmpdir."""
+        from backend.models import training_pipeline as tp
+
+        # Patch _MODELS_DIR so run_pipeline reads from our tmpdir
+        models_dir = os.path.join(self.tmpdir, "models")
+        with (
+            mock.patch.object(tp, "_MODELS_DIR", models_dir),
+            mock.patch.object(tp, "DEFAULT_LEAGUE_CODES", ["ENG1"]),
+        ):
+            # We need at least 10 transfer records for the pipeline to proceed
+            # past the early return, so mock the discovery/loading path.
+            fake_records = [_make_mock_transfer_record() for _ in range(15)]
+            records_path = os.path.join(models_dir, "transfer_records.json")
+            from dataclasses import asdict
+
+            with open(records_path, "w") as f:
+                json.dump([asdict(r) for r in fake_records], f, default=str)
+
+            # Run with skip_build=True, skip_discovery=True, skip_training=True
+            # so only the matrix loading + migration code executes.
+            result = tp.run_pipeline(
+                skip_discovery=True,
+                skip_build=True,
+                skip_training=True,
+            )
+        return result
+
+    def test_migration_produces_correct_shape(self):
+        """79→89 migration should produce a matrix with FEATURE_DIM columns."""
+        self._run_pipeline_skip_build()
+
+        X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
+        self.assertEqual(X_migrated.shape, (self.n_samples, FEATURE_DIM))
+
+    def test_migration_inserts_zeros_for_additional_metrics(self):
+        """Migrated additional metric columns (13:23) should be all zeros."""
+        self._run_pipeline_skip_build()
+
+        X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
+        # Additional metrics inserted at position 13 (after 13 core player metrics)
+        additional_slice = X_migrated[:, 13:23]
+        np.testing.assert_array_equal(additional_slice, 0.0)
+
+    def test_migration_preserves_original_columns(self):
+        """Original 79 columns should be preserved around the inserted ones."""
+        self._run_pipeline_skip_build()
+
+        X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
+        insert_pos = 13  # after 13 core player metrics
+
+        # Columns before insert position should be identical
+        np.testing.assert_array_equal(
+            X_migrated[:, :insert_pos], self.X_legacy[:, :insert_pos]
+        )
+        # Columns after insert position (before position one-hot + mpm) should be the tail of the original
+        np.testing.assert_array_equal(
+            X_migrated[:, insert_pos + 10:-5], self.X_legacy[:, insert_pos:]
+        )
+
+    def test_migration_persists_to_disk(self):
+        """After migration, X.npy on disk should have the new shape."""
+        self._run_pipeline_skip_build()
+
+        X_path = os.path.join(self.matrices_dir, "X.npy")
+        X_reloaded = np.load(X_path)
+        self.assertEqual(X_reloaded.shape[1], FEATURE_DIM)
+
+    def test_migration_populates_position_one_hot(self):
+        """Position one-hot columns should be populated correctly from metadata."""
+        self._run_pipeline_skip_build()
+
+        X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
+        # Position columns are 4 columns before the last (minutes-per-match)
+        pos_cols = X_migrated[:, -5:-1]
+        # Sample 0: "F" → [1, 0, 0, 0]
+        np.testing.assert_array_equal(pos_cols[0], [1, 0, 0, 0])
+        # Sample 1: "M" → [0, 1, 0, 0]
+        np.testing.assert_array_equal(pos_cols[1], [0, 1, 0, 0])
+        # Sample 2: "D" → [0, 0, 1, 0]
+        np.testing.assert_array_equal(pos_cols[2], [0, 0, 1, 0])
+        # Sample 3: "G" → [0, 0, 0, 1]
+        np.testing.assert_array_equal(pos_cols[3], [0, 0, 0, 1])
+        # Sample 4: "Unknown" → [0, 0, 0, 0]
+        np.testing.assert_array_equal(pos_cols[4], [0, 0, 0, 0])
+
+    def test_unknown_dimension_forces_rebuild(self):
+        """Unexpected column count (not 79 or 89) should clear skip_build."""
+        # Save a matrix with a completely wrong number of columns
+        wrong_dim = 60
+        rng = np.random.RandomState(99)
+        X_wrong = rng.rand(self.n_samples, wrong_dim).astype(np.float32)
+        np.save(os.path.join(self.matrices_dir, "X.npy"), X_wrong)
+
+        from backend.models import training_pipeline as tp
+
+        models_dir = os.path.join(self.tmpdir, "models")
+        with (
+            mock.patch.object(tp, "_MODELS_DIR", models_dir),
+            mock.patch.object(tp, "DEFAULT_LEAGUE_CODES", ["ENG1"]),
+        ):
+            fake_records = [_make_mock_transfer_record() for _ in range(15)]
+            records_path = os.path.join(models_dir, "transfer_records.json")
+            from dataclasses import asdict
+
+            with open(records_path, "w") as f:
+                json.dump([asdict(r) for r in fake_records], f, default=str)
+
+            # When skip_build is cleared, the pipeline calls
+            # discover_non_transfers.  Patch it to detect the rebuild attempt.
+            with mock.patch.object(
+                tp, "discover_non_transfers", return_value=[]
+            ) as mock_discover:
+                try:
+                    tp.run_pipeline(
+                        skip_discovery=True,
+                        skip_build=True,
+                        skip_training=True,
+                    )
+                except Exception:
+                    pass  # Expected — no real API in test
+
+            self.assertTrue(
+                mock_discover.called,
+                "Pipeline should attempt rebuild when cached X has unexpected dimensions",
+            )

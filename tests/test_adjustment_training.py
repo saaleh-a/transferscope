@@ -84,6 +84,7 @@ class TestBuildTrainingData(unittest.TestCase):
         self.assertIn("from_ra", tr)
         self.assertIn("to_ra", tr)
         self.assertIn("naive_league_expectation", tr)
+        self.assertIn("team_relative_feature", tr)
         self.assertIn("actual", tr)
 
         # Verify player row structure
@@ -156,6 +157,89 @@ class TestScaleTeamPositionFeatures(unittest.TestCase):
         self.assertAlmostEqual(result["expected_goals"], 1.0)
         # xA: team increased 50% (2→3), so pos should increase 50% (1→1.5)
         self.assertAlmostEqual(result["expected_assists"], 1.5)
+
+
+class TestTeamAdjustmentPaperAlignment(unittest.TestCase):
+    """Tests for the paper-aligned team_relative_feature (Appendix A.1)."""
+
+    def test_team_relative_feature_used_in_training(self):
+        """team_relative_feature should influence predictions when non-zero."""
+        import numpy as np
+
+        # Build training data with varying team_relative_feature
+        rows = []
+        for i in range(50):
+            team_rel = float(i) / 25.0 - 1.0  # range [-1, 1]
+            for m in CORE_METRICS:
+                rows.append({
+                    "metric": m,
+                    "from_ra": 5.0,
+                    "to_ra": 10.0,
+                    "naive_league_expectation": 1.0,
+                    "team_relative_feature": team_rel,
+                    # actual varies with team_relative_feature
+                    "actual": 1.0 + 0.5 * team_rel + np.random.normal(0, 0.05),
+                })
+
+        model = TeamAdjustmentModel()
+        model.fit(rows)
+
+        # Predictions should differ with different team_relative_feature values
+        pred_low = model.predict(5.0, 10.0, 1.0, "expected_goals",
+                                 team_relative_feature=-0.5)
+        pred_high = model.predict(5.0, 10.0, 1.0, "expected_goals",
+                                  team_relative_feature=0.5)
+        self.assertNotAlmostEqual(pred_low, pred_high, places=2)
+
+    def test_backward_compat_without_team_relative_feature(self):
+        """Model should work when team_relative_feature is missing (legacy)."""
+        rows = []
+        for i in range(20):
+            for m in CORE_METRICS:
+                rows.append({
+                    "metric": m,
+                    "from_ra": float(i),
+                    "to_ra": float(i) + 5.0,
+                    "naive_league_expectation": 1.0,
+                    # no team_relative_feature key
+                    "actual": 1.5,
+                })
+
+        model = TeamAdjustmentModel()
+        model.fit(rows)
+        self.assertTrue(model.fitted)
+
+        # predict without team_relative_feature should work
+        pred = model.predict(5.0, 10.0, 1.0, "expected_goals")
+        self.assertIsInstance(pred, float)
+
+    def test_predict_all_with_team_relative_features(self):
+        """predict_all should accept optional team_relative_features dict."""
+        rows = []
+        for i in range(20):
+            for m in CORE_METRICS:
+                rows.append({
+                    "metric": m,
+                    "from_ra": float(i),
+                    "to_ra": float(i) + 5.0,
+                    "naive_league_expectation": 1.0,
+                    "team_relative_feature": 0.3,
+                    "actual": 1.5,
+                })
+
+        model = TeamAdjustmentModel()
+        model.fit(rows)
+
+        naive = {m: 1.0 for m in CORE_METRICS}
+        team_rel = {m: 0.5 for m in CORE_METRICS}
+
+        # With team_relative_features
+        result_with = model.predict_all(5.0, 10.0, naive, team_rel)
+        self.assertEqual(len(result_with), 13)
+
+        # Without team_relative_features
+        result_without = model.predict_all(5.0, 10.0, naive)
+        self.assertEqual(len(result_without), 13)
 
 
 if __name__ == "__main__":

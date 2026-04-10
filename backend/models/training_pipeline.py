@@ -39,7 +39,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from backend.data import cache, sofascore_client
-from backend.data.sofascore_client import CORE_METRICS, normalize_position
+from backend.data.sofascore_client import ADDITIONAL_METRICS, CORE_METRICS, normalize_position
 from backend.features import power_rankings
 from backend.features.adjustment_models import (
     PlayerAdjustmentModel,
@@ -49,8 +49,12 @@ from backend.features.rolling_windows import blend_weight
 from backend.models.transfer_portal import (
     FEATURE_DIM,
     GROUP_FEATURE_SUBSETS,
+    LOG_SCALE_GROUPS,
     MODEL_GROUPS,
+    POSITION_LABELS,
     TransferPortalModel,
+    _GROUP_ARCH_OVERRIDES,
+    _LOG_EPS,
     _feature_keys,
     build_feature_dict,
 )
@@ -577,6 +581,18 @@ def build_training_sample(
             val = float(v)
         player_metrics.append(val)
 
+    # Extract 10 additional metrics — enrichment inputs (not targets)
+    additional_player_metrics = []
+    for m in ADDITIONAL_METRICS:
+        v = pre_per90.get(m)
+        if v is None:
+            val = 0.0
+        elif np.isnan(v):
+            val = 0.0
+        else:
+            val = float(v)
+        additional_player_metrics.append(val)
+
     # Block 2 — Team ability (2 values)
     # Parse transfer_date so historical Elo is used instead of today's.
     # Falling back to None (= today) only when the date is missing/unparseable.
@@ -688,12 +704,19 @@ def build_training_sample(
         else:
             league_mean_ratio_features.append(1.0)
 
-    # Assemble the 79-feature vector
+    # Assemble the feature vector
     ability_gap = team_ability_target - team_ability_current
     rel_current = team_ability_current - league_ability_current
     rel_target = team_ability_target - league_ability_target
+    # Position one-hot encoding (Phase 8)
+    pos_code = record.position.strip().upper()[:1] if record.position else ""
+    position_one_hot = [1.0 if p == pos_code else 0.0 for p in POSITION_LABELS]
+    # Minutes-per-match (Phase 9): average minutes per match at source club
+    n_matches = len(pre_match_logs) if pre_match_logs else 0
+    pre_minutes_per_match = (pre_minutes / n_matches) if n_matches > 0 else 0.0
     features = np.array(
         player_metrics
+        + additional_player_metrics
         + [team_ability_current, team_ability_target,
            league_ability_current, league_ability_target]
         + [raw_elo_current, raw_elo_target]
@@ -704,7 +727,9 @@ def build_training_sample(
            league_ability_target - league_ability_current]
         + [rel_current, rel_target, rel_target - rel_current]
         + league_norm_features
-        + league_mean_ratio_features,
+        + league_mean_ratio_features
+        + position_one_hot
+        + [pre_minutes_per_match],
         dtype=np.float32,
     )
 
@@ -820,6 +845,7 @@ def build_training_sample(
         "minutes_accumulated": minutes_accumulated,
         "source_club_id": record.from_club_id,
         "target_club_id": record.to_club_id,
+        "pre_minutes_per_match": float(pre_minutes_per_match),
     }
 
 
@@ -1143,6 +1169,18 @@ def build_non_transfer_sample(
             val = float(v)
         player_metrics.append(val)
 
+    # Extract 10 additional metrics — enrichment inputs (not targets)
+    additional_player_metrics = []
+    for m in ADDITIONAL_METRICS:
+        v = pre_per90.get(m)
+        if v is None:
+            val = 0.0
+        elif np.isnan(v):
+            val = 0.0
+        else:
+            val = float(v)
+        additional_player_metrics.append(val)
+
     # Power rankings — same club so current == target
     try:
         team_rankings, league_snapshots = power_rankings.compute_daily_rankings()
@@ -1211,8 +1249,15 @@ def build_non_transfer_sample(
     # Same team → current == target for all ability and position features
     # Interaction features are all zero (no gap when staying at same club)
     nt_rel = team_ability - league_ability
+    # Position one-hot encoding (Phase 8)
+    pos_code = record.position.strip().upper()[:1] if record.position else ""
+    position_one_hot = [1.0 if p == pos_code else 0.0 for p in POSITION_LABELS]
+    # Minutes-per-match (Phase 9)
+    n_matches = len(pre_match_logs) if pre_match_logs else 0
+    nt_mpm = (pre_minutes / n_matches) if n_matches > 0 else 0.0
     features = np.array(
         player_metrics
+        + additional_player_metrics
         + [team_ability, team_ability, league_ability, league_ability]
         + [raw_elo, raw_elo]
         + [nt_height_cm, nt_age]
@@ -1221,7 +1266,9 @@ def build_non_transfer_sample(
         + [0.0, 0.0, 0.0]  # interaction: gap=0, gap²=0, league_gap=0
         + [nt_rel, nt_rel, 0.0]  # relative: current==target, gap=0
         + league_norm_features
-        + league_mean_ratio_features,
+        + league_mean_ratio_features
+        + position_one_hot
+        + [nt_mpm],
         dtype=np.float32,
     )
 
@@ -1317,6 +1364,7 @@ def build_non_transfer_sample(
         "used_match_logs_labels": used_match_logs_for_labels,
         "source_club_id": record.club_id,
         "target_club_id": record.club_id,
+        "pre_minutes_per_match": float(nt_mpm),
     }
 
 
@@ -1361,6 +1409,48 @@ def compute_team_position_averages(
     return averages
 
 
+def _compute_team_overall_per90(
+    samples: list[dict],
+) -> dict[int, dict[str, float]]:
+    """Compute overall (all-position) per-90 averages for each club.
+
+    Paper Appendix A.1: the team adjustment model uses the source team's
+    overall per-90 for each metric relative to the league distribution.
+    This function computes the team-level average (across all players at
+    the team, regardless of position) from training samples.
+
+    Parameters
+    ----------
+    samples : list[dict]
+        Each dict must contain:
+          - 'source_club_id' (int)
+          - 'pre_per90'      (dict of metric -> float)
+
+    Returns
+    -------
+    dict keyed by club_id -> dict of metric -> mean per-90 float
+    """
+    from collections import defaultdict
+
+    buckets: dict = defaultdict(list)
+    for s in samples:
+        club_id = s.get("source_club_id")
+        per90 = s.get("pre_per90", {})
+        if club_id and per90:
+            buckets[club_id].append(per90)
+
+    averages: dict = {}
+    for club_id, records in buckets.items():
+        if not records:
+            continue
+        avg = {}
+        for metric in CORE_METRICS:
+            vals = [r[metric] for r in records if metric in r]
+            avg[metric] = float(np.mean(vals)) if vals else 0.0
+        averages[club_id] = avg
+    return averages
+
+
 def inject_team_pos_averages(
     X: np.ndarray,
     metadata: List[Dict[str, Any]],
@@ -1393,13 +1483,15 @@ def inject_team_pos_averages(
     """
     team_pos_lookup = compute_team_position_averages(train_metadata)
 
-    # Layout: [0:13] player, [13:17] abilities, [17:19] raw_elo,
-    #          [19:21] reep, [21:34] pos_current,
-    #          [34:47] pos_target, [47:50] interactions.
-    _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4 + 2 + 2   # 21
-    _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 34
-    assert _POS_CURRENT_OFFSET == 21, f"Expected 21, got {_POS_CURRENT_OFFSET}"
-    assert _POS_TARGET_OFFSET == 34, f"Expected 34, got {_POS_TARGET_OFFSET}"
+    # Layout: [0:13] player_core, [13:23] player_additional,
+    #          [23:27] abilities, [27:29] raw_elo, [29:31] reep,
+    #          [31:44] pos_current, [44:57] pos_target, [57:60] interactions.
+    _POS_CURRENT_OFFSET = (
+        len(CORE_METRICS) + len(ADDITIONAL_METRICS) + 4 + 2 + 2  # 31
+    )
+    _POS_TARGET_OFFSET = _POS_CURRENT_OFFSET + len(CORE_METRICS)  # 44
+    assert _POS_CURRENT_OFFSET == 31, f"Expected 31, got {_POS_CURRENT_OFFSET}"
+    assert _POS_TARGET_OFFSET == 44, f"Expected 44, got {_POS_TARGET_OFFSET}"
     assert _POS_TARGET_OFFSET + len(CORE_METRICS) <= FEATURE_DIM, (
         f"team_pos slots exceed FEATURE_DIM ({FEATURE_DIM})"
     )
@@ -1698,6 +1790,12 @@ def train_adjustment_models(
     """
     os.makedirs(_MODELS_DIR, exist_ok=True)
 
+    # ── Paper A.1: compute team-level per-90 averages ────────────────────
+    # The paper's z_{i,j} = team's per-90 for metric j relative to the
+    # source league distribution.  We compute team-level averages from
+    # the training data, then normalise against the source league mean.
+    team_per90_lookup = _compute_team_overall_per90(meta_train)
+
     # Build training rows for TeamAdjustmentModel
     team_rows: List[Dict[str, Any]] = []
     player_rows: List[Dict[str, Any]] = []
@@ -1718,6 +1816,10 @@ def train_adjustment_models(
         to_pos_avg = meta.get("to_pos_avg", {})
         position = normalize_position(meta.get("position", "Unknown"))
 
+        # Source team's overall per-90 (paper A.1: for computing z_{i,j})
+        source_club_id = meta.get("source_club_id")
+        source_team_per90 = team_per90_lookup.get(source_club_id, {})
+
         for j, m in enumerate(CORE_METRICS):
             actual = float(y_train[i, j])
             player_prev = pre_per90.get(m, 0.0)
@@ -1732,7 +1834,19 @@ def train_adjustment_models(
             # Use league mean per-90 if available (Improvement 4); fall back to
             # player's own per-90 as a neutral baseline when league stats unavailable
             league_means = meta.get("league_means", {})
+            source_league_means = meta.get("source_league_means", {})
             naive_expectation = league_means.get(m, player_prev)
+
+            # Paper A.1 z_{i,j}: team's per-90 relative to source league mean.
+            # Positive = team produces more than league average for this metric.
+            # Normalised by source league mean to make values comparable across
+            # metrics with very different scales (e.g. xG ~0.2 vs passes ~30).
+            team_metric_val = source_team_per90.get(m, 0.0)
+            src_league_mean = source_league_means.get(m, 0.0)
+            if src_league_mean > 1e-6:
+                team_relative_feature = (team_metric_val - src_league_mean) / src_league_mean
+            else:
+                team_relative_feature = 0.0
 
             team_rows.append({
                 "metric": m,
@@ -1742,6 +1856,7 @@ def train_adjustment_models(
                 "from_ra": from_ra,
                 "to_ra": to_ra,
                 "naive_league_expectation": naive_expectation,
+                "team_relative_feature": team_relative_feature,
                 "actual": actual,
             })
 
@@ -1814,7 +1929,7 @@ def train_adjustment_models(
             # Get training data for this metric
             m_rows = [r for r in team_rows if r["metric"] == m]
             if len(m_rows) >= 2:
-                X_m = np.array([[r["from_ra"], r["to_ra"]] for r in m_rows])
+                X_m = np.array([[r.get("team_relative_feature", 0.0), r["from_ra"], r["to_ra"]] for r in m_rows])
                 y_m = np.array([r["actual"] - r["naive_league_expectation"] for r in m_rows])
                 r2 = model.score(X_m, y_m)
                 flag = " [!]" if r2 < 0.1 else ""
@@ -1881,6 +1996,16 @@ def train_neural_network(
         If provided, 'confidence' values are used as sample weights so
         high-quality samples (more pre-transfer minutes) contribute more.
 
+        The ``confidence`` field is produced by ``blend_weight(pre_minutes)``
+        in ``backend.features.rolling_windows``.  It equals
+        ``min(1.0, pre_transfer_minutes / PRIOR_CONSTANT)`` where
+        ``PRIOR_CONSTANT`` defaults to 900 minutes (~10 full matches).
+        Players with fewer pre-transfer minutes have lower confidence
+        (0 → 1 ramp) because their per-90 statistics are noisier.  The
+        value is multiplied with class-balance weights (transfer vs
+        non-transfer) to form the final ``sample_weight`` array passed to
+        ``model.fit()``.
+
     Returns the fitted model (already saved to data/models/).
     """
     import joblib
@@ -1913,9 +2038,11 @@ def train_neural_network(
     print(f"  Training samples: {X_train_scaled.shape[0]}")
     print(f"  Validation samples: {X_val_scaled.shape[0]}")
 
-    # Per-group target scalers to normalise y across different scales
-    # (e.g. successful_passes 30-80 vs expected_goals 0-1)
-    target_scalers: Dict[str, StandardScaler] = {}
+    # Per-group, per-metric target scalers to normalise y across different
+    # scales (e.g. successful_passes 30-80 vs expected_goals 0-1).
+    # Using one scaler per metric (instead of one for the whole group)
+    # preserves relative metric magnitudes better.
+    target_scalers: Dict[str, Any] = {}
 
     # ── Data quality: per-metric loss masking for missing xG ────────────────
     # Sofascore tracks shots for almost all leagues but only tracks xG for
@@ -1962,9 +2089,30 @@ def train_neural_network(
     y_train_delta = y_train - X_train[:, :len(CORE_METRICS)]
     y_val_delta = y_val - X_val[:, :len(CORE_METRICS)]
 
-    # Sample weights: combine class-balance correction (10:1 transfer ratio)
-    # with confidence weighting (more pre-transfer minutes → more reliable).
-    # Without class balancing the model ignores non-transfer samples entirely.
+    # Direction labels: binary indicator (post > pre) used by the auxiliary
+    # classification head to learn P(metric increases after transfer).
+    y_train_direction = (y_train_delta > 0).astype(np.float32)
+    y_val_direction = (y_val_delta > 0).astype(np.float32)
+
+    # Log-ratio targets for LOG_SCALE_GROUPS: predict log(post+ε) - log(pre+ε)
+    # instead of additive deltas.  This naturally scales the loss relative to
+    # the metric's magnitude so that a 0.05→0.10 change (100% increase) is
+    # penalised as much as a 0.50→1.00 change.
+    y_train_log_ratio = np.log(y_train + _LOG_EPS) - np.log(
+        X_train[:, :len(CORE_METRICS)] + _LOG_EPS
+    )
+    y_val_log_ratio = np.log(y_val + _LOG_EPS) - np.log(
+        X_val[:, :len(CORE_METRICS)] + _LOG_EPS
+    )
+
+    # Sample weights: combine class-balance correction with confidence
+    # weighting (more pre-transfer minutes → more reliable).
+    #
+    # Transfer emphasis: transfers carry the actual adaptation signal while
+    # non-transfers are zero-delta anchors.  A 65/35 budget split (instead
+    # of the naive inverse-frequency 50/50) prioritises learning from real
+    # context changes while still benefiting from stability anchoring.
+    _TRANSFER_BUDGET = 0.65  # fraction of total loss budget for transfers
     sample_weights = None
     if meta_train:
         n_total = len(meta_train)
@@ -1972,11 +2120,13 @@ def train_neural_network(
         n_non_transfer = n_total - n_transfer
 
         if n_non_transfer > 0 and n_transfer > 0:
-            # Inverse-frequency class weights so both classes contribute equally.
-            w_transfer = n_total / (2.0 * n_transfer)
-            w_non_transfer = n_total / (2.0 * n_non_transfer)
+            # Weighted class balance: transfers get _TRANSFER_BUDGET share
+            # of total loss, non-transfers get the remainder.
+            w_transfer = (_TRANSFER_BUDGET * n_total) / n_transfer
+            w_non_transfer = ((1 - _TRANSFER_BUDGET) * n_total) / n_non_transfer
             _log.info(
-                "Class balance: %d transfer (w=%.3f), %d non-transfer (w=%.3f)",
+                "Class balance (%.0f/%.0f): %d transfer (w=%.3f), %d non-transfer (w=%.3f)",
+                _TRANSFER_BUDGET * 100, (1 - _TRANSFER_BUDGET) * 100,
                 n_transfer, w_transfer, n_non_transfer, w_non_transfer,
             )
             class_w = np.array(
@@ -2003,42 +2153,88 @@ def train_neural_network(
             _log.warning("All confidence values are zero -- using uniform sample weights")
             sample_weights = None
 
-    # ── LR Warmup callback ─────────────────────────────────────────────────
-    # Linear warmup from a low learning rate to the target over `warmup_epochs`
-    # helps the network find a better loss basin before ReduceLROnPlateau
-    # kicks in.
+    # ── LR schedule: linear warmup → cosine annealing ────────────────────────
+    # Linear warmup for the first `warmup_epochs` epochs, then cosine
+    # annealing from the peak LR down to `min_lr`.  Cosine annealing tends
+    # to find flatter loss minima that generalise better than
+    # ReduceLROnPlateau's staircase schedule.
     _WARMUP_EPOCHS = 10
     _WARMUP_START_LR = 1e-5
     _TARGET_LR = 5e-4
+    _MIN_LR = 1e-5
+    _MAX_EPOCHS = 150
 
-    class _LinearWarmup(tf.keras.callbacks.Callback):
-        """Linear LR warmup from *start_lr* to *target_lr* over *warmup_epochs*."""
+    class _WarmupCosineAnnealing(tf.keras.callbacks.Callback):
+        """Linear warmup then cosine annealing LR schedule."""
 
-        def __init__(self, warmup_epochs: int, start_lr: float, target_lr: float):
+        def __init__(
+            self,
+            warmup_epochs: int,
+            start_lr: float,
+            target_lr: float,
+            min_lr: float,
+            max_epochs: int,
+        ):
             super().__init__()
             self.warmup_epochs = warmup_epochs
             self.start_lr = start_lr
             self.target_lr = target_lr
+            self.min_lr = min_lr
+            self.max_epochs = max_epochs
 
         def on_epoch_begin(self, epoch: int, logs: Any = None) -> None:
             if epoch < self.warmup_epochs:
-                # epoch 0 → start_lr, epoch warmup_epochs-1 → target_lr
+                # Linear ramp: epoch 0 → start_lr, epoch warmup-1 → target_lr
                 lr = self.start_lr + (self.target_lr - self.start_lr) * (
                     (epoch + 1) / self.warmup_epochs
                 )
-                tf.keras.backend.set_value(self.model.optimizer.learning_rate, lr)
+            else:
+                # Cosine annealing from target_lr down to min_lr
+                cosine_epochs = self.max_epochs - self.warmup_epochs
+                progress = (epoch - self.warmup_epochs) / max(cosine_epochs, 1)
+                lr = self.min_lr + 0.5 * (self.target_lr - self.min_lr) * (
+                    1 + np.cos(np.pi * progress)
+                )
+            self.model.optimizer.learning_rate.assign(lr)
 
     for group_name, targets in MODEL_GROUPS.items():
         # Get target columns
         target_indices = [metric_to_idx[t] for t in targets]
-        y_group_train_raw = y_train_delta[:, target_indices]
-        y_group_val_raw = y_val_delta[:, target_indices]
 
-        # Scale targets so all groups train on comparable loss scales
-        y_scaler = StandardScaler()
-        y_group_train = y_scaler.fit_transform(y_group_train_raw)
-        y_group_val = y_scaler.transform(y_group_val_raw)
-        target_scalers[group_name] = y_scaler
+        # Select raw regression targets: log-ratio for LOG_SCALE_GROUPS,
+        # additive delta for all others.
+        if group_name in LOG_SCALE_GROUPS:
+            y_group_train_raw = y_train_log_ratio[:, target_indices]
+            y_group_val_raw = y_val_log_ratio[:, target_indices]
+            _log.info(
+                "Group %s uses log-scale targets (log(post+ε)-log(pre+ε))",
+                group_name,
+            )
+        else:
+            y_group_train_raw = y_train_delta[:, target_indices]
+            y_group_val_raw = y_val_delta[:, target_indices]
+
+        # Direction labels: binary P(post > pre) per metric
+        y_dir_train = y_train_direction[:, target_indices]
+        y_dir_val = y_val_direction[:, target_indices]
+
+        # Scale regression targets per metric (not per group) so each
+        # metric's loss landscape is comparable regardless of its natural
+        # magnitude.
+        # E.g. successful_passes (30–80 range) vs expected_goals (0–1).
+        metric_scalers: Dict[str, StandardScaler] = {}
+        y_group_train = np.zeros_like(y_group_train_raw)
+        y_group_val = np.zeros_like(y_group_val_raw)
+        for col_idx, metric_name in enumerate(targets):
+            col_scaler = StandardScaler()
+            y_group_train[:, col_idx:col_idx + 1] = col_scaler.fit_transform(
+                y_group_train_raw[:, col_idx:col_idx + 1]
+            )
+            y_group_val[:, col_idx:col_idx + 1] = col_scaler.transform(
+                y_group_val_raw[:, col_idx:col_idx + 1]
+            )
+            metric_scalers[metric_name] = col_scaler
+        target_scalers[group_name] = metric_scalers
 
         # Extract per-group feature subset from the full scaled array
         all_keys = _feature_keys()
@@ -2048,17 +2244,20 @@ def train_neural_network(
         X_group_val = X_val_scaled[:, group_indices]
 
         print(f"\n  Group: {group_name} ({len(targets)} targets, {len(group_indices)} features)")
+        if group_name in LOG_SCALE_GROUPS:
+            print(f"    [log-scale targets enabled]")
 
-        # Per-group sample weights: start from base weights, then apply
-        # xG-zero mask for the shooting group only.
-        group_weights = sample_weights
+        # Per-group sample weights: start from a copy of base weights so
+        # per-group modifications (e.g. xG masking) don't alias back.
+        if sample_weights is not None:
+            group_weights = sample_weights.copy()
+        else:
+            group_weights = None
         if group_name == "shooting" and xg_zero_mask_train.any():
             # Zero out sample weight for rows with missing pre-xG so the
             # shooting model ignores their corrupted delta labels while
             # other groups still learn from these samples' valid metrics.
-            if sample_weights is not None:
-                group_weights = sample_weights.copy()
-            else:
+            if group_weights is None:
                 group_weights = np.ones(len(X_group_train), dtype=np.float32)
             group_weights[xg_zero_mask_train] = 0.0
             n_zero = int(xg_zero_mask_train.sum())
@@ -2068,46 +2267,67 @@ def train_neural_network(
                 n_zero,
             )
 
-        # Recompile with Huber loss (robust to outlier deltas) and lower
-        # learning rate for stable convergence on small delta targets.
-        # Start at warmup LR; the _LinearWarmup callback ramps it up.
+        # Recompile with per-group Huber delta (robust to outlier deltas) and
+        # lower learning rate for stable convergence on small delta targets.
+        # Start at warmup LR; the _WarmupCosineAnnealing callback ramps up.
+        # Log-scale groups get a slightly larger Huber delta because
+        # log-ratios have a different scale than raw deltas.
+        huber_delta = _GROUP_ARCH_OVERRIDES.get(group_name, {}).get("huber_delta", 1.0)
+        if group_name in LOG_SCALE_GROUPS:
+            huber_delta = max(huber_delta, 0.5)  # log-space needs wider Huber
         model.models[group_name].compile(
             optimizer=tf.keras.optimizers.Adam(learning_rate=_WARMUP_START_LR),
-            loss=tf.keras.losses.Huber(delta=1.0),
-            metrics=["mae"],
+            loss=[
+                tf.keras.losses.Huber(delta=huber_delta),
+                tf.keras.losses.BinaryCrossentropy(),
+            ],
+            loss_weights=[1.0, 0.25],
+            metrics={"regression": ["mae"], "direction": ["accuracy"]},
         )
 
-        # Validation data: for the shooting group, exclude xG-zero samples
-        # from validation too so val_loss is computed on clean deltas only.
+        # Validation data: for the shooting group, zero-weight xG-missing
+        # samples instead of dropping them so val_loss stays comparable
+        # across groups (same dataset size / structure).
+        val_weights = None
         if group_name == "shooting" and xg_zero_mask_val.any():
-            val_keep = ~xg_zero_mask_val
-            val_data = (X_group_val[val_keep], y_group_val[val_keep])
-        else:
-            val_data = (X_group_val, y_group_val)
+            val_weights = np.ones(len(X_group_val), dtype=np.float32)
+            val_weights[xg_zero_mask_val] = 0.0
+            n_masked_val_group = int(xg_zero_mask_val.sum())
+            _log.info(
+                "Shooting group: zero-weighting %d / %d validation samples "
+                "with missing xG",
+                n_masked_val_group, len(X_group_val),
+            )
 
-        # Early stopping + LR warmup + LR reduction on plateau
+        # Training targets: [regression, direction] for the dual-head model
+        y_train_pair = [y_group_train, y_dir_train]
+        y_val_pair = [y_group_val, y_dir_val]
+
+        if val_weights is not None:
+            val_data = (X_group_val, y_val_pair, val_weights)
+        else:
+            val_data = (X_group_val, y_val_pair)
+
+        # Early stopping + warmup → cosine annealing LR schedule
         callbacks = [
-            _LinearWarmup(_WARMUP_EPOCHS, _WARMUP_START_LR, _TARGET_LR),
+            _WarmupCosineAnnealing(
+                _WARMUP_EPOCHS, _WARMUP_START_LR, _TARGET_LR,
+                _MIN_LR, _MAX_EPOCHS,
+            ),
             tf.keras.callbacks.EarlyStopping(
                 monitor="val_loss",
                 patience=15,
+                min_delta=0.001,
                 restore_best_weights=True,
-                verbose=0,
-            ),
-            tf.keras.callbacks.ReduceLROnPlateau(
-                monitor="val_loss",
-                factor=0.5,
-                patience=5,
-                min_lr=1e-5,
                 verbose=0,
             ),
         ]
 
         history = model.models[group_name].fit(
             X_group_train,
-            y_group_train,
+            y_train_pair,
             sample_weight=group_weights,
-            epochs=150,
+            epochs=_MAX_EPOCHS,
             batch_size=32,
             validation_data=val_data,
             callbacks=callbacks,
@@ -2124,6 +2344,11 @@ def train_neural_network(
         final_train_loss = history.history["loss"][-1]
         final_val_loss = history.history["val_loss"][-1]
         best_val_loss = min(history.history["val_loss"])
+
+        print(f"    Epochs: {epochs_trained}")
+        print(f"    Train loss (scaled): {final_train_loss:.6f}")
+        print(f"    Val loss (scaled):   {final_val_loss:.6f}")
+        print(f"    Best val loss (scaled): {best_val_loss:.6f}")
 
         print(f"    Epochs: {epochs_trained}")
         print(f"    Train loss (scaled): {final_train_loss:.6f}")
@@ -2258,14 +2483,19 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 79-feature vector.
+    """Return the ordered list of feature keys matching the feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
     includes raw Elo, REEP metadata, interaction features, relative
-    dominance features, and per-metric league-normalised features.
+    dominance features, per-metric league-normalised features,
+    10 additional player metrics (enrichment inputs),
+    4 position one-hot features, and minutes-per-match.
     """
     keys = []
     for m in CORE_METRICS:
+        keys.append(f"player_{m}")
+    # Additional player metrics (enrichment inputs, not prediction targets)
+    for m in ADDITIONAL_METRICS:
         keys.append(f"player_{m}")
     keys.extend([
         "team_ability_current", "team_ability_target",
@@ -2294,6 +2524,11 @@ def _feature_keys_list() -> List[str]:
         keys.append(f"league_norm_{m}")
     for m in CORE_METRICS:
         keys.append(f"league_mean_ratio_{m}")
+    # Position one-hot encoding (Phase 8)
+    for pos in POSITION_LABELS:
+        keys.append(f"position_{pos}")
+    # Minutes-per-match (Phase 9)
+    keys.append("pre_minutes_per_match")
     return keys
 
 
@@ -2431,7 +2666,77 @@ def run_pipeline(
             y = np.load(y_path)
             with open(meta_path, "r") as f:
                 metadata = json.load(f)
-            _report("Loaded feature matrices", f"{len(X)} samples from data/models/matrices/")
+
+            # Migrate cached matrices when the feature dimension has changed.
+            #
+            # Phase 7: 79→89 migration — insert 10 zero-filled additional
+            # player metric columns after the 13 core player metrics.
+            # Phase 8: 89→93 migration — append 4 position one-hot columns.
+            # Phase 9: 93→94 migration — append 1 minutes-per-match column.
+            # Combined 79→93/94 migration is also supported.
+            _LEGACY_DIM_PHASE6 = 79
+            _LEGACY_DIM_PHASE7 = 89
+            _LEGACY_DIM_PHASE8 = 93
+            _N_ADDITIONAL = len(ADDITIONAL_METRICS)  # 10
+            _N_POSITION = len(POSITION_LABELS)  # 4
+            _ADDITIONAL_INSERT_POS = len(CORE_METRICS)  # after 13 core player metrics
+
+            if X.shape[1] == _LEGACY_DIM_PHASE6:
+                # Full migration: 79 → 93
+                _log.info(
+                    "Migrating cached matrices from %d to %d features "
+                    "(adding %d additional metric + %d position columns)",
+                    _LEGACY_DIM_PHASE6, FEATURE_DIM, _N_ADDITIONAL, _N_POSITION,
+                )
+                additional_zeros = np.zeros((X.shape[0], _N_ADDITIONAL), dtype=np.float32)
+                X = np.concatenate(
+                    [X[:, :_ADDITIONAL_INSERT_POS], additional_zeros,
+                     X[:, _ADDITIONAL_INSERT_POS:]], axis=1,
+                ).astype(np.float32)
+                # Now at 89 cols — fall through to append position cols below
+
+            if X.shape[1] == _LEGACY_DIM_PHASE7:
+                # Phase 8 migration: 89 → 93 (append position one-hot)
+                _log.info(
+                    "Migrating cached matrices from %d to %d features "
+                    "(appending %d position one-hot columns)",
+                    _LEGACY_DIM_PHASE7, FEATURE_DIM, _N_POSITION,
+                )
+                # Populate position one-hot from metadata using vectorized lookup
+                pos_cols = np.zeros((X.shape[0], _N_POSITION), dtype=np.float32)
+                label_to_idx = {label: j for j, label in enumerate(POSITION_LABELS)}
+                for i, m_dict in enumerate(metadata):
+                    pos = (m_dict.get("position") or "").strip().upper()[:1]
+                    idx = label_to_idx.get(pos)
+                    if idx is not None:
+                        pos_cols[i, idx] = 1.0
+                X = np.concatenate([X, pos_cols], axis=1).astype(np.float32)
+                # Now at 93 cols — fall through to append minutes-per-match
+
+            if X.shape[1] == _LEGACY_DIM_PHASE8:
+                # Phase 9 migration: 93 → 94 (append minutes-per-match)
+                _log.info(
+                    "Migrating cached matrices from %d to %d features "
+                    "(appending minutes-per-match column)",
+                    _LEGACY_DIM_PHASE8, FEATURE_DIM,
+                )
+                mpm_col = np.zeros((X.shape[0], 1), dtype=np.float32)
+                # Populate from metadata if available
+                for i, m_dict in enumerate(metadata):
+                    mpm_col[i, 0] = float(m_dict.get("pre_minutes_per_match", 0.0))
+                X = np.concatenate([X, mpm_col], axis=1).astype(np.float32)
+                np.save(X_path, X)
+                _log.info("Migrated and saved — X shape now %s", X.shape)
+
+            elif X.shape[1] != FEATURE_DIM:
+                _report(
+                    "WARNING: cached X has %d features but model expects %d — "
+                    "rebuilding from API" % (X.shape[1], FEATURE_DIM),
+                )
+                skip_build = False
+
+            if skip_build:
+                _report("Loaded feature matrices", f"{len(X)} samples from data/models/matrices/")
         else:
             _report("WARNING: --skip-build set but no matrices found — building from API")
             skip_build = False

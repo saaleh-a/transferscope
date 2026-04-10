@@ -130,13 +130,15 @@ class TestMetricClipFloors(unittest.TestCase):
             self.assertIn(m, _METRIC_CLIP_FLOORS,
                           f"Missing clip floor for metric: {m}")
 
-    def test_xg_floor_is_tight(self):
-        """xG clip floor should be much smaller than the old universal 1.0."""
-        self.assertLessEqual(_METRIC_CLIP_FLOORS["expected_goals"], 0.20)
+    def test_xg_floor_covers_p95(self):
+        """xG clip floor should cover the 95th percentile of observed deltas (0.205)."""
+        self.assertGreaterEqual(_METRIC_CLIP_FLOORS["expected_goals"], 0.20)
+        self.assertLessEqual(_METRIC_CLIP_FLOORS["expected_goals"], 0.50)
 
-    def test_xa_floor_is_tight(self):
-        """xA clip floor should be small to prevent extreme predictions."""
-        self.assertLessEqual(_METRIC_CLIP_FLOORS["expected_assists"], 0.15)
+    def test_xa_floor_covers_p95(self):
+        """xA clip floor should cover the 95th percentile of observed deltas (0.129)."""
+        self.assertGreaterEqual(_METRIC_CLIP_FLOORS["expected_assists"], 0.13)
+        self.assertLessEqual(_METRIC_CLIP_FLOORS["expected_assists"], 0.40)
 
     def test_passes_floor_is_large(self):
         """successful_passes has large range, floor should be generous."""
@@ -146,7 +148,7 @@ class TestMetricClipFloors(unittest.TestCase):
         """When pre_val is near zero, floor from _METRIC_CLIP_FLOORS is used."""
         model = TransferPortalModel()
         # touches_in_opposition_box: pre_val = 0.001, raw delta = 5.0
-        # max_delta = max(2.0 × 0.001, 1.0) = 1.0 (floor dominates)
+        # max_delta = max(2.0 × 0.001, floor) = floor (floor dominates)
         clipped = model._clip_delta(5.0, 0.001, "touches_in_opposition_box")
         floor = _METRIC_CLIP_FLOORS["touches_in_opposition_box"]
         self.assertAlmostEqual(clipped, floor, places=5)
@@ -162,7 +164,7 @@ class TestMetricClipFloors(unittest.TestCase):
     def test_clip_delta_negative(self):
         """Negative deltas are clipped symmetrically."""
         model = TransferPortalModel()
-        # pre_val = 0.001 → max_delta = max(2.0 × 0.001, 0.15) = 0.15
+        # pre_val = 0.001 → max_delta = max(2.0 × 0.001, 0.30) = 0.30
         clipped = model._clip_delta(-5.0, 0.001, "expected_goals")
         floor = _METRIC_CLIP_FLOORS["expected_goals"]
         self.assertAlmostEqual(clipped, -floor, places=5)
@@ -177,7 +179,7 @@ class TestMetricClipFloors(unittest.TestCase):
         """Unknown metric uses the global DELTA_CLIP_FLOOR fallback."""
         from backend.models.transfer_portal import DELTA_CLIP_FLOOR
         model = TransferPortalModel()
-        # pre_val = 0.001 → max_delta = max(2.0 × 0.001, 0.5) = 0.5
+        # pre_val = 0.001 → max_delta = max(2.0 × 0.001, 1.0) = 1.0
         clipped = model._clip_delta(5.0, 0.001, "unknown_metric")
         self.assertAlmostEqual(clipped, DELTA_CLIP_FLOOR, places=5)
 
@@ -225,7 +227,7 @@ class TestFeatureKeysConsistency(unittest.TestCase):
         self.assertIn("interaction_league_gap", keys)
 
     def test_feature_keys_list_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (79)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (94)."""
         from backend.models.backtester import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
@@ -239,10 +241,11 @@ class TestInjectTeamPosAverages(unittest.TestCase):
 
     def test_injects_from_train_only(self):
         """Val/test team-pos averages should come from training data only."""
+        from backend.data.sofascore_client import ADDITIONAL_METRICS
         from backend.models.training_pipeline import inject_team_pos_averages
 
-        # 13 player + 4 ability + 2 raw_elo + 2 reep = 21
-        _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4 + 2 + 2  # 21
+        # 13 core + 10 additional + 4 ability + 2 raw_elo + 2 reep = 31
+        _POS_CURRENT_OFFSET = len(CORE_METRICS) + len(ADDITIONAL_METRICS) + 4 + 2 + 2  # 31
 
         # Train metadata: club_id=1, position=Forward, xG=0.5 per90
         train_meta = [
@@ -280,10 +283,11 @@ class TestInjectTeamPosAverages(unittest.TestCase):
 
     def test_missing_club_defaults_to_zero(self):
         """Unknown club/position combo should leave zeros."""
+        from backend.data.sofascore_client import ADDITIONAL_METRICS
         from backend.models.training_pipeline import inject_team_pos_averages
 
-        # 13 player + 4 ability + 2 raw_elo + 2 reep = 21
-        _POS_CURRENT_OFFSET = len(CORE_METRICS) + 4 + 2 + 2
+        # 13 core + 10 additional + 4 ability + 2 raw_elo + 2 reep = 31
+        _POS_CURRENT_OFFSET = len(CORE_METRICS) + len(ADDITIONAL_METRICS) + 4 + 2 + 2
 
         train_meta = [
             {

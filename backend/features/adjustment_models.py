@@ -34,17 +34,32 @@ _MODELS_DIR = os.path.join(
 class TeamAdjustmentModel:
     """13 sklearn LinearRegression models — one per core metric.
 
-    Uses two features per sample:
+    Paper Appendix A.1 formulation:
 
-    * ``from_ra`` — source team relative ability (team_score − league_mean).
-      Captures the caliber of environment the player developed in.
-    * ``to_ra`` — target team relative ability.  Captures the caliber of
-      the environment the player is moving into.
+        y_{i,j} = x_{i,j} + α_j + β_j · z_{i,j} + ε_{i,j}
 
-    target = naive_league_expectation (offset)
-           + beta_from * from_ra + beta_to * to_ra
-           + error
+    Where:
+        x_{i,j} = naive league expectation (target league mean per-90 for
+                   metric j).  Used as an offset so the model only needs to
+                   learn the *adjustment*.
+        z_{i,j} = team's relative feature value in previous league.  This is
+                   a *per-metric* signal: the source team's actual per-90 for
+                   metric j relative to the source league distribution.
+
+    The model also accepts the legacy ``from_ra`` / ``to_ra`` features
+    (Elo-derived relative ability) as supplementary inputs.  When
+    ``team_relative_feature`` is provided in training data, it is used
+    as the primary feature (paper-aligned).  Legacy features are included
+    alongside for backward compatibility.
     """
+
+    # Number of features: team_relative_feature + from_ra + to_ra
+    _N_FEATURES = 3
+
+    # Minimum samples per metric to fit a linear model.  With 3 features an
+    # OLS fit on <10 samples risks severe overfitting (R² ≈ 1.0, zero
+    # generalisation).
+    _MIN_SAMPLES = 10
 
     def __init__(self):
         self.models: Dict[str, LinearRegression] = {}
@@ -63,6 +78,9 @@ class TeamAdjustmentModel:
                 - ``naive_league_expectation``: float (league-average per-90
                   at target league)
                 - ``actual``: float (observed per-90 at new club)
+                - ``team_relative_feature``: float, optional (paper A.1 z_{i,j}
+                  — source team's per-90 for this metric relative to source
+                  league distribution; 0.0 when unavailable)
         """
         by_metric: Dict[str, Tuple[List, List]] = {m: ([], []) for m in CORE_METRICS}
 
@@ -74,19 +92,27 @@ class TeamAdjustmentModel:
             to_ra = row.get("to_ra")
             y_val = row.get("actual")
             offset = row.get("naive_league_expectation", 0)
+            # Paper A.1: z_{i,j} — per-metric team feature relative to league
+            team_rel = row.get("team_relative_feature", 0.0)
             if from_ra is None or to_ra is None or y_val is None:
                 continue
-            by_metric[metric][0].append([from_ra, to_ra])
+            by_metric[metric][0].append([team_rel, from_ra, to_ra])
             by_metric[metric][1].append(y_val - offset)
 
         for metric in CORE_METRICS:
             xs, ys = by_metric[metric]
             model = LinearRegression()
-            if len(xs) >= 2:
+            if len(xs) >= self._MIN_SAMPLES:
                 model.fit(np.array(xs), np.array(ys))
             else:
                 # Not enough data — identity model (predict 0 adjustment)
-                model.coef_ = np.array([0.0, 0.0])
+                if len(xs) >= 2:
+                    _log.info(
+                        "Team metric %s: only %d samples (< %d), "
+                        "skipping regression (identity fallback)",
+                        metric, len(xs), self._MIN_SAMPLES,
+                    )
+                model.coef_ = np.array([0.0] * self._N_FEATURES)
                 model.intercept_ = 0.0
             self.models[metric] = model
 
@@ -98,6 +124,7 @@ class TeamAdjustmentModel:
         to_ra: float,
         naive_expectation: float,
         metric: str,
+        team_relative_feature: float = 0.0,
     ) -> float:
         """Predict adjusted team-level per-90 for one metric.
 
@@ -106,7 +133,11 @@ class TeamAdjustmentModel:
         if metric not in self.models:
             return naive_expectation
         model = self.models[metric]
-        adjustment = model.predict(np.array([[from_ra, to_ra]]))[0]
+        features = np.array([[team_relative_feature, from_ra, to_ra]])
+        # Guard against models fitted with legacy 2-feature format
+        if hasattr(model, "coef_") and len(model.coef_) == 2:
+            features = np.array([[from_ra, to_ra]])
+        adjustment = model.predict(features)[0]
         return naive_expectation + adjustment
 
     def predict_all(
@@ -114,12 +145,16 @@ class TeamAdjustmentModel:
         from_ra: float,
         to_ra: float,
         naive_expectations: Dict[str, float],
+        team_relative_features: Optional[Dict[str, float]] = None,
     ) -> Dict[str, float]:
         """Predict adjusted per-90 for all 13 core metrics."""
         result = {}
         for metric in CORE_METRICS:
             naive = naive_expectations.get(metric, 0.0)
-            result[metric] = self.predict(from_ra, to_ra, naive, metric)
+            trf = 0.0
+            if team_relative_features is not None:
+                trf = team_relative_features.get(metric, 0.0)
+            result[metric] = self.predict(from_ra, to_ra, naive, metric, trf)
         return result
 
     def save(self, path: Optional[str] = None) -> str:
@@ -176,7 +211,7 @@ _PLAYER_TARGET_STD_THRESHOLD = 0.01  # Skip fitting if target std is below this
 class PlayerAdjustmentModel:
     """13 sklearn Ridge models per position.
 
-    Uses Ridge regression (alpha=1.0) instead of OLS to handle
+    Uses Ridge regression (alpha=10.0) instead of OLS to handle
     multicollinearity from the polynomial change_relative_ability
     features (cra, cra², cra³).
 
@@ -242,7 +277,7 @@ class PlayerAdjustmentModel:
             self.models[pos] = {}
             self._scalers[pos] = {}
             for metric in CORE_METRICS:
-                model = Ridge(alpha=1.0)
+                model = Ridge(alpha=10.0)
                 scaler = StandardScaler()
                 if (
                     metric in metrics
@@ -453,6 +488,7 @@ def build_training_data_from_transfers(
             "from_ra": old_ranking.relative_ability,
             "to_ra": new_ranking.relative_ability,
             "naive_league_expectation": 0.0,
+            "team_relative_feature": 0.0,  # unavailable from single-player history
             "actual": actual,
         })
 

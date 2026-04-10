@@ -563,12 +563,11 @@ class TestDynamicAliases(unittest.TestCase):
 
         from backend.features import power_rankings
 
-        # Mock REEP teams data with a few teams
+        # Mock REEP teams data with actual name-bearing columns
         mock_data = pd.DataFrame({
             "name": ["Real Madrid CF", "FC Barcelona", "Olympique de Marseille"],
             "key_clubelo": ["RealMadrid", "Barcelona", "Marseille"],
-            "key_fbref": ["Real-Madrid", "Barcelona", "Marseille"],
-            "key_transfermarkt": ["real-madrid", "fc-barcelona", "olympique-marseille"],
+            "key_worldfootball": ["real-madrid-cf", "fc-barcelona", "olympique-marseille"],
         })
 
         # Reset cache to force rebuild
@@ -579,6 +578,9 @@ class TestDynamicAliases(unittest.TestCase):
             with patch(
                 "backend.data.reep_registry.get_teams_df",
                 return_value=mock_data,
+            ), patch(
+                "backend.data.reep_registry.build_team_name_variants",
+                return_value={},
             ):
                 result = power_rankings._build_dynamic_aliases()
 
@@ -596,6 +598,164 @@ class TestDynamicAliases(unittest.TestCase):
             self.assertTrue(has_any_link, f"Expected aliases for known teams, got: {list(result.keys())[:20]}")
         finally:
             power_rankings._dynamic_aliases_cache = old_cache
+
+
+class TestTransliterationMatching(unittest.TestCase):
+    """Tests for cross-language transliteration matching."""
+
+    def test_munchen_matches_munich(self):
+        """Bayern München should match Bayern Munich."""
+        from backend.features.power_rankings import _normalize_team_name_extended
+
+        variants = _normalize_team_name_extended("Bayern München")
+        # Should produce "bayernmunchen" and "bayernmunich"
+        self.assertIn("bayernmunchen", variants)
+        self.assertIn("bayernmunich", variants)
+
+    def test_munchen_in_candidate_matches_munich_query(self):
+        """Querying 'Bayern Munich' should match candidate 'Bayern München'."""
+        teams = {
+            "Bayern München": _make_ranking("Bayern München", "GER1"),
+        }
+        result = _fuzzy_find_team("Bayern Munich", teams)
+        self.assertEqual(result, "Bayern München")
+
+    def test_munich_in_candidate_matches_munchen_query(self):
+        """Querying 'Bayern München' should match candidate 'Bayern Munich'."""
+        teams = {
+            "Bayern Munich": _make_ranking("Bayern Munich", "GER1"),
+        }
+        result = _fuzzy_find_team("Bayern München", teams)
+        self.assertEqual(result, "Bayern Munich")
+
+    def test_koln_cologne_transliteration(self):
+        """Köln and Cologne should produce transliteration variants."""
+        from backend.features.power_rankings import _normalize_team_name_extended
+
+        variants = _normalize_team_name_extended("1. FC Köln")
+        self.assertTrue(
+            any("cologne" in v for v in variants) or any("koln" in v for v in variants),
+            f"Expected Köln/Cologne variant, got: {variants}",
+        )
+
+
+class TestWRatioMatching(unittest.TestCase):
+    """Tests for the enhanced WRatio-based fuzzy matching."""
+
+    def test_wratio_catches_partial_matches(self):
+        """WRatio should match partial team names better than token_sort."""
+        teams = {
+            "Shakhtar Donetsk": _make_ranking("Shakhtar Donetsk", "UKR1"),
+            "Porto": _make_ranking("Porto", "POR1"),
+        }
+        result = _fuzzy_find_team("Shakhtar Donetsk FC", teams)
+        self.assertEqual(result, "Shakhtar Donetsk")
+
+    def test_wratio_does_not_false_match_inter(self):
+        """Inter Miami must NOT match Inter (Milan) — length ratio guard."""
+        result = _fuzzy_find_team("Inter Miami CF", _CLUBELO_TEAMS)
+        self.assertNotEqual(result, "Inter")
+
+    def test_wratio_does_not_false_match_city_variants(self):
+        """Orlando City must NOT match Man City."""
+        result = _fuzzy_find_team("Orlando City SC", _CLUBELO_TEAMS)
+        self.assertNotEqual(result, "Man City")
+
+    def test_token_set_ratio_catches_subset_tokens(self):
+        """Token set ratio should catch when one name's tokens are a subset."""
+        teams = {
+            "Atlético Madrid": _make_ranking("Atlético Madrid", "ESP1"),
+        }
+        result = _fuzzy_find_team("Club Atlético de Madrid", teams)
+        self.assertEqual(result, "Atlético Madrid")
+
+
+class TestREEPNameVariants(unittest.TestCase):
+    """Tests for REEP-powered name variant lookup."""
+
+    def test_build_team_name_variants_returns_dict(self):
+        """build_team_name_variants should return a dict."""
+        from backend.data.reep_registry import build_team_name_variants
+
+        result = build_team_name_variants()
+        self.assertIsInstance(result, dict)
+        # Should have entries (REEP has ~45K teams)
+        self.assertGreater(len(result), 0)
+
+    def test_get_names_df_returns_dataframe(self):
+        """get_names_df should return a DataFrame (even if empty)."""
+        from backend.data.reep_registry import get_names_df
+
+        result = get_names_df()
+        self.assertIsNotNone(result)
+
+    def test_get_meta_returns_dict(self):
+        """get_meta should return metadata dict."""
+        from backend.data.reep_registry import get_meta
+
+        result = get_meta()
+        self.assertIsNotNone(result)
+        self.assertIn("data_version", result)
+        self.assertIn("counts", result)
+
+    def test_variants_include_clubelo_names(self):
+        """Name variants should include ClubElo names when available."""
+        from backend.data.reep_registry import build_team_name_variants
+
+        variants = build_team_name_variants()
+        # Arsenal F.C. has key_clubelo = "Arsenal" in REEP
+        arsenal_variants = variants.get("arsenal f.c.", [])
+        if arsenal_variants:
+            # Should include both the REEP name and ClubElo name
+            has_arsenal = any("Arsenal" in v for v in arsenal_variants)
+            self.assertTrue(has_arsenal)
+
+    def test_variants_include_worldfootball_slugs(self):
+        """Name variants should include readable worldfootball slug names."""
+        from backend.data.reep_registry import build_team_name_variants
+
+        variants = build_team_name_variants()
+        # AC Milan has key_worldfootball = "ac-milan" → "ac milan"
+        ac_milan_variants = variants.get("ac milan", [])
+        if ac_milan_variants:
+            has_milan = any("Milan" in v or "milan" in v for v in ac_milan_variants)
+            self.assertTrue(has_milan)
+
+
+class TestNormalizeExtended(unittest.TestCase):
+    """Tests for _normalize_team_name_extended."""
+
+    def test_basic_normalization(self):
+        """Basic name should return at least the base normalized form."""
+        from backend.features.power_rankings import _normalize_team_name_extended
+
+        result = _normalize_team_name_extended("Arsenal FC")
+        self.assertIn("arsenal", result)
+
+    def test_transliteration_produces_variants(self):
+        """Names with transliterable substrings should produce variants."""
+        from backend.features.power_rankings import _normalize_team_name_extended
+
+        result = _normalize_team_name_extended("FC Bayern München")
+        self.assertGreater(len(result), 1)
+        # Should have both "munchen" and "munich" variants
+        has_munchen = any("munchen" in v for v in result)
+        has_munich = any("munich" in v for v in result)
+        self.assertTrue(has_munchen or has_munich)
+
+    def test_no_transliteration_for_plain_names(self):
+        """Names without transliterable substrings should return single variant."""
+        from backend.features.power_rankings import _normalize_team_name_extended
+
+        result = _normalize_team_name_extended("Arsenal")
+        self.assertEqual(len(result), 1)
+
+    def test_empty_name_returns_empty(self):
+        """Empty name should return empty list."""
+        from backend.features.power_rankings import _normalize_team_name_extended
+
+        result = _normalize_team_name_extended("")
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

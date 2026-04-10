@@ -35,6 +35,7 @@ from backend.utils.league_registry import LEAGUES, LeagueInfo
 # Falls back to SequenceMatcher (stdlib difflib) if rapidfuzz is not installed.
 try:
     from rapidfuzz import fuzz as _rfuzz
+    from rapidfuzz import process as _rprocess
     _RAPIDFUZZ_AVAILABLE = True
 except ImportError:
     _RAPIDFUZZ_AVAILABLE = False
@@ -157,6 +158,13 @@ _opta_team_league_map: Optional[Dict[str, float]] = None
 # Pre-resolved on first call to get_league_opta_rating(); avoids running the
 # fuzzy SequenceMatcher loop over 446 leagues on every training sample.
 _league_code_opta_rating_cache: Dict[str, float] = {}
+
+# ── get_team_ranking() result cache ───────────────────────────────────────────
+# Keyed by (team_name, date_iso_str, tournament_id).  Avoids repeated fuzzy
+# matching + Opta fallback for the same team during a single training run,
+# eliminating duplicate WARNING / INFO log messages.
+_TEAM_RANKING_CACHE_NONE = object()  # sentinel for cached None results
+_team_ranking_result_cache: Dict[tuple, object] = {}
 
 # ── ClubElo canonical name aliases ───────────────────────────────────────────
 # Maps incoming Sofascore/Opta display names → names closer to ClubElo's
@@ -1049,15 +1057,19 @@ def _build_dynamic_aliases() -> Dict[str, List[str]]:
         return {}
 
     # Columns that may contain team names across providers.
-    # NOTE: key_clubelo is deliberately EXCLUDED — the upstream REEP repo has
-    # misaligned values in that column (e.g. Lille OSC→"Fulham"), so using it
-    # as a name variant creates poisonous cross-links.  The remaining columns
-    # (key_fbref, key_transfermarkt) are reliable.
+    # key_clubelo has verified-correct name slugs (e.g. "ManCity", "Arsenal").
+    # key_worldfootball has dash-separated slugs (e.g. "borussia-dortmund")
+    #   that we convert to readable names below.
+    # NOTE: key_fbref (hex hashes) and key_transfermarkt (numeric IDs) are
+    # excluded because they contain identifiers, not names.
     name_columns = [
-        c for c in ["name", "key_fbref", "key_transfermarkt"]
+        c for c in ["name", "key_clubelo"]
         if c in df.columns
     ]
-    if not name_columns:
+    # key_worldfootball has slug-format names — collect them separately
+    # for dash-to-space conversion.
+    has_wf = "key_worldfootball" in df.columns
+    if not name_columns and not has_wf:
         return {}
 
     aliases: Dict[str, List[str]] = {}
@@ -1071,6 +1083,15 @@ def _build_dynamic_aliases() -> Dict[str, List[str]]:
                 s = str(val).strip()
                 if s:
                     variants.append(s)
+
+        # WorldFootball.net slug → readable name (e.g. "borussia-dortmund" → "borussia dortmund")
+        if has_wf:
+            wf_val = row.get("key_worldfootball")
+            if pd.notna(wf_val):
+                wf_str = str(wf_val).strip()
+                if wf_str and "frauen" not in wf_str:
+                    readable = wf_str.replace("-", " ")
+                    variants.append(readable)
 
         if len(variants) < 2:
             continue  # nothing to cross-link
@@ -1092,8 +1113,7 @@ def _build_dynamic_aliases() -> Dict[str, List[str]]:
         # Create bidirectional links between all pairs, but only when
         # variants share at least one significant token OR have high
         # character-level similarity.  This prevents cross-links from
-        # misaligned REEP columns (e.g. key_clubelo of Lille OSC being
-        # "Fulham" due to a data error).
+        # WorldFootball slugs that don't relate to the canonical name.
         for i, norm_a in enumerate(normed):
             for j, norm_b in enumerate(normed):
                 if i == j:
@@ -1106,6 +1126,31 @@ def _build_dynamic_aliases() -> Dict[str, List[str]]:
                 aliases.setdefault(norm_a, [])
                 if norm_b not in aliases[norm_a]:
                     aliases[norm_a].append(norm_b)
+
+    # ── Integrate REEP name variants index (names.csv + multi-column) ────
+    try:
+        from backend.data.reep_registry import build_team_name_variants
+
+        variants_index = build_team_name_variants()
+        for _key, raw_variants in variants_index.items():
+            # Normalize all variants and create bidirectional links
+            norms = []
+            for rv in raw_variants:
+                n = _normalize_team_name(rv)
+                if n and len(n) >= 3:
+                    norms.append(n)
+            norms = list(dict.fromkeys(norms))
+            if len(norms) < 2:
+                continue
+            for i, na in enumerate(norms):
+                for j, nb in enumerate(norms):
+                    if i == j:
+                        continue
+                    aliases.setdefault(na, [])
+                    if nb not in aliases[na]:
+                        aliases[na].append(nb)
+    except Exception as exc:
+        _log.debug("REEP name variants unavailable: %s", exc)
 
     _log.info(
         "Built %d dynamic aliases from REEP teams (%d bidirectional links)",
@@ -1950,17 +1995,28 @@ def _opta_fallback_ranking(
         if ci_matches:
             opta_team = min(ci_matches, key=lambda t: t.rank)
 
-    # Fuzzy if still no match
+    # Fuzzy if still no match — use WRatio for better partial/abbreviation handling
     if opta_team is None:
-        best_score = 0.0
-        for t in opta_teams:
-            if _RAPIDFUZZ_AVAILABLE:
-                score = float(_rfuzz.token_sort_ratio(team_name, t.team))
-            else:
+        if _RAPIDFUZZ_AVAILABLE:
+            opta_name_list = [t.team for t in opta_teams]
+            result = _rprocess.extractOne(
+                team_name, opta_name_list,
+                scorer=_rfuzz.WRatio,
+                score_cutoff=80.0,
+            )
+            if result is not None:
+                match_name, _score, _idx = result
+                # Find the highest-ranked team with this name
+                matched = [t for t in opta_teams if t.team == match_name]
+                if matched:
+                    opta_team = min(matched, key=lambda t: t.rank)
+        else:
+            best_score = 0.0
+            for t in opta_teams:
                 score = SequenceMatcher(None, team_name.lower(), t.team.lower()).ratio() * 100.0
-            if score > best_score and score >= 80.0:
-                best_score = score
-                opta_team = t
+                if score > best_score and score >= 80.0:
+                    best_score = score
+                    opta_team = t
 
     if opta_team is not None:
         raw_elo = _opta_score_to_raw_elo(opta_team.rating)
@@ -2077,6 +2133,26 @@ def get_team_ranking(
         also enables accurate ``league_mean_normalized`` and
         ``relative_ability`` for Opta teams not covered by ClubElo.
     """
+    # ── Result cache — avoid repeated fuzzy matching / Opta fallback ────────
+    _date_str = (query_date.isoformat() if query_date else None)
+    _cache_key = (team_name, _date_str, tournament_id)
+    _cached = _team_ranking_result_cache.get(_cache_key)
+    if _cached is not None:
+        return None if _cached is _TEAM_RANKING_CACHE_NONE else _cached  # type: ignore[return-value]
+
+    result = _resolve_team_ranking(team_name, query_date, tournament_id)
+    _team_ranking_result_cache[_cache_key] = (
+        _TEAM_RANKING_CACHE_NONE if result is None else result
+    )
+    return result
+
+
+def _resolve_team_ranking(
+    team_name: str,
+    query_date: Optional[date],
+    tournament_id: Optional[int],
+) -> Optional[TeamRanking]:
+    """Inner resolver for :func:`get_team_ranking` (no caching)."""
     teams, league_snapshots = compute_daily_rankings(query_date)
 
     if not teams:
@@ -2966,6 +3042,46 @@ _EXTREME_ABBREVS: Dict[str, List[str]] = {
     "estudiantesdelaplata": ["estudiantes"],
 }
 
+# ── Cross-language transliteration pairs ─────────────────────────────────────
+# Maps common football name variants across languages.  Applied during
+# normalization so "FC Bayern München" and "Bayern Munich" produce the
+# same normalized key.  Order matters: longer substrings first.
+_TRANSLITERATION_PAIRS: List[Tuple[str, str]] = [
+    # German ↔ English
+    ("münchen", "munich"),
+    ("munchen", "munich"),
+    ("köln", "cologne"),
+    ("koln", "cologne"),
+    ("nürnberg", "nuremberg"),
+    ("nurnberg", "nuremberg"),
+    # Spanish ↔ English
+    ("atlético", "atletico"),
+    ("fútbol", "futbol"),
+    ("deportivo", "deportivo"),
+    # Portuguese ↔ English
+    ("são paulo", "sao paulo"),
+    # French ↔ English
+    ("olympique", "olympique"),
+    ("saint-étienne", "saint etienne"),
+    # Russian transliterations
+    ("moskva", "moscow"),
+    # Turkish
+    ("istanbul başakşehir", "istanbul basaksehir"),
+    ("trabzonspor", "trabzonspor"),
+    # Greek
+    ("olympiakos", "olympiacos"),
+    ("panathinaikos", "panathinaikos"),
+]
+
+# Build a lookup: normalized source → normalized target
+_TRANSLITERATION_MAP: Dict[str, str] = {}
+for _src, _tgt in _TRANSLITERATION_PAIRS:
+    _s = re.sub(r"[^a-z0-9]", "", _src.lower())
+    _t = re.sub(r"[^a-z0-9]", "", _tgt.lower())
+    if _s != _t:
+        _TRANSLITERATION_MAP[_s] = _t
+        _TRANSLITERATION_MAP[_t] = _s
+
 
 def _normalize_team_name(name: str) -> str:
     """Reduce a team name to a canonical key for matching.
@@ -2984,6 +3100,25 @@ def _normalize_team_name(name: str) -> str:
     return name
 
 
+def _normalize_team_name_extended(name: str) -> List[str]:
+    """Return the base normalized form plus transliteration variants.
+
+    E.g. "Bayern München" → ["bayernmunchen", "bayernmunich"]
+    This enables matching across language variants without hardcoded
+    aliases for every single team.
+    """
+    base = _normalize_team_name(name)
+    if not base:
+        return []
+    variants = [base]
+    for src, tgt in _TRANSLITERATION_MAP.items():
+        if src in base:
+            alt = base.replace(src, tgt)
+            if alt != base and alt not in variants:
+                variants.append(alt)
+    return variants
+
+
 def _fuzzy_find_team(
     query: str,
     teams: Dict[str, TeamRanking],
@@ -2995,10 +3130,12 @@ def _fuzzy_find_team(
 
     Matching strategy (in priority order):
     1. Exact normalized match (fast path)
+    1b. Transliteration variant match (München↔Munich, Köln↔Cologne)
     2. Extreme abbreviation lookup (PSG ↔ Paris Saint-Germain, etc.)
-    3. Substring containment with overlap ratio guard
-    4. Word-level matching (shared significant words)
-    5. SequenceMatcher similarity ratio
+    3. REEP name variant lookup (cross-provider entity resolution)
+    4. Substring containment with overlap ratio guard
+    5. Word-level matching (shared significant words)
+    6. Multi-scorer ensemble fuzzy (WRatio + token_sort_ratio)
 
     Returns the original key from *teams*, or None if no match.
     """
@@ -3006,16 +3143,21 @@ def _fuzzy_find_team(
     if not q:
         return None
 
-    # Build normalised → original key map
+    # Build normalised → original key map (+ transliteration variants)
     candidates: Dict[str, str] = {}
     for team_name in teams:
-        norm = _normalize_team_name(team_name)
-        if norm:
-            candidates[norm] = team_name
+        for norm_variant in _normalize_team_name_extended(team_name):
+            if norm_variant and norm_variant not in candidates:
+                candidates[norm_variant] = team_name
 
-    # 1. Exact normalised match
+    # 1. Exact normalised match (includes transliteration variants of candidates)
     if q in candidates:
         return candidates[q]
+
+    # 1b. Transliteration variants of the QUERY
+    for q_variant in _normalize_team_name_extended(query):
+        if q_variant in candidates:
+            return candidates[q_variant]
 
     # 2. Extreme abbreviation lookup — must come before substring to prevent
     #    false positives like "Paris FC" beating "PSG" for "Paris Saint-Germain"
@@ -3025,13 +3167,44 @@ def _fuzzy_find_team(
     for alias in q_aliases:
         if alias in candidates:
             return candidates[alias]
-    # Reverse: check if any candidate has an alias matching q
+    # Also check transliteration variants of query aliases
+    for q_variant in _normalize_team_name_extended(query):
+        for alias in merged_aliases.get(q_variant, []):
+            if alias in candidates:
+                return candidates[alias]
+    # Reverse: check if any candidate has an alias matching q or its variants
+    q_variants_set = set(_normalize_team_name_extended(query))
     for norm, orig in candidates.items():
         for alias in merged_aliases.get(norm, []):
-            if alias == q:
+            if alias in q_variants_set:
                 return orig
 
-    # 3. Substring containment — one name fully inside the other.
+    # 3. REEP name variant lookup — cross-provider entity resolution.
+    #    If the query matches a known REEP team name, check if any of that
+    #    team's alternate names are in the candidates.
+    try:
+        from backend.data.reep_registry import build_team_name_variants
+
+        reep_variants = build_team_name_variants()
+        # Check query (lowercase) against REEP variant index
+        query_lower = query.lower().strip()
+        if query_lower in reep_variants:
+            for variant in reep_variants[query_lower]:
+                vn = _normalize_team_name(variant)
+                if vn in candidates:
+                    return candidates[vn]
+        # Also try normalized query as lookup
+        q_stripped = query.strip()
+        for qv in [q_stripped, q_stripped.lower()]:
+            if qv in reep_variants:
+                for variant in reep_variants[qv]:
+                    vn = _normalize_team_name(variant)
+                    if vn in candidates:
+                        return candidates[vn]
+    except Exception:
+        pass  # Graceful degradation if REEP unavailable
+
+    # 4. Substring containment — one name fully inside the other.
     #    Guard: require the shorter name to be at least 6 chars AND
     #    represent >= 45% of the longer name.  This prevents
     #    "paris" (5 chars, 29% of "parissaintgermain") from matching.
@@ -3056,7 +3229,7 @@ def _fuzzy_find_team(
     if best_sub is not None:
         return best_sub
 
-    # 4. Word-level matching — tokenize into "words" (alpha runs ≥ 4 chars)
+    # 5. Word-level matching — tokenize into "words" (alpha runs ≥ 4 chars)
     #    and check if any significant word from the query matches a word
     #    in a candidate or vice versa.  This catches "Borussia Dortmund"
     #    sharing "dortmund" with just "Dortmund" even when full-string
@@ -3078,46 +3251,88 @@ def _fuzzy_find_team(
         if best_word_match is not None and best_word_overlap >= 5:
             return best_word_match
 
-    # 5. token_sort_ratio fuzzy matching on ORIGINAL names.
-    #    Comparing original (non-normalised) strings preserves word structure
-    #    so that multi-word names like "Angers SCO" score much lower against
-    #    "Rangers FC" (~52) than against "Angers" (~100).  Using normalised
-    #    names collapsed both to "angerso"/"rangers" giving a misleadingly
-    #    high SequenceMatcher ratio of 0.857 which caused false matches.
-    #
-    #    Minimum accepted score: 80 (fuzz 0-100 scale).
-    #    Token-overlap bypass: only for score >= 95 (handles abbreviation
-    #    pairs like "Man United" ↔ "Manchester United" that share no 4-char
-    #    token after normalisation but are unambiguous at high similarity).
+    # 6. Multi-scorer ensemble fuzzy matching.
+    #    Uses rapidfuzz.process.extractOne with WRatio (handles abbreviations,
+    #    partial matches, and token reordering better than token_sort_ratio alone).
+    #    Falls back to manual SequenceMatcher loop if rapidfuzz unavailable.
     _MIN_FUZZY_SCORE = 80
 
-    best_match: Optional[str] = None
-    best_score = 0
-    for orig in teams:
-        if _RAPIDFUZZ_AVAILABLE:
-            score = _rfuzz.token_sort_ratio(query, orig)
-        else:
-            # Graceful fallback to SequenceMatcher on normalised names.
+    if _RAPIDFUZZ_AVAILABLE:
+        team_names = list(teams.keys())
+        if team_names:
+            # WRatio is the most sophisticated scorer — it picks the best
+            # of ratio, partial_ratio, token_sort_ratio, token_set_ratio
+            # and accounts for length differences.
+            result = _rprocess.extractOne(
+                query, team_names,
+                scorer=_rfuzz.WRatio,
+                score_cutoff=_MIN_FUZZY_SCORE,
+            )
+            if result is not None:
+                match_name, score, _idx = result
+                if not _has_token_overlap(query, match_name):
+                    if score < 95:
+                        _log.warning(
+                            "Fuzzy match rejected (no token overlap): "
+                            "'%s' -> '%s' (WRatio=%d)",
+                            query, match_name, int(score),
+                        )
+                        return None
+                # Guard against partial-ratio inflation: when one name is
+                # much shorter than the other, WRatio can be inflated by
+                # partial_ratio (e.g. "Inter Miami CF" vs "Inter" = 90 via
+                # partial_ratio=100).  Cross-check with token_sort_ratio
+                # which doesn't have this bias.
+                len_ratio = min(len(query), len(match_name)) / max(len(query), len(match_name))
+                if len_ratio < 0.5:
+                    tsr = _rfuzz.token_sort_ratio(query, match_name)
+                    if tsr < 65:
+                        _log.info(
+                            "Fuzzy match rejected (length ratio guard): "
+                            "'%s' -> '%s' (WRatio=%d, TSR=%.0f, len_ratio=%.2f)",
+                            query, match_name, int(score), tsr, len_ratio,
+                        )
+                        return None
+                return match_name
+
+            # Second pass with token_set_ratio — handles cases where one
+            # name is a subset of the other's tokens (e.g. "Sporting" in
+            # "Sporting Club de Portugal").
+            result2 = _rprocess.extractOne(
+                query, team_names,
+                scorer=_rfuzz.token_set_ratio,
+                score_cutoff=85,
+            )
+            if result2 is not None:
+                match_name, score, _idx = result2
+                if _has_token_overlap(query, match_name):
+                    return match_name
+    else:
+        # Graceful fallback to SequenceMatcher on normalised names.
+        best_match: Optional[str] = None
+        best_score = 0
+        for orig in teams:
             norm = _normalize_team_name(orig)
             score = int(SequenceMatcher(None, q, norm).ratio() * 100)
-        if score > best_score:
-            best_score = score
-            best_match = orig
+            if score > best_score:
+                best_score = score
+                best_match = orig
 
-    if best_match is not None and best_score >= _MIN_FUZZY_SCORE:
-        if not _has_token_overlap(query, best_match):
-            if best_score < 95:
-                _log.warning(
-                    "Fuzzy match rejected (no token overlap): "
-                    "'%s' -> '%s' (score=%d)",
-                    query, best_match, best_score,
-                )
-                return None
-        return best_match
+        if best_match is not None and best_score >= _MIN_FUZZY_SCORE:
+            if not _has_token_overlap(query, best_match):
+                if best_score < 95:
+                    _log.warning(
+                        "Fuzzy match rejected (no token overlap): "
+                        "'%s' -> '%s' (score=%d)",
+                        query, best_match, best_score,
+                    )
+                    return None
+            return best_match
 
-    if best_match is not None:
-        _log.warning(
-            "No fuzzy match for '%s' (best='%s', score=%d < %d) — returning None",
-            query, best_match, best_score, _MIN_FUZZY_SCORE,
-        )
+        if best_match is not None:
+            _log.warning(
+                "No fuzzy match for '%s' (best='%s', score=%d < %d) — returning None",
+                query, best_match, best_score, _MIN_FUZZY_SCORE,
+            )
+
     return None

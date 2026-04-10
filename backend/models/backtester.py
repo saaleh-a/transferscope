@@ -13,11 +13,12 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from backend.data.sofascore_client import CORE_METRICS
+from backend.data.sofascore_client import ADDITIONAL_METRICS, CORE_METRICS
 from backend.features import power_rankings
 from backend.models.transfer_portal import (
     FEATURE_DIM,
     MODEL_GROUPS,
+    POSITION_LABELS,
     TransferPortalModel,
 )
 
@@ -106,14 +107,19 @@ def _prediction_confidence(X_row: np.ndarray) -> float:
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 79-feature vector.
+    """Return the ordered list of feature keys matching the feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
     includes raw Elo, REEP metadata, interaction features, relative
-    dominance features, and per-metric league-normalised features.
+    dominance features, per-metric league-normalised features,
+    10 additional player metrics (enrichment inputs),
+    4 position one-hot features, and minutes-per-match.
     """
     keys = []
     for m in CORE_METRICS:
+        keys.append(f"player_{m}")
+    # Additional player metrics (enrichment inputs, not prediction targets)
+    for m in ADDITIONAL_METRICS:
         keys.append(f"player_{m}")
     keys.extend([
         "team_ability_current", "team_ability_target",
@@ -142,6 +148,11 @@ def _feature_keys_list() -> List[str]:
         keys.append(f"league_norm_{m}")
     for m in CORE_METRICS:
         keys.append(f"league_mean_ratio_{m}")
+    # Position one-hot encoding (Phase 8)
+    for pos in POSITION_LABELS:
+        keys.append(f"position_{pos}")
+    # Minutes-per-match (Phase 9)
+    keys.append("pre_minutes_per_match")
     return keys
 
 
@@ -364,7 +375,80 @@ def run_backtest(
         json.dump(report, f, indent=2)
     print(f"\nReport saved to {report_path}")
 
+    # ── Confidence calibration ───────────────────────────────────────────────
+    # Fit an isotonic regression to map raw prediction confidence → actual
+    # accuracy (within-20% rate).  This gives users a calibrated score: if
+    # the model says 0.7, roughly 70% of such predictions are within 20%.
+    try:
+        _calibrate_confidence(meta_test, trained_pct_errors)
+    except Exception as exc:
+        _log.warning("Confidence calibration failed: %s", exc)
+
     return report
+
+
+def _calibrate_confidence(
+    meta_test: List[Dict[str, Any]],
+    trained_pct_errors: Dict[str, List[float]],
+) -> None:
+    """Fit an isotonic regression calibrator from raw confidence → accuracy.
+
+    Maps ``prediction_confidence`` (feature-based, [0, 1]) to actual within-20%
+    accuracy so that a calibrated score of 0.7 means ~70% of predictions at
+    that confidence level are within 20% of the true value.
+
+    Saves the fitted calibrator to ``data/models/confidence_calibrator.pkl``.
+    """
+    import joblib
+
+    raw_confs = []
+    accuracies = []
+
+    # Compute per-sample accuracy: fraction of metrics within 20% of actual
+    for i, meta in enumerate(meta_test):
+        conf = meta.get("prediction_confidence")
+        if conf is None:
+            continue
+        # Collect per-metric accuracy for this sample
+        n_within = 0
+        n_total = 0
+        for m in CORE_METRICS:
+            if i < len(trained_pct_errors.get(m, [])):
+                n_total += 1
+                if trained_pct_errors[m][i] <= 20:
+                    n_within += 1
+        if n_total > 0:
+            raw_confs.append(conf)
+            accuracies.append(n_within / n_total)
+
+    if len(raw_confs) < 10:
+        _log.info(
+            "Too few samples (%d) for confidence calibration — skipping",
+            len(raw_confs),
+        )
+        return
+
+    from sklearn.isotonic import IsotonicRegression
+
+    calibrator = IsotonicRegression(
+        y_min=0.0, y_max=1.0, out_of_bounds="clip",
+    )
+    calibrator.fit(raw_confs, accuracies)
+
+    cal_path = os.path.join(_MODELS_DIR, "confidence_calibrator.pkl")
+    joblib.dump(calibrator, cal_path)
+    _log.info("Saved confidence calibrator to %s (%d samples)", cal_path, len(raw_confs))
+    print(f"  Confidence calibrator saved ({len(raw_confs)} samples)")
+
+
+def load_confidence_calibrator() -> Optional[Any]:
+    """Load the fitted confidence calibrator, or return None if unavailable."""
+    import joblib
+
+    cal_path = os.path.join(_MODELS_DIR, "confidence_calibrator.pkl")
+    if os.path.exists(cal_path):
+        return joblib.load(cal_path)
+    return None
 
 
 def show_example_predictions(

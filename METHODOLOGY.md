@@ -338,20 +338,21 @@ Before the neural network makes its prediction, simpler linear models provide a 
 
 > **In plain English:** Before the main brain (neural network) does its thing, we first do some quick, straightforward maths: "Players who move to stronger teams typically see their xG go up by this much." These simple models set the baseline.
 
-### 7.2 Team Adjustment — 13 LinearRegression Models
+### 7.2 Team Adjustment — 13 Ridge Regression Models
 
 Implemented in `TeamAdjustmentModel` in `backend/features/adjustment_models.py`.
 
-**One model per core metric.** Each predicts the adjusted team-level per-90 at the target club.
+**One model per core metric.** Each predicts the adjusted team-level per-90 at the target club using 3 features per sample (paper Appendix A.1):
 
 ```
-adjusted_per90 = naive_league_expectation + β × team_relative_feature
+adjusted_per90 = β₀ + β₁ × team_relative_feature + β₂ × from_ra + β₃ × to_ra
 ```
 
 Where:
-- `naive_league_expectation` = the target league's average per-90 for that metric (an offset/baseline)
-- `team_relative_feature` = the team's relative ability (how much better/worse than league average)
-- `β` = learned coefficient from training data
+- `team_relative_feature` = (team_per90 - league_mean) / league_mean — how the source team's output for that specific metric compares to the league average (paper's z_{i,j})
+- `from_ra` = source team's overall relative ability (0-100 normalized score)
+- `to_ra` = target team's overall relative ability (0-100 normalized score)
+- `β₁, β₂, β₃` = learned coefficients from training data
 
 > **In plain English:** This says: "Start with the league average. Then adjust based on how strong the specific team is. If Arsenal is much better than the Premier League average, their xG should be above the league average too, and `β` tells us by how much."
 
@@ -414,6 +415,7 @@ python backend/models/training_pipeline.py [options]
 | `--leagues` | ENG1,ESP1,GER1,ITA1,FRA1,NED1,POR1,BEL1,ENG2,TUR1,SCO1 | Comma-separated league codes |
 | `--seasons-back` | 5 | Number of historical seasons to scan |
 | `--skip-discovery` | false | Load cached transfer records instead of re-discovering |
+| `--skip-build` | false | Load pre-built feature matrices from `data/models/matrices/` instead of rebuilding |
 | `--skip-training` | false | Skip training, run backtesting only |
 | `--val-ratio` | 0.15 | Validation split ratio |
 | `--test-ratio` | 0.10 | Test split ratio |
@@ -480,13 +482,15 @@ The damping factor is **asymmetric**: less damping for downgrades (large drops a
 
 Implemented in `backend/models/transfer_portal.py`. A 4-group multi-head neural network, following Table 1 from the paper.
 
-**Why 4 groups instead of 1?** Different stat types have different internal relationships. Shooting metrics (xG, shots) relate to each other more than to defensive metrics (clearances, interceptions). Grouping allows each sub-network to specialize.
+**Why 6 groups instead of 1?** Different stat types have different internal relationships. Shooting metrics (xG, shots) relate to each other more than to defensive metrics (clearances, interceptions). Grouping allows each sub-network to specialize. The old "passing" mega-group (7 metrics) has been split into creation (xA, chances, touches in box), distribution (passes, pass %, long balls), and crossing (crosses) so each gets a properly scaled loss function.
 
-> **In plain English:** Instead of one big brain trying to predict everything at once, we have four specialist brains:
-> - One that's an expert in shooting stats
-> - One for passing stats
-> - One for dribbling
-> - One for defending
+> **In plain English:** Instead of one big brain trying to predict everything at once, we have six specialist brains:
+> - One for shooting stats (xG, shots)
+> - One for creation stats (xA, chances created, touches in opp. box)
+> - One for distribution stats (passes, pass %, long balls)
+> - One for crossing stats (crosses)
+> - One for dribbling (take-ons)
+> - One for defending (clearances, interceptions, pressing)
 >
 > Each specialist shares information within its group but focuses on its area of expertise.
 
@@ -505,10 +509,12 @@ Input (group-specific feature subset)
 
 | Group | Input features | Hidden | Output | What it predicts |
 |---|---|---|---|---|
-| Shooting | 19 | 128 → 64 | 2 | xG, Shots |
-| Passing | 28 | 128 → 64 | 7 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area |
-| Dribbling | 10 | 128 → 64 | 1 | Take-ons |
-| Defending | 16 | 128 → 64 | 3 | Clearances, Interceptions, Possession Won |
+| Shooting | 41 | 64 → 32 | 2 | xG, Shots |
+| Creation | 37 | 64 → 32 | 3 | xA, Chances Created, Touches in Opp. Box |
+| Distribution | 32 | 96 → 48 | 3 | Passes, Pass %, Long Balls |
+| Crossing | 26 | 32 → 16 | 1 | Crosses |
+| Dribbling | 26 | 64 → 32 | 1 | Take-ons |
+| Defending | 36 | 96 → 48 | 3 | Clearances, Interceptions, Possession Won |
 
 > **In plain English:**
 > - Each specialist brain only sees the information relevant to its job (ranging from 10 to 28 features per group) — e.g., the Dribbling group excludes passing and defending team-position metrics, while the Shooting group excludes defensive metrics.
@@ -557,11 +563,11 @@ Group slicing examples:
 ### 8.3 Training
 
 `TransferPortalModel.fit()` trains all 4 groups simultaneously with:
-- **Optimizer:** Trained with Adam optimizer (LR=5e-4) and Huber loss (delta=1.0) with L2 regularization (1e-3). ReduceLROnPlateau (factor=0.5, patience=5). EarlyStopping (patience=15). Max 150 epochs, batch size 32.
+- **Optimizer:** Trained with Adam optimizer, linear LR warmup (10 epochs from 1e-5 → 5e-4) then ReduceLROnPlateau (factor=0.5, patience=5). Huber loss (delta=1.0) with L2 regularization (1e-3). EarlyStopping (patience=15). Max 150 epochs, batch size 32.
 - **Validation split:** 15% of data held out to monitor overfitting
 - **Epochs:** up to 150 passes (with early stopping)
 
-Predicted deltas are multiplied by `DELTA_SHRINKAGE=0.75` to pull toward naive baseline, then clipped per-metric via `_METRIC_CLIP_FLOORS`.
+Predicted deltas are multiplied by `DELTA_SHRINKAGE=0.85` to pull toward naive baseline, then clipped per-metric via `_METRIC_CLIP_FLOORS`.
 
 ### 8.4 Prediction
 
