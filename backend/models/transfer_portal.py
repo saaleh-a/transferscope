@@ -112,7 +112,7 @@ DIRECTION_FLIP_THRESHOLD = 0.70
 # in log-space: log(post + ε) - log(pre + ε).  This naturally scales loss
 # relative to metric magnitude so a 0.05→0.10 change (100% increase) is
 # penalised as much as a 0.50→1.00 change.
-_LOG_EPS = 0.05  # floor to avoid log(0); 0.05 stabilises near-zero xG players
+_LOG_EPS = 0.05  # floor to avoid log(0); 0.05 stabilizes near-zero xG players
 
 # Groups whose targets are transformed to log-ratios during training.
 # Other groups continue to use additive deltas.  Crossing is included
@@ -522,7 +522,7 @@ class TransferPortalModel:
     seeds and average predictions at inference time for reduced variance.
     """
 
-    # Number of ensemble members to train per group (set by training pipeline)
+    # Default number of ensemble members per group (can be overridden at training time)
     ENSEMBLE_SIZE = 3
 
     def __init__(self, input_dim: Optional[int] = None):
