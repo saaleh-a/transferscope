@@ -375,7 +375,80 @@ def run_backtest(
         json.dump(report, f, indent=2)
     print(f"\nReport saved to {report_path}")
 
+    # ── Confidence calibration ───────────────────────────────────────────────
+    # Fit an isotonic regression to map raw prediction confidence → actual
+    # accuracy (within-20% rate).  This gives users a calibrated score: if
+    # the model says 0.7, roughly 70% of such predictions are within 20%.
+    try:
+        _calibrate_confidence(meta_test, trained_pct_errors)
+    except Exception as exc:
+        _log.warning("Confidence calibration failed: %s", exc)
+
     return report
+
+
+def _calibrate_confidence(
+    meta_test: List[Dict[str, Any]],
+    trained_pct_errors: Dict[str, List[float]],
+) -> None:
+    """Fit an isotonic regression calibrator from raw confidence → accuracy.
+
+    Maps ``prediction_confidence`` (feature-based, [0, 1]) to actual within-20%
+    accuracy so that a calibrated score of 0.7 means ~70% of predictions at
+    that confidence level are within 20% of the true value.
+
+    Saves the fitted calibrator to ``data/models/confidence_calibrator.pkl``.
+    """
+    import joblib
+
+    raw_confs = []
+    accuracies = []
+
+    # Compute per-sample accuracy: fraction of metrics within 20% of actual
+    for i, meta in enumerate(meta_test):
+        conf = meta.get("prediction_confidence")
+        if conf is None:
+            continue
+        # Collect per-metric accuracy for this sample
+        n_within = 0
+        n_total = 0
+        for m in CORE_METRICS:
+            if i < len(trained_pct_errors.get(m, [])):
+                n_total += 1
+                if trained_pct_errors[m][i] <= 20:
+                    n_within += 1
+        if n_total > 0:
+            raw_confs.append(conf)
+            accuracies.append(n_within / n_total)
+
+    if len(raw_confs) < 10:
+        _log.info(
+            "Too few samples (%d) for confidence calibration — skipping",
+            len(raw_confs),
+        )
+        return
+
+    from sklearn.isotonic import IsotonicRegression
+
+    calibrator = IsotonicRegression(
+        y_min=0.0, y_max=1.0, out_of_bounds="clip",
+    )
+    calibrator.fit(raw_confs, accuracies)
+
+    cal_path = os.path.join(_MODELS_DIR, "confidence_calibrator.pkl")
+    joblib.dump(calibrator, cal_path)
+    _log.info("Saved confidence calibrator to %s (%d samples)", cal_path, len(raw_confs))
+    print(f"  Confidence calibrator saved ({len(raw_confs)} samples)")
+
+
+def load_confidence_calibrator() -> Optional[Any]:
+    """Load the fitted confidence calibrator, or return None if unavailable."""
+    import joblib
+
+    cal_path = os.path.join(_MODELS_DIR, "confidence_calibrator.pkl")
+    if os.path.exists(cal_path):
+        return joblib.load(cal_path)
+    return None
 
 
 def show_example_predictions(

@@ -17,7 +17,7 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 | Power Rankings (Training/Historical) | ClubElo via `soccerdata` + WorldFootballElo (`eloratings.net`) via direct HTTP scrape |
 | Feature engineering | pandas rolling windows |
 | Adjustment models | sklearn LinearRegression + paper-aligned heuristic (`paper_heuristic_predict`) |
-| Prediction model | TensorFlow multi-head neural network (4 model groups) — heuristic fallback when untrained |
+| Prediction model | TensorFlow multi-head neural network (6 model groups) — heuristic fallback when untrained |
 | UI | Streamlit |
 | Spatial data | StatsBomb open data via `statsbombpy` + WhoScored fallback via `curl_cffi` + `mplsoccer` pitch rendering |
 | Coefficient calibration | football-data.co.uk match CSVs via `backend/data/footballdata_client.py` |
@@ -56,7 +56,7 @@ transferscope/
 │   │   ├── power_rankings.py           # Dynamic league Elo + 0-100 normalization
 │   │   └── adjustment_models.py        # sklearn priors + paper_heuristic_predict fallback
 │   ├── models/
-│   │   ├── transfer_portal.py          # TensorFlow multi-head NN, 4 target groups (per-group feature subsets)
+│   │   ├── transfer_portal.py          # TensorFlow multi-head NN, 6 target groups (per-group feature subsets)
 │   │   ├── shortlist_scorer.py         # K-means clustering + weighted Euclidean distance scoring
 │   │   ├── training_pipeline.py        # End-to-end training: transfer discovery → sklearn + TF fit
 │   │   └── backtester.py              # Compares predictions against actual post-transfer per-90
@@ -279,52 +279,62 @@ If a league is on Sofascore it is in scope for TransferScope. 51 leagues across 
 
 ---
 
-## The 4 TensorFlow model groups (paper Table 1)
+## The 6 TensorFlow model groups
 
 | Group | Targets | Output heads |
 |---|---|---|
 | 1 - Shooting | xG, Shots | 2 |
-| 2 - Passing | xA, Crosses, Total Passes, Short Passes, Long Passes, Passes Att Third, Penalty Area Entries | 7 |
-| 3 - Dribbling | Take-ons | 1 |
-| 4 - Defending | Defensive actions own third, mid third, att third | 3 |
+| 2 - Creation | xA, Chances Created, Touches in Opposition Box | 3 |
+| 3 - Distribution | Total Passes, Pass Completion %, Long Balls | 3 |
+| 4 - Crossing | Successful Crosses | 1 |
+| 5 - Dribbling | Take-ons | 1 |
+| 6 - Defending | Clearances, Interceptions, Possession Won Final 3rd | 3 |
 
-Architecture per group:
+The old "passing" mega-group (7 metrics) has been split into creation,
+distribution, and crossing to give each sub-group a properly scaled loss
+(Huber delta) and tailored feature subset.
+
+Architecture per group (defaults, overridden via _GROUP_ARCH_OVERRIDES):
 ```
 Input (group-specific feature subset)
-  -> Dense(128, relu)
-  -> BatchNormalization
-  -> Dropout(0.3)
-  -> Dense(64, relu)
-  -> BatchNormalization
-  -> Dropout(0.3)
-  -> [Linear output head per target]
+  -> Dense(H1, relu) + Norm + Dropout
+  -> Dense(H2, relu) + Norm + Dropout
+  -> [Regression head: Linear x N targets]  (output 0)
+  -> [Direction head: Sigmoid x N targets]   (output 1)
 ```
 
 Per-group feature subsets (GROUP_FEATURE_SUBSETS):
-- Shooting: 36 features (player metrics + additional metrics + ability + raw Elo + height + spatial shot + team-pos + interaction + relative ability + league norm + league mean ratio)
-- Passing: 50 features
-- Dribbling: 22 features
-- Defending: 33 features
+- Shooting: 41 features
+- Creation: 37 features
+- Distribution: 32 features
+- Crossing: 26 features
+- Dribbling: 26 features
+- Defending: 36 features
 
-Total input feature dict: 89 keys (13 player core per-90 + 10 additional player metrics
+Total input feature dict: 94 keys (13 player core per-90 + 10 additional player metrics
 + 4 team/league ability + 2 raw Elo + 2 REEP metadata
-+ 3 relative ability + 13 league norm + 13 league mean ratio
-+ 26 team-pos per-90 + 3 interaction: ability_gap, gap², league_gap).
++ 26 team-pos per-90 + 3 interaction + 3 relative ability
++ 13 league norm + 13 league mean ratio + 4 position one-hot
++ 1 minutes-per-match).
+
+**Ensemble support:** Models can be trained with N random seeds per group
+(default 3).  At inference, outputs are averaged across ensemble members.
+
+**Per-metric shrinkage:** Each metric has its own shrinkage factor
+calibrated on backtest residuals (e.g. dribbles: 0.80, crosses: 0.96).
+
+**Direction-aware shrinkage:** Dual-head model predicts P(post > pre).
+Direction confidence modulates shrinkage by ±30%.  Direction loss weight
+is 25% of regression loss.
+
+**Confidence calibration:** After backtesting, isotonic regression maps
+raw prediction confidence to actual accuracy (within-20% rate).
 
 **Raw Elo features** (`raw_elo_current`, `raw_elo_target`) preserve absolute
-cross-league strength that normalized 0-100 scores lose (e.g. Arsenal ~1900
-vs Sporting CP ~1700 on the same scale).
+cross-league strength that normalized 0-100 scores lose.
 
 **REEP metadata** (`player_height_cm`, `player_age`) from the REEP open-data
-register (~430K players).  Height aids aerial/crossing prediction; age
-captures adaptation speed.
-
-**Spatial features** (`spatial_avg_shot_distance`,
-`spatial_shots_inside_box_pct`, `spatial_progressive_pass_pct`,
-`spatial_avg_carry_distance`, `spatial_avg_defensive_distance`) from
-StatsBomb open data, with WhoScored fallback via REEP `key_whoscored`
-bridge.  Fallback chain: StatsBomb → WhoScored → 0.0.  All pages work
-regardless of player/club coverage.
+register (~430K players).
 
 Each group slices internally — external API unchanged.
 
@@ -480,7 +490,7 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Position-aware Hot or Not verdict: offensive metrics 1.5× for forwards, defensive 1.5× for defenders; ±3% thresholds; UNKNOWN when no data
 - Position normalization to 4 categories (Forward, Midfielder, Defender, Goalkeeper) via `normalize_position()` — including Sofascore single-letter codes (F/M/D/G)
 - K-means clustering for shortlist scoring: weighted Euclidean distance + 15% same-cluster bonus vs simple z-score
-- Per-group feature subsets for TF model: shooting=24, passing=32, dribbling=14, defending=20 (not 55 for all groups)
+- Per-group feature subsets for TF model: shooting=41, creation=37, distribution=32, crossing=26, dribbling=26, defending=36
 - 3-step team name resolution: exact → accent-normalized → fuzzy (5-priority cascade with 502 extreme abbreviations + dynamic REEP aliases covering 51 leagues)
 - `_CLUBELO_TO_SOFASCORE` mapping (531 entries): canonicalize ClubElo names at load time
 - Polynomial normalization: `change_ra / 50.0` in PlayerAdjustmentModel (mapping -50..+50 to -1..+1)
