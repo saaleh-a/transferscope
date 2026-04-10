@@ -2271,7 +2271,7 @@ def train_neural_network(
                 tf.keras.losses.Huber(delta=huber_delta),
                 tf.keras.losses.BinaryCrossentropy(),
             ],
-            loss_weights=[1.0, 0.15],
+            loss_weights=[1.0, 0.25],
             metrics={"regression": ["mae"], "direction": ["accuracy"]},
         )
 
