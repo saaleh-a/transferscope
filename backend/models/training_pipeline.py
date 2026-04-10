@@ -711,6 +711,9 @@ def build_training_sample(
     # Position one-hot encoding (Phase 8)
     pos_code = record.position.strip().upper()[:1] if record.position else ""
     position_one_hot = [1.0 if p == pos_code else 0.0 for p in POSITION_LABELS]
+    # Minutes-per-match (Phase 9): average minutes per match at source club
+    n_matches = len(pre_match_logs) if pre_match_logs else 0
+    pre_minutes_per_match = (pre_minutes / n_matches) if n_matches > 0 else 0.0
     features = np.array(
         player_metrics
         + additional_player_metrics
@@ -725,7 +728,8 @@ def build_training_sample(
         + [rel_current, rel_target, rel_target - rel_current]
         + league_norm_features
         + league_mean_ratio_features
-        + position_one_hot,
+        + position_one_hot
+        + [pre_minutes_per_match],
         dtype=np.float32,
     )
 
@@ -841,6 +845,7 @@ def build_training_sample(
         "minutes_accumulated": minutes_accumulated,
         "source_club_id": record.from_club_id,
         "target_club_id": record.to_club_id,
+        "pre_minutes_per_match": float(pre_minutes_per_match),
     }
 
 
@@ -1247,6 +1252,9 @@ def build_non_transfer_sample(
     # Position one-hot encoding (Phase 8)
     pos_code = record.position.strip().upper()[:1] if record.position else ""
     position_one_hot = [1.0 if p == pos_code else 0.0 for p in POSITION_LABELS]
+    # Minutes-per-match (Phase 9)
+    n_matches = len(pre_match_logs) if pre_match_logs else 0
+    nt_mpm = (pre_minutes / n_matches) if n_matches > 0 else 0.0
     features = np.array(
         player_metrics
         + additional_player_metrics
@@ -1259,7 +1267,8 @@ def build_non_transfer_sample(
         + [nt_rel, nt_rel, 0.0]  # relative: current==target, gap=0
         + league_norm_features
         + league_mean_ratio_features
-        + position_one_hot,
+        + position_one_hot
+        + [nt_mpm],
         dtype=np.float32,
     )
 
@@ -1355,6 +1364,7 @@ def build_non_transfer_sample(
         "used_match_logs_labels": used_match_logs_for_labels,
         "source_club_id": record.club_id,
         "target_club_id": record.club_id,
+        "pre_minutes_per_match": float(nt_mpm),
     }
 
 
@@ -2271,7 +2281,7 @@ def train_neural_network(
                 tf.keras.losses.Huber(delta=huber_delta),
                 tf.keras.losses.BinaryCrossentropy(),
             ],
-            loss_weights=[1.0, 0.15],
+            loss_weights=[1.0, 0.25],
             metrics={"regression": ["mae"], "direction": ["accuracy"]},
         )
 
@@ -2473,13 +2483,13 @@ def _compare_model_vs_heuristic(
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the 93-feature vector.
+    """Return the ordered list of feature keys matching the feature vector.
 
     Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
     includes raw Elo, REEP metadata, interaction features, relative
     dominance features, per-metric league-normalised features,
-    10 additional player metrics (enrichment inputs), and
-    4 position one-hot features.
+    10 additional player metrics (enrichment inputs),
+    4 position one-hot features, and minutes-per-match.
     """
     keys = []
     for m in CORE_METRICS:
@@ -2517,6 +2527,8 @@ def _feature_keys_list() -> List[str]:
     # Position one-hot encoding (Phase 8)
     for pos in POSITION_LABELS:
         keys.append(f"position_{pos}")
+    # Minutes-per-match (Phase 9)
+    keys.append("pre_minutes_per_match")
     return keys
 
 
@@ -2660,9 +2672,11 @@ def run_pipeline(
             # Phase 7: 79→89 migration — insert 10 zero-filled additional
             # player metric columns after the 13 core player metrics.
             # Phase 8: 89→93 migration — append 4 position one-hot columns.
-            # Combined 79→93 migration is also supported.
+            # Phase 9: 93→94 migration — append 1 minutes-per-match column.
+            # Combined 79→93/94 migration is also supported.
             _LEGACY_DIM_PHASE6 = 79
             _LEGACY_DIM_PHASE7 = 89
+            _LEGACY_DIM_PHASE8 = 93
             _N_ADDITIONAL = len(ADDITIONAL_METRICS)  # 10
             _N_POSITION = len(POSITION_LABELS)  # 4
             _ADDITIONAL_INSERT_POS = len(CORE_METRICS)  # after 13 core player metrics
@@ -2697,6 +2711,20 @@ def run_pipeline(
                     if idx is not None:
                         pos_cols[i, idx] = 1.0
                 X = np.concatenate([X, pos_cols], axis=1).astype(np.float32)
+                # Now at 93 cols — fall through to append minutes-per-match
+
+            if X.shape[1] == _LEGACY_DIM_PHASE8:
+                # Phase 9 migration: 93 → 94 (append minutes-per-match)
+                _log.info(
+                    "Migrating cached matrices from %d to %d features "
+                    "(appending minutes-per-match column)",
+                    _LEGACY_DIM_PHASE8, FEATURE_DIM,
+                )
+                mpm_col = np.zeros((X.shape[0], 1), dtype=np.float32)
+                # Populate from metadata if available
+                for i, m_dict in enumerate(metadata):
+                    mpm_col[i, 0] = float(m_dict.get("pre_minutes_per_match", 0.0))
+                X = np.concatenate([X, mpm_col], axis=1).astype(np.float32)
                 np.save(X_path, X)
                 _log.info("Migrated and saved — X shape now %s", X.shape)
 

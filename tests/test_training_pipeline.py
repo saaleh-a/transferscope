@@ -1216,7 +1216,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertEqual(tp_keys, ref_keys)
 
     def test_length_matches_feature_dim(self):
-        """_feature_keys_list() length must equal FEATURE_DIM (93)."""
+        """_feature_keys_list() length must equal FEATURE_DIM (94)."""
         from backend.models.training_pipeline import _feature_keys_list
 
         self.assertEqual(len(_feature_keys_list()), FEATURE_DIM)
@@ -1232,7 +1232,7 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
 
 
 class TestCachedMatrixMigration(unittest.TestCase):
-    """Tests for the 79→93 cached feature matrix migration in run_pipeline()."""
+    """Tests for the 79→94 cached feature matrix migration in run_pipeline()."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
@@ -1315,9 +1315,9 @@ class TestCachedMatrixMigration(unittest.TestCase):
         np.testing.assert_array_equal(
             X_migrated[:, :insert_pos], self.X_legacy[:, :insert_pos]
         )
-        # Columns after insert position (before position one-hot) should be the tail of the original
+        # Columns after insert position (before position one-hot + mpm) should be the tail of the original
         np.testing.assert_array_equal(
-            X_migrated[:, insert_pos + 10:-4], self.X_legacy[:, insert_pos:]
+            X_migrated[:, insert_pos + 10:-5], self.X_legacy[:, insert_pos:]
         )
 
     def test_migration_persists_to_disk(self):
@@ -1333,8 +1333,8 @@ class TestCachedMatrixMigration(unittest.TestCase):
         self._run_pipeline_skip_build()
 
         X_migrated = np.load(os.path.join(self.matrices_dir, "X.npy"))
-        # Position columns are the last 4 columns
-        pos_cols = X_migrated[:, -4:]
+        # Position columns are 4 columns before the last (minutes-per-match)
+        pos_cols = X_migrated[:, -5:-1]
         # Sample 0: "F" → [1, 0, 0, 0]
         np.testing.assert_array_equal(pos_cols[0], [1, 0, 0, 0])
         # Sample 1: "M" → [0, 1, 0, 0]

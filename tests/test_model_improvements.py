@@ -51,9 +51,9 @@ class TestInteractionFeatures(unittest.TestCase):
     """Tests for the 3 interaction features added to build_feature_dict()."""
 
     def test_interaction_features_present(self):
-        """build_feature_dict returns 93 keys including interaction features."""
+        """build_feature_dict returns 94 keys including interaction features."""
         fd = _make_feature_dict()
-        self.assertEqual(len(fd), 93)
+        self.assertEqual(len(fd), 94)
         self.assertIn("interaction_ability_gap", fd)
         self.assertIn("interaction_gap_squared", fd)
         self.assertIn("interaction_league_gap", fd)
@@ -102,15 +102,15 @@ class TestInteractionFeatures(unittest.TestCase):
 
 
 class TestFeatureDimension(unittest.TestCase):
-    """Tests that FEATURE_DIM and _feature_keys() reflect the 93 features."""
+    """Tests that FEATURE_DIM and _feature_keys() reflect the 94 features."""
 
-    def test_feature_dim_is_93(self):
-        """FEATURE_DIM must be 93 (13 core + 10 additional + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio + 4 position_one_hot)."""
-        self.assertEqual(FEATURE_DIM, 93)
+    def test_feature_dim_is_94(self):
+        """FEATURE_DIM must be 94 (13 core + 10 additional + 4 team/league + 2 raw_elo + 2 reep + 26 team_pos + 3 interaction + 3 relative + 13 league_norm + 13 league_mean_ratio + 4 position_one_hot + 1 minutes_per_match)."""
+        self.assertEqual(FEATURE_DIM, 94)
 
     def test_feature_keys_length(self):
-        """_feature_keys() returns exactly 93 items."""
-        self.assertEqual(len(_feature_keys()), 93)
+        """_feature_keys() returns exactly 94 items."""
+        self.assertEqual(len(_feature_keys()), 94)
 
     def test_feature_keys_contain_interactions(self):
         """_feature_keys() includes all 3 interaction feature names."""
@@ -131,7 +131,7 @@ class TestFeatureDimension(unittest.TestCase):
 
 
 class TestGroupFeatureSubsets(unittest.TestCase):
-    """Tests that all 4 model groups include interaction features."""
+    """Tests that all model groups include interaction features."""
 
     def test_group_feature_subsets_include_interactions(self):
         """Every group in GROUP_FEATURE_SUBSETS contains the 3 interaction keys."""
@@ -149,12 +149,20 @@ class TestGroupFeatureSubsets(unittest.TestCase):
                 )
 
     def test_shooting_subset_size(self):
-        """Shooting group: removed dead xg_on_target/non_penalty_xg, added age/fouls_won = 40 features."""
-        self.assertEqual(len(GROUP_FEATURE_SUBSETS["shooting"]), 40)
+        """Shooting group: 40 base features + 1 minutes_per_match = 41 features."""
+        self.assertEqual(len(GROUP_FEATURE_SUBSETS["shooting"]), 41)
 
-    def test_passing_subset_size(self):
-        """Passing group: 31 original + 2 additional + 3 relative + 7 league_norm + 7 league_mean_ratio + 4 position = 54 features."""
-        self.assertEqual(len(GROUP_FEATURE_SUBSETS["passing"]), 54)
+    def test_creation_subset_size(self):
+        """Creation group: tailored features for xA, chances, touches_opp_box."""
+        self.assertEqual(len(GROUP_FEATURE_SUBSETS["creation"]), 37)
+
+    def test_distribution_subset_size(self):
+        """Distribution group: tailored features for passes, pass%, long balls."""
+        self.assertEqual(len(GROUP_FEATURE_SUBSETS["distribution"]), 32)
+
+    def test_crossing_subset_size(self):
+        """Crossing group: tailored features for successful_crosses."""
+        self.assertEqual(len(GROUP_FEATURE_SUBSETS["crossing"]), 26)
 
     def test_dribbling_subset_size(self):
         """Dribbling group: 13 original + 4 additional + 3 relative + 1 league_norm + 1 league_mean_ratio + 4 position = 26 features."""
@@ -357,15 +365,17 @@ class TestGroupArchOverrides(unittest.TestCase):
     """Tests for per-group architecture overrides."""
 
     def test_all_low_snr_groups_have_overrides(self):
-        """Both shooting and passing have very low SNR — both must have overrides."""
+        """Shooting, creation, distribution, and crossing (all low-SNR groups) must have overrides."""
         from backend.models.transfer_portal import _GROUP_ARCH_OVERRIDES
         self.assertIn("shooting", _GROUP_ARCH_OVERRIDES)
-        self.assertIn("passing", _GROUP_ARCH_OVERRIDES)
+        self.assertIn("creation", _GROUP_ARCH_OVERRIDES)
+        self.assertIn("distribution", _GROUP_ARCH_OVERRIDES)
+        self.assertIn("crossing", _GROUP_ARCH_OVERRIDES)
 
-    def test_passing_has_arch_override(self):
-        """Passing override should specify hidden units."""
+    def test_creation_has_arch_override(self):
+        """Creation override should specify hidden units."""
         from backend.models.transfer_portal import _GROUP_ARCH_OVERRIDES
-        override = _GROUP_ARCH_OVERRIDES["passing"]
+        override = _GROUP_ARCH_OVERRIDES["creation"]
         hidden = override["hidden_units"]
         self.assertEqual(len(hidden), 2, "Should have 2-layer hidden arch")
         self.assertGreater(hidden[0], 0)
@@ -374,7 +384,7 @@ class TestGroupArchOverrides(unittest.TestCase):
     def test_all_overrides_have_l2(self):
         """Groups with explicit overrides should specify L2 where SNR is low."""
         from backend.models.transfer_portal import _GROUP_ARCH_OVERRIDES
-        for name in ("shooting", "passing", "dribbling"):
+        for name in ("shooting", "creation", "crossing", "dribbling"):
             self.assertIn(
                 "l2", _GROUP_ARCH_OVERRIDES[name],
                 f"{name} override should have explicit L2",
@@ -384,9 +394,9 @@ class TestGroupArchOverrides(unittest.TestCase):
         """Shooting (lowest SNR, xG masking) should have the strongest regularization."""
         from backend.models.transfer_portal import _GROUP_ARCH_OVERRIDES
         shooting_l2 = _GROUP_ARCH_OVERRIDES["shooting"]["l2"]
-        passing_l2 = _GROUP_ARCH_OVERRIDES["passing"]["l2"]
+        creation_l2 = _GROUP_ARCH_OVERRIDES["creation"]["l2"]
         dribbling_l2 = _GROUP_ARCH_OVERRIDES["dribbling"]["l2"]
-        self.assertGreater(shooting_l2, passing_l2)
+        self.assertGreater(shooting_l2, creation_l2)
         self.assertGreaterEqual(shooting_l2, dribbling_l2)
 
 
@@ -609,11 +619,11 @@ class TestAdaptiveHuberDelta(unittest.TestCase):
         delta = _GROUP_ARCH_OVERRIDES["shooting"].get("huber_delta", 1.0)
         self.assertLess(delta, 1.0, "Shooting Huber delta should be < 1.0")
 
-    def test_passing_has_larger_huber_delta(self):
-        """Passing group has larger deltas — Huber delta should be > 1.0."""
+    def test_distribution_has_larger_huber_delta(self):
+        """Distribution group has larger deltas — Huber delta should be > 1.0."""
         from backend.models.transfer_portal import _GROUP_ARCH_OVERRIDES
-        delta = _GROUP_ARCH_OVERRIDES["passing"].get("huber_delta", 1.0)
-        self.assertGreater(delta, 1.0, "Passing Huber delta should be > 1.0")
+        delta = _GROUP_ARCH_OVERRIDES["distribution"].get("huber_delta", 1.0)
+        self.assertGreater(delta, 1.0, "Distribution Huber delta should be > 1.0")
 
     def test_model_builds_with_custom_huber_delta(self):
         """Model should build and compile with per-group Huber deltas."""
@@ -647,7 +657,7 @@ class TestShootingLayerNorm(unittest.TestCase):
         """Non-shooting groups should use BatchNormalization."""
         model = TransferPortalModel()
         model.build(FEATURE_DIM)
-        for group_name in ("passing", "dribbling", "defending"):
+        for group_name in ("creation", "distribution", "crossing", "dribbling", "defending"):
             keras_model = model.models[group_name]
             layer_names = [l.name for l in keras_model.layers]
             self.assertTrue(

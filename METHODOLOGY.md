@@ -482,13 +482,15 @@ The damping factor is **asymmetric**: less damping for downgrades (large drops a
 
 Implemented in `backend/models/transfer_portal.py`. A 4-group multi-head neural network, following Table 1 from the paper.
 
-**Why 4 groups instead of 1?** Different stat types have different internal relationships. Shooting metrics (xG, shots) relate to each other more than to defensive metrics (clearances, interceptions). Grouping allows each sub-network to specialize.
+**Why 6 groups instead of 1?** Different stat types have different internal relationships. Shooting metrics (xG, shots) relate to each other more than to defensive metrics (clearances, interceptions). Grouping allows each sub-network to specialize. The old "passing" mega-group (7 metrics) has been split into creation (xA, chances, touches in box), distribution (passes, pass %, long balls), and crossing (crosses) so each gets a properly scaled loss function.
 
-> **In plain English:** Instead of one big brain trying to predict everything at once, we have four specialist brains:
-> - One that's an expert in shooting stats
-> - One for passing stats
-> - One for dribbling
-> - One for defending
+> **In plain English:** Instead of one big brain trying to predict everything at once, we have six specialist brains:
+> - One for shooting stats (xG, shots)
+> - One for creation stats (xA, chances created, touches in opp. box)
+> - One for distribution stats (passes, pass %, long balls)
+> - One for crossing stats (crosses)
+> - One for dribbling (take-ons)
+> - One for defending (clearances, interceptions, pressing)
 >
 > Each specialist shares information within its group but focuses on its area of expertise.
 
@@ -507,10 +509,12 @@ Input (group-specific feature subset)
 
 | Group | Input features | Hidden | Output | What it predicts |
 |---|---|---|---|---|
-| Shooting | 19 | 128 → 64 | 2 | xG, Shots |
-| Passing | 28 | 128 → 64 | 7 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area |
-| Dribbling | 10 | 128 → 64 | 1 | Take-ons |
-| Defending | 16 | 128 → 64 | 3 | Clearances, Interceptions, Possession Won |
+| Shooting | 41 | 64 → 32 | 2 | xG, Shots |
+| Creation | 37 | 64 → 32 | 3 | xA, Chances Created, Touches in Opp. Box |
+| Distribution | 32 | 96 → 48 | 3 | Passes, Pass %, Long Balls |
+| Crossing | 26 | 32 → 16 | 1 | Crosses |
+| Dribbling | 26 | 64 → 32 | 1 | Take-ons |
+| Defending | 36 | 96 → 48 | 3 | Clearances, Interceptions, Possession Won |
 
 > **In plain English:**
 > - Each specialist brain only sees the information relevant to its job (ranging from 10 to 28 features per group) — e.g., the Dribbling group excludes passing and defending team-position metrics, while the Shooting group excludes defensive metrics.

@@ -216,7 +216,10 @@ def test_model_status_shows_feature_dim(mock_trained, mock_st):
 # ── Test model groups constant ───────────────────────────────────────────────
 
 
-def test_model_groups_has_four_groups():
-    """MODEL_GROUPS constant has exactly 4 groups."""
-    assert len(MODEL_GROUPS) == 4
-    assert set(MODEL_GROUPS.keys()) == {"shooting", "passing", "dribbling", "defending"}
+def test_model_groups_has_six_groups():
+    """MODEL_GROUPS constant has exactly 6 groups."""
+    assert len(MODEL_GROUPS) == 6
+    assert set(MODEL_GROUPS.keys()) == {
+        "shooting", "creation", "distribution", "crossing",
+        "dribbling", "defending",
+    }
