@@ -208,6 +208,8 @@ class TestBuildTrainingSample(unittest.TestCase):
         # No NaN values
         self.assertFalse(np.any(np.isnan(result["features"])))
         self.assertFalse(np.any(np.isnan(result["labels"])))
+        self.assertIn("expected_assists", result["missing_pre_core_metrics"])
+        self.assertIn("successful_crosses", result["missing_pre_core_metrics"])
 
     @mock.patch("backend.models.training_pipeline.sofascore_client")
     @mock.patch("backend.models.training_pipeline.power_rankings")
@@ -1229,6 +1231,84 @@ class TestFeatureKeysListConsistency(unittest.TestCase):
         self.assertIn("interaction_ability_gap", keys)
         self.assertIn("interaction_gap_squared", keys)
         self.assertIn("interaction_league_gap", keys)
+
+
+class TestTeamPositionInjection(unittest.TestCase):
+    """Regression tests for split-aware team-position injection."""
+
+    def test_inject_team_pos_averages_uses_position_fallback_for_unseen_club(self):
+        from backend.models.training_pipeline import inject_team_pos_averages
+
+        X = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+        metadata = [{
+            "source_club_id": 10,
+            "target_club_id": 99,  # unseen target club
+            "position": "F",
+        }]
+        train_metadata = [
+            {
+                "source_club_id": 10,
+                "position": "Forward",
+                "pre_per90": _make_mock_per90(1.0),
+            },
+            {
+                "source_club_id": 30,
+                "position": "F",
+                "pre_per90": _make_mock_per90(3.0),
+            },
+        ]
+
+        inject_team_pos_averages(X, metadata, train_metadata)
+
+        np.testing.assert_allclose(X[0, 31:44], 1.0)
+        np.testing.assert_allclose(X[0, 44:57], 2.0)
+        self.assertEqual(metadata[0]["from_pos_avg"]["expected_goals"], 1.0)
+        self.assertEqual(metadata[0]["to_pos_avg"]["expected_goals"], 2.0)
+
+    def test_validate_team_position_coverage_rejects_all_zero_block(self):
+        from backend.models.training_pipeline import validate_team_position_coverage
+
+        X = np.zeros((4, FEATURE_DIM), dtype=np.float32)
+        with self.assertRaises(RuntimeError):
+            validate_team_position_coverage(X, "training", hard_failure_threshold=0.95)
+
+    def test_save_feature_matrices_persists_injected_team_position_values(self):
+        from backend.models.training_pipeline import save_feature_matrices
+
+        tmpdir = tempfile.mkdtemp()
+        try:
+            X = np.zeros((1, FEATURE_DIM), dtype=np.float32)
+            y = np.zeros((1, len(CORE_METRICS)), dtype=np.float32)
+            metadata = [{
+                "source_club_id": 10,
+                "target_club_id": 99,
+                "position": "F",
+            }]
+            train_metadata = [
+                {
+                    "source_club_id": 10,
+                    "position": "Forward",
+                    "pre_per90": _make_mock_per90(1.0),
+                },
+                {
+                    "source_club_id": 30,
+                    "position": "F",
+                    "pre_per90": _make_mock_per90(3.0),
+                },
+            ]
+
+            save_feature_matrices(tmpdir, X, y, metadata, train_metadata=train_metadata)
+
+            X_saved = np.load(os.path.join(tmpdir, "X.npy"))
+            with open(os.path.join(tmpdir, "metadata.json"), "r", encoding="utf-8") as f:
+                meta_saved = json.load(f)
+
+            np.testing.assert_allclose(X_saved[0, 31:44], 1.0)
+            np.testing.assert_allclose(X_saved[0, 44:57], 2.0)
+            self.assertEqual(meta_saved[0]["from_pos_avg"]["expected_goals"], 1.0)
+            self.assertEqual(meta_saved[0]["to_pos_avg"]["expected_goals"], 2.0)
+        finally:
+            shutil.rmtree(tmpdir)
 
 
 class TestCachedMatrixMigration(unittest.TestCase):

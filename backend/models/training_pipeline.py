@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import sys
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -568,26 +569,32 @@ def build_training_sample(
     weight = blend_weight(pre_minutes)
 
     # Extract 13 core metrics in fixed order, 0.0 for missing
+    missing_pre_core_metrics: List[str] = []
     player_metrics = []
     for m in CORE_METRICS:
         v = pre_per90.get(m)
         if v is None:
             _log.debug("Player %d missing metric %s, using 0.0", record.player_id, m)
+            missing_pre_core_metrics.append(m)
             val = 0.0
         elif np.isnan(v):
             _log.warning("Player %d metric %s is NaN, using 0.0", record.player_id, m)
+            missing_pre_core_metrics.append(m)
             val = 0.0
         else:
             val = float(v)
         player_metrics.append(val)
 
     # Extract 10 additional metrics — enrichment inputs (not targets)
+    missing_pre_additional_metrics: List[str] = []
     additional_player_metrics = []
     for m in ADDITIONAL_METRICS:
         v = pre_per90.get(m)
         if v is None:
+            missing_pre_additional_metrics.append(m)
             val = 0.0
         elif np.isnan(v):
+            missing_pre_additional_metrics.append(m)
             val = 0.0
         else:
             val = float(v)
@@ -794,16 +801,19 @@ def build_training_sample(
                 record.player_id, post_minutes,
             )
 
+    missing_post_core_metrics: List[str] = []
     labels = []
     for m in CORE_METRICS:
         v = post_per90.get(m)
         if v is None:
+            missing_post_core_metrics.append(m)
             val = 0.0
         elif np.isnan(v):
             _log.warning(
                 "Player %d post-transfer metric %s is NaN, using 0.0",
                 record.player_id, m,
             )
+            missing_post_core_metrics.append(m)
             val = 0.0
         else:
             val = float(v)
@@ -846,6 +856,9 @@ def build_training_sample(
         "source_club_id": record.from_club_id,
         "target_club_id": record.to_club_id,
         "pre_minutes_per_match": float(pre_minutes_per_match),
+        "missing_pre_core_metrics": missing_pre_core_metrics,
+        "missing_pre_additional_metrics": missing_pre_additional_metrics,
+        "missing_post_core_metrics": missing_post_core_metrics,
     }
 
 
@@ -1158,24 +1171,30 @@ def build_non_transfer_sample(
 
     weight = blend_weight(pre_minutes)
 
+    missing_pre_core_metrics: List[str] = []
     player_metrics = []
     for m in CORE_METRICS:
         v = pre_per90.get(m)
         if v is None:
+            missing_pre_core_metrics.append(m)
             val = 0.0
         elif np.isnan(v):
+            missing_pre_core_metrics.append(m)
             val = 0.0
         else:
             val = float(v)
         player_metrics.append(val)
 
     # Extract 10 additional metrics — enrichment inputs (not targets)
+    missing_pre_additional_metrics: List[str] = []
     additional_player_metrics = []
     for m in ADDITIONAL_METRICS:
         v = pre_per90.get(m)
         if v is None:
+            missing_pre_additional_metrics.append(m)
             val = 0.0
         elif np.isnan(v):
+            missing_pre_additional_metrics.append(m)
             val = 0.0
         else:
             val = float(v)
@@ -1324,12 +1343,15 @@ def build_non_transfer_sample(
         else:
             return None
 
+    missing_post_core_metrics: List[str] = []
     labels = []
     for m in CORE_METRICS:
         v = post_per90.get(m)
         if v is None:
+            missing_post_core_metrics.append(m)
             val = 0.0
         elif np.isnan(v):
+            missing_post_core_metrics.append(m)
             val = 0.0
         else:
             val = float(v)
@@ -1365,7 +1387,40 @@ def build_non_transfer_sample(
         "source_club_id": record.club_id,
         "target_club_id": record.club_id,
         "pre_minutes_per_match": float(nt_mpm),
+        "missing_pre_core_metrics": missing_pre_core_metrics,
+        "missing_pre_additional_metrics": missing_pre_additional_metrics,
+        "missing_post_core_metrics": missing_post_core_metrics,
     }
+
+
+def _normalize_position_bucket(position: Any) -> str:
+    """Normalize position labels so lookups do not depend on raw source strings."""
+    normalized = normalize_position(position)
+    if normalized:
+        return normalized
+    if position is None:
+        return ""
+    return str(position).strip()
+
+
+def _average_metric_dicts(
+    metric_dicts: List[Dict[str, Any]],
+    metrics: List[str],
+) -> Dict[str, float]:
+    """Compute a stable per-metric average across dicts of per-90 values."""
+    averages: Dict[str, float] = {}
+    for metric in metrics:
+        values: List[float] = []
+        for metric_dict in metric_dicts:
+            raw_value = metric_dict.get(metric)
+            if raw_value is None:
+                continue
+            try:
+                values.append(float(raw_value))
+            except (TypeError, ValueError):
+                continue
+        averages[metric] = float(np.mean(values)) if values else 0.0
+    return averages
 
 
 def compute_team_position_averages(
@@ -1391,7 +1446,7 @@ def compute_team_position_averages(
     buckets: dict = defaultdict(list)
     for s in samples:
         club_id = s.get("source_club_id")
-        position = s.get("position")
+        position = _normalize_position_bucket(s.get("position"))
         per90 = s.get("pre_per90", {})
         if club_id and position and per90:
             buckets[(club_id, position)].append(per90)
@@ -1400,13 +1455,28 @@ def compute_team_position_averages(
     for key, records in buckets.items():
         if not records:
             continue
-        avg = {}
-        all_metrics = set().union(*[r.keys() for r in records])
-        for metric in all_metrics:
-            vals = [r[metric] for r in records if metric in r]
-            avg[metric] = float(np.mean(vals)) if vals else 0.0
-        averages[key] = avg
+        averages[key] = _average_metric_dicts(records, CORE_METRICS)
     return averages
+
+
+def compute_position_fallback_averages(
+    samples: list[dict],
+) -> dict[str, dict[str, float]]:
+    """Compute global per-position averages for unseen club/position pairs."""
+    from collections import defaultdict
+
+    buckets: dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for sample in samples:
+        position = _normalize_position_bucket(sample.get("position"))
+        per90 = sample.get("pre_per90", {})
+        if position and per90:
+            buckets[position].append(per90)
+
+    return {
+        position: _average_metric_dicts(records, CORE_METRICS)
+        for position, records in buckets.items()
+        if records
+    }
 
 
 def _compute_team_overall_per90(
@@ -1482,6 +1552,7 @@ def inject_team_pos_averages(
     'to_pos_avg' keys for downstream consumers (e.g. adjustment models).
     """
     team_pos_lookup = compute_team_position_averages(train_metadata)
+    position_fallback_lookup = compute_position_fallback_averages(train_metadata)
 
     # Layout: [0:13] player_core, [13:23] player_additional,
     #          [23:27] abilities, [27:29] raw_elo, [29:31] reep,
@@ -1496,12 +1567,41 @@ def inject_team_pos_averages(
         f"team_pos slots exceed FEATURE_DIM ({FEATURE_DIM})"
     )
 
-    for i, m_dict in enumerate(metadata):
-        src_key = (m_dict.get("source_club_id"), m_dict.get("position"))
-        tgt_key = (m_dict.get("target_club_id"), m_dict.get("position"))
+    coverage_counts = {
+        "source_exact": 0,
+        "source_position_fallback": 0,
+        "source_zero": 0,
+        "target_exact": 0,
+        "target_position_fallback": 0,
+        "target_zero": 0,
+    }
 
-        src_avg = team_pos_lookup.get(src_key, {})
-        tgt_avg = team_pos_lookup.get(tgt_key, {})
+    for i, m_dict in enumerate(metadata):
+        position_bucket = _normalize_position_bucket(m_dict.get("position"))
+        src_key = (m_dict.get("source_club_id"), position_bucket)
+        tgt_key = (m_dict.get("target_club_id"), position_bucket)
+
+        src_avg = team_pos_lookup.get(src_key)
+        if src_avg is not None:
+            coverage_counts["source_exact"] += 1
+        else:
+            src_avg = position_fallback_lookup.get(position_bucket)
+            if src_avg is not None:
+                coverage_counts["source_position_fallback"] += 1
+            else:
+                src_avg = {metric: 0.0 for metric in CORE_METRICS}
+                coverage_counts["source_zero"] += 1
+
+        tgt_avg = team_pos_lookup.get(tgt_key)
+        if tgt_avg is not None:
+            coverage_counts["target_exact"] += 1
+        else:
+            tgt_avg = position_fallback_lookup.get(position_bucket)
+            if tgt_avg is not None:
+                coverage_counts["target_position_fallback"] += 1
+            else:
+                tgt_avg = {metric: 0.0 for metric in CORE_METRICS}
+                coverage_counts["target_zero"] += 1
 
         for j, metric in enumerate(CORE_METRICS):
             X[i, _POS_CURRENT_OFFSET + j] = src_avg.get(metric, 0.0)
@@ -1511,7 +1611,116 @@ def inject_team_pos_averages(
         m_dict["from_pos_avg"] = {metric: src_avg.get(metric, 0.0) for metric in CORE_METRICS}
         m_dict["to_pos_avg"] = {metric: tgt_avg.get(metric, 0.0) for metric in CORE_METRICS}
 
+    _log.info(
+        "Team-position injection coverage: "
+        "source exact=%d fallback=%d zero=%d | "
+        "target exact=%d fallback=%d zero=%d",
+        coverage_counts["source_exact"],
+        coverage_counts["source_position_fallback"],
+        coverage_counts["source_zero"],
+        coverage_counts["target_exact"],
+        coverage_counts["target_position_fallback"],
+        coverage_counts["target_zero"],
+    )
     return X
+
+
+def validate_team_position_coverage(
+    X: np.ndarray,
+    split_name: str,
+    hard_failure_threshold: float = 0.95,
+) -> None:
+    """Fail loudly if the injected team-position blocks are still almost all zero."""
+    if X.size == 0:
+        return
+
+    block_slices = {
+        "current": slice(31, 44),
+        "target": slice(44, 57),
+    }
+    n_rows = X.shape[0]
+
+    for block_name, block_slice in block_slices.items():
+        zero_rows = int(np.all(np.isclose(X[:, block_slice], 0.0), axis=1).sum())
+        zero_rate = zero_rows / n_rows if n_rows else 0.0
+        _log.info(
+            "%s team-position %s block all-zero rows: %d/%d (%.1f%%)",
+            split_name,
+            block_name,
+            zero_rows,
+            n_rows,
+            zero_rate * 100.0,
+        )
+        if zero_rate >= hard_failure_threshold:
+            raise RuntimeError(
+                f"{split_name} team-position {block_name} block is {zero_rate:.1%} all-zero "
+                "after injection. Check the injection/save path and training lookup coverage."
+            )
+
+
+def _report_metric_missingness(metadata: List[Dict[str, Any]]) -> None:
+    """Summarize provider missingness before it is silently zero-filled."""
+    tracked_fields = [
+        ("pre/core", "missing_pre_core_metrics", CORE_METRICS),
+        ("pre/additional", "missing_pre_additional_metrics", ADDITIONAL_METRICS),
+        ("post/core", "missing_post_core_metrics", CORE_METRICS),
+    ]
+    if not metadata or not any(
+        field in row for row in metadata for _, field, _ in tracked_fields
+    ):
+        return
+
+    print("\nMetric Missingness Summary:")
+    n_rows = len(metadata)
+    for label, field_name, metric_order in tracked_fields:
+        counts = {metric: 0 for metric in metric_order}
+        for row in metadata:
+            for metric in row.get(field_name, []):
+                if metric in counts:
+                    counts[metric] += 1
+
+        populated = [(metric, count) for metric, count in counts.items() if count > 0]
+        if not populated:
+            continue
+
+        populated.sort(key=lambda item: (-item[1], item[0]))
+        top_metrics = ", ".join(
+            f"{metric}={count}/{n_rows} ({count / n_rows:.1%})"
+            for metric, count in populated[:5]
+        )
+        print(f"  {label}: {top_metrics}")
+
+        crosses_missing = counts.get("successful_crosses", 0)
+        if crosses_missing > 0:
+            _log.warning(
+                "Metric coverage warning: %s successful_crosses missing in %d/%d rows (%.1f%%) before zero-fill",
+                label,
+                crosses_missing,
+                n_rows,
+                crosses_missing / n_rows * 100.0,
+            )
+
+
+def save_feature_matrices(
+    matrices_dir: str,
+    X: np.ndarray,
+    y: np.ndarray,
+    metadata: List[Dict[str, Any]],
+    train_metadata: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    """Persist matrices to disk, optionally refreshing team-position features first."""
+    os.makedirs(matrices_dir, exist_ok=True)
+
+    X_to_save = np.array(X, copy=True)
+    metadata_to_save = deepcopy(metadata)
+
+    if train_metadata is not None:
+        inject_team_pos_averages(X_to_save, metadata_to_save, train_metadata)
+
+    np.save(os.path.join(matrices_dir, "X.npy"), X_to_save)
+    np.save(os.path.join(matrices_dir, "y.npy"), y)
+    with open(os.path.join(matrices_dir, "metadata.json"), "w", encoding="utf-8") as f:
+        json.dump(metadata_to_save, f, indent=2, default=str)
 
 
 def build_full_dataset(
@@ -2766,17 +2975,11 @@ def run_pipeline(
             records, non_transfer_records, nt_min_minutes=nt_effective_min,
         )
 
-        # Save feature matrices to disk for --skip-build on subsequent runs
-        os.makedirs(_MATRICES_DIR, exist_ok=True)
-        np.save(os.path.join(_MATRICES_DIR, "X.npy"), X)
-        np.save(os.path.join(_MATRICES_DIR, "y.npy"), y)
-        with open(os.path.join(_MATRICES_DIR, "metadata.json"), "w") as f:
-            json.dump(metadata, f, indent=2, default=str)
-        _report("Saved feature matrices", f"{len(X)} samples -> data/models/matrices/")
-
     if len(metadata) < 10:
         _report("Insufficient data", f"Only {len(metadata)} valid samples")
         return False
+
+    _report_metric_missingness(metadata)
 
     # Step 4: Split dataset
     _report("Splitting dataset", "Temporal train/val/test split")
@@ -2791,10 +2994,21 @@ def run_pipeline(
     inject_team_pos_averages(X_train, meta_train, meta_train)
     inject_team_pos_averages(X_val, meta_val, meta_train)
     inject_team_pos_averages(X_test, meta_test, meta_train)
+    validate_team_position_coverage(X_train, "training")
+    validate_team_position_coverage(X_val, "validation")
+    validate_team_position_coverage(X_test, "test")
+
+    # Refresh cached matrices so --skip-build and offline audits see the same
+    # split-aware team-position features that training/backtesting actually use.
+    save_feature_matrices(_MATRICES_DIR, X, y, metadata, train_metadata=meta_train)
+    _report("Saved feature matrices", f"{len(X)} samples -> data/models/matrices/")
 
     if not skip_training:
         # Step 5: Train adjustment models
-        _report("Training adjustment models", "sklearn LinearRegression × 13 metrics")
+        _report(
+            "Training adjustment models",
+            "Auxiliary sklearn models for diagnostics/heuristics",
+        )
         train_adjustment_models(X_train, y_train, meta_train)
 
         # Step 6: Train neural network
