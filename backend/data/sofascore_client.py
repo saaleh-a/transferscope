@@ -192,6 +192,8 @@ _HEADERS: dict[str, str] = {
 _REQUEST_TIMEOUT = int(os.environ.get("SOFASCORE_REQUEST_TIMEOUT", "10"))
 _MAX_RETRIES = int(os.environ.get("SOFASCORE_MAX_RETRIES", "3"))
 _RETRY_BASE_DELAY = float(os.environ.get("SOFASCORE_RETRY_BASE_DELAY", "1.0"))
+_RETRY_MAX_DELAY = 30.0   # cap per-retry backoff to avoid indefinite hangs
+_RETRY_JITTER_MAX = 0.5   # random jitter range added to each retry delay
 _RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
 _DEFAULT_INTER_REQUEST_DELAY = float(
     os.environ.get("SOFASCORE_INTER_REQUEST_DELAY", "0.5")
@@ -224,12 +226,15 @@ def set_inter_request_delay(seconds: float) -> None:
 def _bump_adaptive_delay() -> None:
     """Increase the adaptive inter-request delay after a rate-limit hit."""
     global _adaptive_delay
-    # Floor at 0.5s so multiplying can't stay stuck at zero
+    # Floor at 0.5s so multiplying can't get stuck at zero
     _adaptive_delay = min(
         max(_adaptive_delay, 0.5) * _ADAPTIVE_DELAY_MULTIPLIER,
         _ADAPTIVE_DELAY_MAX,
     )
     _log.info("Adaptive rate-limit delay increased to %.1fs", _adaptive_delay)
+
+
+_ADAPTIVE_JITTER_MAX = 0.3  # jitter range for inter-request throttle
 
 
 def _inter_request_delay() -> None:
@@ -242,7 +247,12 @@ def _inter_request_delay() -> None:
         _has_made_request = True
         return
     # base delay + small random jitter to avoid predictable patterns
-    time.sleep(_adaptive_delay + random.uniform(0, 0.3))
+    time.sleep(_adaptive_delay + random.uniform(0, _ADAPTIVE_JITTER_MAX))
+
+
+def _retry_delay(attempt: int) -> float:
+    """Compute retry delay: exponential backoff capped + jitter."""
+    return min(_RETRY_BASE_DELAY * (2 ** attempt), _RETRY_MAX_DELAY) + random.uniform(0, _RETRY_JITTER_MAX)
 
 
 _NEGATIVE_CACHE_TTL = 86400  # 24 hours — cache dead endpoints to avoid re-fetching
@@ -286,7 +296,7 @@ def _get(path: str) -> Optional[dict]:
                 if resp.status_code in (403, 429):
                     _bump_adaptive_delay()
                 # Exponential backoff: base * 2^attempt + jitter (cap 30s)
-                delay = min(_RETRY_BASE_DELAY * (2 ** attempt), 30.0) + random.uniform(0, 0.5)
+                delay = _retry_delay(attempt)
                 _log.info(
                     "Sofascore %d on %s — retry %d/%d in %.1fs",
                     resp.status_code, path, attempt + 1, _MAX_RETRIES, delay,
@@ -313,7 +323,7 @@ def _get(path: str) -> Optional[dict]:
                 continue
             _had_transient_failure = True  # Connection errors are transient
             # Exponential backoff: base * 2^attempt + jitter (cap 30s)
-            delay = min(_RETRY_BASE_DELAY * (2 ** attempt), 30.0) + random.uniform(0, 0.5)
+            delay = _retry_delay(attempt)
             _log.info(
                 "Sofascore connection error on %s — retry %d/%d in %.1fs (%s)",
                 path, attempt + 1, _MAX_RETRIES, delay, exc,
