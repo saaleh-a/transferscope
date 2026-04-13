@@ -4,6 +4,35 @@
 
 ---
 
+## ELI5 — Explain Like I'm Five
+
+Imagine you're a football scout with a crystal ball. A player is about to transfer from one club to another, and you want to know: "Will they score more goals? Create more chances? Make more tackles?" TransferScope is that crystal ball — except instead of magic, it uses maths and data.
+
+Here's the basic idea: every team in the world gets a "strength score" (like a video game power rating). When a player moves from a weaker team to a stronger one, their stats usually change — but not all stats change the same way. A striker moving to Manchester City might score *more* goals (better teammates creating chances) but make *fewer* tackles (the team dominates possession, so there's less defending to do). TransferScope figures out exactly how much each stat will change.
+
+It does this by looking at thousands of real transfers that already happened. "When players moved between teams with *this* difference in strength, their xG went up by *this* much on average." It learns these patterns using a neural network — a type of AI that's good at finding complex relationships in data. The network has six specialist "brains," one each for shooting, creation, distribution, crossing, dribbling, and defending, because these stat groups behave differently.
+
+The final prediction isn't just a single number — it's a full profile showing how every stat is expected to change, with a confidence indicator (green/amber/red) telling you how much to trust it. Think of it like a weather forecast: "80% chance of rain" is more useful than just "rain." TransferScope gives you the football equivalent.
+
+## TL;DR — Pipeline Summary
+
+- **Data collection:** Player stats from Sofascore API, team strength from Opta Power Rankings (inference) or ClubElo/WorldFootballElo (training), spatial data from StatsBomb, team name cross-linking from the REEP register (~45,000 clubs).
+- **Per-90 normalisation:** All counting stats converted to per-90-minute rates for fair comparison across players with different playing time.
+- **Rolling windows:** Recent form captured via minute-weighted rolling averages (1,000 min for players, 3,000 min for teams).
+- **Prior blending:** Low-minute players are blended with league/position averages (Bayesian-style) to avoid unreliable predictions. RAG confidence indicator (🟢🟡🔴) signals data quality.
+- **Power Rankings:** Every team gets a 0–100 strength score. Relative ability (team vs. own league average) is the key transfer feature.
+- **Adjustment models (sklearn):** Ridge regression provides a linear first-estimate of how stats shift based on team/league quality changes (TeamAdjustmentModel min_samples=10, PlayerAdjustmentModel Ridge alpha=10.0).
+- **94D feature vector:** 13 core per-90 + 10 additional + 4 team/league ability + 2 raw Elo + 2 REEP + 26 team-position + 3 interaction + 3 relative + 13 league-normalised + 13 league-mean-ratio + 4 position one-hot + 1 minutes-per-match.
+- **6-group neural network:** Shooting, creation, distribution, crossing, dribbling, defending — each group has a specialised sub-network with per-group architecture, Huber delta, dropout, and L2 tuning. Dual-head design: regression head (scaled deltas) + direction head (sigmoid, BCE loss at 25% weight).
+- **Training regime:** Linear warmup (10 epochs, 1e-5 → 5e-4), cosine annealing (150 epochs down to 1e-5), EarlyStopping (patience=15, min_delta=0.001). Non-transfer control samples (_TRANSFER_BUDGET=0.65) included for stability.
+- **Shrinkage and ensembling:** DELTA_SHRINKAGE=0.90 pulls predictions toward baseline. Direction-aware shrinkage (DIRECTION_SHRINKAGE_ALPHA=0.30) modulates ±30% based on direction confidence. Per-metric shrinkage (0.80 for dribbles to 0.96 for crosses). Ensemble of 3 seeds averaged.
+- **Log-scale targets:** Shooting and crossing groups use log-scale targets (LOG_SCALE_GROUPS={"shooting","crossing"}, _LOG_EPS=0.05) for better calibration on low-count metrics.
+- **Dual simulation:** Percentage changes compare model-predicted-at-target vs. model-predicted-at-current (not raw stats vs. prediction), per the paper's methodology.
+- **Shortlist scoring:** Weighted Euclidean distance + KMeans style clustering + 15% same-cluster bonus. Rate-limit-aware API scanning with per-league diagnostics.
+- **689 automated tests** across 27 test files verify correctness end-to-end, all using mocked HTTP responses.
+
+---
+
 ## Table of Contents
 
 1. [Overview](#1-overview)
@@ -342,7 +371,7 @@ Before the neural network makes its prediction, simpler linear models provide a 
 
 Implemented in `TeamAdjustmentModel` in `backend/features/adjustment_models.py`.
 
-**One model per core metric.** Each predicts the adjusted team-level per-90 at the target club using 3 features per sample (paper Appendix A.1):
+**One model per core metric.** Each predicts the adjusted team-level per-90 at the target club using 3 features per sample (paper Appendix A.1). Requires `_MIN_SAMPLES=10` training examples per metric (raised from 2 to improve generalization):
 
 ```
 adjusted_per90 = β₀ + β₁ × team_relative_feature + β₂ × from_ra + β₃ × to_ra
@@ -371,7 +400,7 @@ if team_xG drops 40%:
 
 ### 7.4 Player Adjustment — 13 Models × Position
 
-Implemented in `PlayerAdjustmentModel`. Uses 6 input features per prediction, with `change_in_relative_ability` normalized by `/50.0` (mapping the -50..+50 range to -1..+1 for numerical stability):
+Implemented in `PlayerAdjustmentModel`. Uses Ridge regression with `alpha=10.0` (raised from 1.0 for stronger regularization) and 6 input features per prediction, with `change_in_relative_ability` normalized by `/50.0` (mapping the -50..+50 range to -1..+1 for numerical stability):
 
 ```
 norm_ra = change_in_relative_ability / 50.0
@@ -480,7 +509,7 @@ The damping factor is **asymmetric**: less damping for downgrades (large drops a
 
 ### 8.1 Architecture
 
-Implemented in `backend/models/transfer_portal.py`. A 4-group multi-head neural network, following Table 1 from the paper.
+Implemented in `backend/models/transfer_portal.py`. A 6-group multi-head neural network, following Table 1 from the paper.
 
 **Why 6 groups instead of 1?** Different stat types have different internal relationships. Shooting metrics (xG, shots) relate to each other more than to defensive metrics (clearances, interceptions). Grouping allows each sub-network to specialize. The old "passing" mega-group (7 metrics) has been split into creation (xA, chances, touches in box), distribution (passes, pass %, long balls), and crossing (crosses) so each gets a properly scaled loss function.
 
@@ -496,15 +525,27 @@ Implemented in `backend/models/transfer_portal.py`. A 4-group multi-head neural 
 
 **Per-group architecture:**
 
-Each group receives only the features relevant to its metric type (GROUP_FEATURE_SUBSETS), not the full 46-feature vector. This reduces noise — dribbling doesn't need to see passing team-position averages.
+Each group receives only the features relevant to its metric type (GROUP_FEATURE_SUBSETS), not the full 94-feature vector. This reduces noise — dribbling doesn't need to see passing team-position averages.
+
+**Per-group architecture overrides:**
+
+| Group | Hidden layers | Dropout | L2 | Huber δ | Norm |
+|---|---|---|---|---|---|
+| Shooting | [64, 32] | 0.40 | 4e-4 | 0.3 | LayerNorm |
+| Creation | [64, 32] | 0.35 | 3e-4 | 0.8 | BatchNorm |
+| Distribution | [96, 48] | 0.35 | 3e-4 | 1.5 | BatchNorm |
+| Crossing | [32, 16] | 0.40 | 4e-4 | 0.3 | BatchNorm |
+| Dribbling | [64, 32] | 0.40 | 3e-4 | 1.0 | BatchNorm |
+| Defending | [96, 48] | 0.35 | 3e-4 | 1.0 | BatchNorm |
 
 ```
 Input (group-specific feature subset)
-  → Dense layer (128 neurons, ReLU activation)
-  → BatchNormalization → Dropout(0.3)
-  → Dense layer (64 neurons, ReLU activation)
-  → BatchNormalization → Dropout(0.3)
-  → Linear output head(s) (1 per target metric)
+  → Dense layer (group-specific width, ReLU activation)
+  → Norm layer (LayerNorm for shooting, BatchNorm for others) → Dropout(group-specific)
+  → Dense layer (group-specific width, ReLU activation)
+  → Norm layer → Dropout(group-specific)
+  → Regression head: Linear output (scaled delta per target metric)
+  → Direction head: Sigmoid output (P(post > pre) per target metric, trained with BCE at 25% loss weight)
 ```
 
 | Group | Input features | Hidden | Output | What it predicts |
@@ -516,62 +557,102 @@ Input (group-specific feature subset)
 | Dribbling | 26 | 64 → 32 | 1 | Take-ons |
 | Defending | 36 | 96 → 48 | 3 | Clearances, Interceptions, Possession Won |
 
+**Dual-head design:** Each group produces two outputs per target metric:
+1. **Regression head** — predicts the scaled delta (change in per-90 value)
+2. **Direction head** — sigmoid output predicting P(post > pre), trained with binary cross-entropy at 25% loss weight
+
+The direction head is used during inference for direction-aware shrinkage (see §8.3).
+
 > **In plain English:**
-> - Each specialist brain only sees the information relevant to its job (ranging from 10 to 28 features per group) — e.g., the Dribbling group excludes passing and defending team-position metrics, while the Shooting group excludes defensive metrics.
-> - **Dense layer** = a layer of artificial neurons. 128 neurons in the first layer, 64 in the second. Each neuron looks at the group's inputs and learns to focus on certain patterns.
+> - Each specialist brain only sees the information relevant to its job (ranging from 26 to 41 features per group) — e.g., the Dribbling group excludes passing and defending team-position metrics, while the Shooting group excludes defensive metrics.
+> - Each brain makes two predictions: "how much will this stat change?" (regression) and "will it go up or down?" (direction). When both heads agree, we're more confident.
+> - **Dense layer** = a layer of artificial neurons. The width varies by group (e.g. 64→32 for shooting, 96→48 for distribution). Each neuron looks at the group's inputs and learns to focus on certain patterns.
 > - **ReLU activation** = "if the answer is negative, just output zero; otherwise output the answer." This helps the network learn non-linear patterns (like "moving up 30 power ranking points affects stats differently than moving up 5").
 > - **Dropout 30%** = during training, randomly turn off 30% of neurons (preceded by BatchNormalization to stabilize each layer's inputs). This is like studying by covering up parts of your notes — it forces the model to not rely too heavily on any single piece of information and makes it better at generalizing.
 > - **Linear output** = the final prediction is just a number (the predicted per-90 value), with no cap or floor.
 
-### 8.2 Input Features (46-key feature dict, per-group slicing)
+### 8.2 Input Features (94D feature vector, per-group slicing)
 
-`build_feature_dict()` assembles a 46-key dictionary from components. Each model group then slices only its relevant features internally via GROUP_FEATURE_SUBSETS — e.g., the Dribbling group (10 features) only sees player dribbles, the 4 ability scores, and source/target team-position dribbles, excluding all passing and defending metrics.
+`build_feature_dict()` assembles a 94-dimensional feature vector from components. Each model group then slices only its relevant features internally via GROUP_FEATURE_SUBSETS — e.g., the Dribbling group (26 features) only sees player dribbles, ability scores, team-position dribbles, interaction features, league-normalised stats, and position one-hot, excluding all passing and defending metrics.
 
 ```
-Full feature dict (46 keys):
-[ player per-90 (13) | team_ability_current | team_ability_target |
+Full feature vector (94 dimensions):
+[ player per-90 (13) | additional stats (10) |
+  team_ability_current | team_ability_target |
   league_ability_current | league_ability_target |
+  raw_elo_current | raw_elo_target |
+  reep_feature_1 | reep_feature_2 |
   team_pos_current per-90 (13) | team_pos_target per-90 (13) |
-  ability_gap | gap_squared | league_gap ]
+  ability_gap | gap_squared | league_gap |
+  relative_to_league (3) |
+  league_norm per-90 (13) | league_mean_ratio (13) |
+  position_one_hot (4) | minutes_per_match (1) ]
 
 Group slicing examples:
-  Shooting (19): player xG/shots + all 4 ability scores + target-pos xG/shots + ...
-  Dribbling (10):  player dribbles + all 4 ability scores + source/target-pos dribbles
+  Shooting (41):  player xG/shots + ability scores + raw Elo + team-pos xG/shots +
+                  interaction + league-norm shooting + league-mean-ratio + position + ...
+  Creation (37):  player xA/chances/touches + ability scores + team-pos creative metrics + ...
+  Distribution (32): player passes/pass%/long balls + ability scores + team-pos passing + ...
+  Crossing (26):  player crosses + ability scores + team-pos crosses + league-norm + ...
+  Dribbling (26): player dribbles + ability scores + team-pos dribbles + league-norm + ...
+  Defending (36): player clearances/interceptions/poss_won + ability scores + team-pos defensive + ...
 ```
 
 | Block | Count | Description |
 |---|---|---|
 | Player per-90 | 13 | The player's own recent per-90 stats at their current club |
+| Additional stats | 10 | Supplementary per-90 and derived metrics |
 | Team ability (current) | 1 | Normalized 0–100 Power Ranking of the current club |
 | Team ability (target) | 1 | Normalized 0–100 Power Ranking of the target club |
 | League ability (current) | 1 | Mean normalized Power Ranking of the current league |
 | League ability (target) | 1 | Mean normalized Power Ranking of the target league |
+| Raw Elo (current) | 1 | Raw Elo rating of the current club (on ~1000–2100 scale) |
+| Raw Elo (target) | 1 | Raw Elo rating of the target club |
+| REEP features | 2 | Features derived from the REEP register |
 | Team-position per-90 (current) | 13 | Average per-90 for the player's position at their current club |
 | Team-position per-90 (target) | 13 | Average per-90 for the player's position at the target club |
 | Interaction features | 3 | ability_gap (team target − team current), gap_squared, league_gap (league target − league current) |
+| Relative features | 3 | Player stats relative to league context |
+| League-normalised per-90 | 13 | Player per-90 stats normalised by league averages |
+| League mean ratio | 13 | Ratio of player per-90 to league mean per-90 |
+| Position one-hot | 4 | One-hot encoding of the player's position group |
+| Minutes per match | 1 | Average minutes played per match appearance |
 
-> **In plain English:** We're telling the neural network 46 things about the transfer:
-> - "This player currently produces these 13 stats per 90 minutes"
-> - "Their current team is this strong, and the target team is this strong"
+> **In plain English:** We're telling the neural network 94 things about the transfer:
+> - "This player currently produces these 13 core stats and 10 additional stats per 90 minutes"
+> - "Their current team is this strong, and the target team is this strong" (both normalised and raw Elo)
 > - "Their current league is this competitive, and the target league is this competitive"
 > - "Players in this position at the current team typically produce these 13 stats"
 > - "Players in this position at the target team typically produce these 13 stats"
 > - "What's the gap in team ability and league ability between source and target?"
+> - "How does this player compare to their league average?" (league-normalised and ratio features)
+> - "What position does this player play?" (one-hot) and "How many minutes per match do they get?"
 >
 > From all of that, the network learns to predict: "Here's what this specific player will produce at the new club."
 
 ### 8.3 Training
 
-`TransferPortalModel.fit()` trains all 4 groups simultaneously with:
-- **Optimizer:** Trained with Adam optimizer, linear LR warmup (10 epochs from 1e-5 → 5e-4) then ReduceLROnPlateau (factor=0.5, patience=5). Huber loss (delta=1.0) with L2 regularization (1e-3). EarlyStopping (patience=15). Max 150 epochs, batch size 32.
+`TransferPortalModel.fit()` trains all 6 groups simultaneously with:
+- **Optimizer:** Adam with per-group Huber loss (δ varies by group: shooting=0.3, creation=0.8, distribution=1.5, crossing=0.3, dribbling=1.0, defending=1.0) and per-group L2 regularization.
+- **LR schedule:** Linear warmup over 10 epochs from 1e-5 → 5e-4, then cosine annealing from 5e-4 down to 1e-5 over 150 epochs.
+- **EarlyStopping:** patience=15, min_delta=0.001
 - **Validation split:** 15% of data held out to monitor overfitting
 - **Epochs:** up to 150 passes (with early stopping)
+- **Non-transfer samples:** `_TRANSFER_BUDGET=0.65` — 35% of training samples are non-transfer controls (same-team before/after) for stability
 
-Predicted deltas are multiplied by `DELTA_SHRINKAGE=0.85` to pull toward naive baseline, then clipped per-metric via `_METRIC_CLIP_FLOORS`.
+**Log-scale targets:** Shooting and crossing groups use log-scale targets (`LOG_SCALE_GROUPS={"shooting","crossing"}`, `_LOG_EPS=0.05`) for better calibration on low-count metrics where the per-90 distribution is heavily right-skewed.
+
+**Ensemble averaging:** `ENSEMBLE_SIZE=3` — the model is trained with 3 different random seeds, and predictions are averaged across the ensemble for robustness.
+
+Predicted deltas are multiplied by `DELTA_SHRINKAGE=0.90` to pull toward naive baseline, then clipped per-metric via `_METRIC_CLIP_FLOORS`.
+
+**Direction-aware shrinkage:** `DIRECTION_SHRINKAGE_ALPHA=0.30` modulates the shrinkage factor ±30% based on the direction head's confidence. When the direction head is highly confident (P close to 0 or 1), shrinkage is relaxed (larger predictions preserved). When uncertain (P ≈ 0.5), shrinkage is tightened. Additionally, `DIRECTION_FLIP_THRESHOLD=0.70` flips the delta sign when the direction head strongly disagrees with the regression head's predicted direction.
+
+**Per-metric shrinkage:** Individual metrics have calibrated shrinkage factors ranging from 0.80 for dribbles (high variance, needs more regularisation) to 0.96 for crosses (more stable, less shrinkage needed).
 
 ### 8.4 Prediction
 
-`TransferPortalModel.predict(feature_dict)` runs the feature dict through all 4 groups (each slicing its relevant subset) and returns a dictionary of 13 predicted per-90 values.
+`TransferPortalModel.predict(feature_dict)` runs the feature dict through all 6 groups (each slicing its relevant subset) and returns a dictionary of 13 predicted per-90 values.
 
 **Auto-loading:** `predict()` auto-loads trained weights from `data/models/` when available. `is_trained()` checks for both `.keras` model files and `feature_scaler.pkl`. When no trained model exists, falls back to `paper_heuristic_predict()` with a warning log.
 
@@ -708,7 +789,7 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
 
 ### 11.1 Unit Tests
 
-488 tests across 24 test files, all using `unittest` with `mock.patch` for external API calls:
+689 tests across 27 test files, all using `unittest` with `mock.patch` for external API calls:
 
 | Test File | What It Tests | Count |
 |---|---|---|
@@ -737,7 +818,7 @@ Here's what happens when a user types "Bukayo Saka → Real Madrid" into the Tra
 
 All tests use mocked HTTP responses — no network access required. Temporary cache directories are created per test module and cleaned up in `tearDownModule()`.
 
-> **In plain English:** We have 488 automated checks that verify the system works correctly. They use fake data (so they don't need the internet), and they cover everything from "does the search work?" to "is the per-90 math right?" to "does the cache actually cache things?" to "does fuzzy team name matching handle accents and abbreviations?" to "do the shortlist filters correctly handle missing data?" If anyone changes the code and breaks something, these tests catch it immediately.
+> **In plain English:** We have 689 automated checks that verify the system works correctly. They use fake data (so they don't need the internet), and they cover everything from "does the search work?" to "is the per-90 math right?" to "does the cache actually cache things?" to "does fuzzy team name matching handle accents and abbreviations?" to "do the shortlist filters correctly handle missing data?" If anyone changes the code and breaks something, these tests catch it immediately.
 
 ### 11.2 Run Tests
 
