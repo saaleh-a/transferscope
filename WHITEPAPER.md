@@ -12,6 +12,38 @@ TransferScope is a football transfer intelligence platform that predicts how a p
 
 ---
 
+## ELI5 — Explain Like I'm Five
+
+Imagine you have a really good player on your favourite football video game team. You know how many goals they score and how many passes they complete. Now imagine you trade that player to a completely different team in a different country. Will they score just as many goals? More? Fewer? It depends on how good the new team is, how hard the new league is, and what style of football they play. TransferScope is like a calculator that figures all of that out for you.
+
+Here's how it works: First, we give every team in the world a "strength score" — like a report card grade. Then, for each player, we look at their recent stats (goals, assists, tackles, passes) from the last ~11 games. We feed all of this into a special computer brain (a neural network) that has learned from thousands of real transfers what typically happens when players move. It's like asking a football expert who has memorised every transfer in history: "Based on everything you've seen, what will this player do at their new club?"
+
+The clever part is that the computer brain is actually *six* mini-brains working together. One is an expert on shooting, another on creating chances, another on passing and distribution, one on crossing, one on dribbling, and one on defending. Each mini-brain only looks at the stats relevant to its job — the shooting expert doesn't care about long-ball accuracy, and the defending expert doesn't look at expected goals. This specialisation makes each prediction sharper.
+
+Finally, the system doesn't just give you one answer — it shows you a traffic light. Green means "we have lots of data, trust this prediction." Amber means "decent data, prediction is reasonable." Red means "not much data, take this with a pinch of salt." It's honest about what it knows and what it's guessing.
+
+---
+
+## TL;DR — Key Technical Contributions
+
+- **94-dimensional feature vector** per player: 13 core per-90 stats + 10 enrichment metrics + 4 team/league ability scores + 2 raw Elo + 2 REEP metadata + 26 team-position per-90 + 3 interaction features + 3 relative dominance + 13 league-normalised + 13 league mean ratios + 4 position one-hot + 1 minutes-per-match proxy.
+- **6-group multi-head neural network** with per-group architecture overrides: shooting, creation, distribution, crossing, dribbling, defending — each with tailored hidden layers, dropout, L2, and Huber delta.
+- **Dual-head output** per target metric: linear regression head + direction sigmoid head (P(post > pre)), with direction loss weighted at 25% of regression loss.
+- **Direction-aware shrinkage**: DELTA_SHRINKAGE=0.90 base, per-metric overrides (0.80 for dribbles to 0.96 for crosses), with direction confidence adjusting shrinkage ±30% (DIRECTION_SHRINKAGE_ALPHA=0.30, flip threshold=0.70).
+- **Log-scale targets** for shooting and crossing groups (LOG_SCALE_GROUPS) with _LOG_EPS=0.05, modelling multiplicative rather than additive changes.
+- **Ensemble averaging** (ENSEMBLE_SIZE=3): three models per group with different seeds, predictions averaged at inference for stability.
+- **LR schedule**: 10-epoch linear warmup (1e-5 → 5e-4) then cosine annealing to 1e-5 over 140 epochs, with early stopping (patience=15, min_delta=0.001).
+- **Non-transfer sample mixing** (_TRANSFER_BUDGET=0.65): 65% loss budget for transfers, 35% for same-club season-over-season samples, with confidence-weighted sample weights.
+- **LayerNorm for shooting** (not BatchNorm) to avoid bias from ~17% zero-weighted xG-masked samples; BatchNorm for all other groups.
+- **Per-metric clip floors** preventing unrealistic near-zero predictions (e.g. xG floor=0.30, passes floor=15.0).
+- **Triple-source Power Rankings**: Opta (inference), ClubElo (European training), WorldFootballElo (global training) with dynamic REEP-based alias resolution (~45K clubs).
+- **Multi-league shortlist search** with k-means clustering (k=√(n/2), capped 3–10), weighted Euclidean distance, 15% same-cluster bonus, and None-passthrough filters.
+- **Paper-faithful dual simulation**: both current-club and target-club predictions come from the same model, per Dinsdale & Gallagher Section 4.
+- **TeamAdjustmentModel** (LinearRegression, _MIN_SAMPLES=10) and **PlayerAdjustmentModel** (Ridge, alpha=10.0, cubic polynomial features) as sklearn baselines.
+- **689 tests** across 27 files — all mocked, no network calls — covering models, features, UI, data acquisition, and integration.
+
+---
+
 ## 1. The Problem
 
 ### 1.1 Why Transfer Prediction Matters
@@ -100,17 +132,17 @@ In both cases, each team's **relative ability** = team score − league mean sco
 
 > **In plain English:** For today's predictions, we use Opta's official rankings — the same system used by professional broadcasters. Their data includes official league averages and team counts, so we don't have to guess or compute them ourselves. For training the model on past transfers, we use historical Elo data since Opta doesn't have an archive. Either way, we calculate how much better or worse each team is compared to their own league average.
 
-The full feature vector contains 46 features: 13 player per-90, 4 ability scores (team and league, current and target), 13 team-position per-90 (current), 13 team-position per-90 (target), and 3 interaction features (ability_gap, gap_squared, league_gap).
+The full feature vector contains **94 features**: 13 core player per-90 + 10 additional enrichment metrics (xGOT, npxG, dispossessed, duels won %, aerial duels won %, recoveries, fouls won, touches, goals conceded on pitch, xG against on pitch) + 4 team/league ability scores + 2 raw Elo (current and target) + 2 REEP metadata (height, age) + 26 team-position per-90 (13 current + 13 target) + 3 interaction features (ability_gap, gap², league_gap) + 3 relative team dominance features + 13 league-normalised features (player / source league mean) + 13 league mean ratio features (source mean / target mean) + 4 position one-hot encoding (F, M, D, G) + 1 minutes-per-match proxy.
 
 ### 2.3 Prediction Models
 
 Two model tiers operate in sequence, plus a heuristic fallback:
 
-**Adjustment Models (sklearn LinearRegression).** Thirteen linear regression models per metric handle the team-level and player-level adjustments:
+**Adjustment Models (sklearn LinearRegression / Ridge).** Thirteen linear regression models per metric handle the team-level adjustments, plus position-specific Ridge models for player-level adjustments:
 
-- *Team adjustment*: 13 models — one per core metric — that map a team's relative strength to an expected per-90 adjustment at the target league
+- *Team adjustment*: 13 LinearRegression models — one per core metric — that map a team's relative strength to an expected per-90 adjustment at the target league. Requires `_MIN_SAMPLES=10` per metric to fit; returns zero adjustment when insufficient data.
 - *Team-position scaling*: scales position-level features by the same percentage change as the team adjustment
-- *Player adjustment*: 13 models × position that use polynomial features (up to cubic) of the change in relative ability
+- *Player adjustment*: 13 Ridge (alpha=10.0) models × 4 positions that use polynomial features (up to cubic) of the change in relative ability, with `_PLAYER_MIN_SAMPLES=30` per position/metric combination
 
 > **In plain English:** These are simpler "rule of thumb" models that answer questions like: "If a team is 15% stronger than their league average, how does that typically affect their strikers' goal output?" and "If a player moves to a team that's 20 points stronger in our ranking, how much does each stat typically change?" We have one of these for each of the 13 stats, and they're specific to each playing position — because moving to a stronger team affects a defender differently than it affects a winger.
 
@@ -123,32 +155,73 @@ This means a player at a worse team **can improve or decline** at a bigger team,
 
 > **In plain English:** Even without a trained neural network, the system makes smart per-metric predictions. A crossing winger joining a team that plays wide will see their crosses and assists go up, even if the league is harder. A dribbler will keep their dribbling numbers almost unchanged because that's an individual skill. A defender joining a dominant team will defend less. Each stat is predicted independently based on both ability and style.
 
-**Transfer Portal Neural Network (TensorFlow).** A 4-group multi-head neural network with per-group feature subsets (not all 46 features to every group) and 13 output heads:
+**Transfer Portal Neural Network (TensorFlow).** A 6-group multi-head neural network with per-group feature subsets (not all 94 features to every group) and 13 output heads:
 
 | Group | Input Features | Targets | Heads |
 |---|---|---|---|
-| Shooting | 36 | xG, Shots | 2 |
-| Passing | 50 | xA, Crosses, Passes, Pass %, Long Balls, Chances Created, Pen Area Entries | 7 |
-| Dribbling | 22 | Take-ons | 1 |
-| Defending | 33 | Clearances, Interceptions, Possession Won Final 3rd | 3 |
+| Shooting | 41 | xG, Shots | 2 |
+| Creation | 37 | xA, Chances Created, Touches in Opp Box | 3 |
+| Distribution | 32 | Passes, Pass %, Long Balls | 3 |
+| Crossing | 26 | Crosses | 1 |
+| Dribbling | 26 | Take-ons | 1 |
+| Defending | 36 | Clearances, Interceptions, Possession Won Final 3rd | 3 |
 
-Each group has the same architecture: Input → Dense(128, ReLU) → BatchNormalization → Dropout(0.3) → Dense(64, ReLU) → BatchNormalization → Dropout(0.3) → Linear output heads (dribbling uses 64→32 + dropout 0.4). Trained with Adam optimizer and Huber loss (delta=1.0) with L2 regularization. `DELTA_SHRINKAGE=0.85`. Auto-loads trained weights from `data/models/` when available; falls back to `paper_heuristic_predict()` when untrained.
+Each group has **per-group architecture overrides** (defaults: [128,64], dropout=0.3, L2=1e-4, Huber δ=1.0):
 
-> **In plain English:** The neural network is the "brain" of the system. A full set of 89 numbers about a player is assembled (their current stats including 10 additional metrics, team strength, league strength, raw Elo scores, REEP metadata, relative ability, league normalisation features, what position players typically do at both clubs, plus interaction features). But each specialist group only sees the subset relevant to its job — the shooting brain gets 36 features, the passing brain 50, the dribbling brain 22, and the defending brain 33. Each group outputs its predictions for that stat type. This focus makes each specialist better at its job.
+| Group | Hidden Layers | Dropout | L2 | Huber δ | Normalisation |
+|---|---|---|---|---|---|
+| Shooting | [64, 32] | 0.40 | 4e-4 | 0.3 | **LayerNorm** |
+| Creation | [64, 32] | 0.35 | 3e-4 | 0.8 | BatchNorm |
+| Distribution | [96, 48] | 0.35 | 3e-4 | 1.5 | BatchNorm |
+| Crossing | [32, 16] | 0.40 | 4e-4 | 0.3 | BatchNorm |
+| Dribbling | [64, 32] | 0.40 | 3e-4 | 1.0 | BatchNorm |
+| Defending | [96, 48] | 0.35 | 1e-4 | 1.0 | BatchNorm |
+
+The shooting group uses **LayerNormalization** instead of BatchNormalization because ~17% of training samples have zero-weighted xG targets (non-GK players with missing pre-transfer xG). BatchNorm computes statistics across all samples including these masked ones, biasing the normalisation. LayerNorm normalises per-sample, avoiding this issue.
+
+**Dual-head output.** Each target metric produces two outputs:
+1. **Regression head** — a linear output predicting the scaled delta (or log-ratio for log-scale groups)
+2. **Direction head** — a sigmoid output predicting P(post > pre), i.e. the probability the stat increases
+
+The dual loss is: `total_loss = regression_loss + 0.25 × direction_loss`. The direction head at 25% weight acts as an auxiliary signal, helping the model learn the *sign* of change even when magnitude is noisy.
+
+**Log-scale targets.** Shooting and crossing groups (`LOG_SCALE_GROUPS`) use log-ratio targets: `log(post / pre + ε)` with `_LOG_EPS=0.05`. This models multiplicative changes (a player going from 0.1 to 0.2 xG is a 100% increase, same as 0.5 to 1.0), which better captures the nature of these count-like metrics.
+
+**Ensemble averaging.** `ENSEMBLE_SIZE=3` — three models per group are trained with different random seeds. At inference, predictions are averaged across all three, reducing variance and improving stability.
+
+**Direction-aware shrinkage.** Raw model deltas are shrunk toward zero to reduce overprediction:
+- Base shrinkage: `DELTA_SHRINKAGE=0.90` (global fallback)
+- Per-metric overrides (`_METRIC_SHRINKAGE`): dribbles=0.80, interceptions=0.82, possession_won_final_3rd=0.83, xA=0.85, chances_created=0.85, touches_in_opp_box=0.86, xG=0.88, shots=0.88, clearances=0.88, long_balls=0.90, passes=0.90, pass%=0.92, crosses=0.96
+- The direction sigmoid confidence adjusts shrinkage by up to ±30% (`DIRECTION_SHRINKAGE_ALPHA=0.30`): high-confidence predictions are shrunk less, uncertain predictions shrunk more
+- If the direction head disagrees with the regression sign at >70% confidence (`DIRECTION_FLIP_THRESHOLD=0.70`), the delta sign is flipped — the model trusts its direction classifier over the noisy regression magnitude
+
+**Per-metric clip floors.** Predicted values are floored to prevent unrealistic near-zero outputs: xG≥0.30, xA≥0.20, shots≥1.20, dribbles≥1.00, crosses≥0.80, touches_opp_box≥2.50, passes≥15.0, pass%≥10.0, long_balls≥1.80, chances_created≥0.80, clearances≥1.60, interceptions≥0.80, poss_won_final_3rd≥0.80. Default fallback floor: 1.0.
+
+**Training LR schedule.** 10-epoch linear warmup (1e-5 → 5e-4), then cosine annealing from 5e-4 down to 1e-5 over 140 epochs. Max epochs=150, early stopping patience=15, min_delta=0.001.
+
+**Non-transfer samples.** `_TRANSFER_BUDGET=0.65` — 65% of the loss budget is allocated to actual transfer samples, 35% to non-transfer (same-club season-over-season) samples discovered by `discover_non_transfers()`. Sample weights combine class balance × per-sample confidence from `blend_weight(pre_minutes)`. This prevents the model from learning that every prediction should show large changes — most players at the same club don't change much.
+
+Auto-loads trained weights from `data/models/` when available; falls back to `paper_heuristic_predict()` when untrained.
+
+> **In plain English:** The neural network is the "brain" of the system. A full set of 94 numbers about a player is assembled (their current stats including 10 additional metrics, team strength, league strength, raw Elo scores, REEP metadata, relative ability, league normalisation features, what position players typically do at both clubs, position encoding, plus interaction features). But each specialist group only sees the subset relevant to its job — the shooting brain gets 41 features, creation 37, distribution 32, crossing 26, dribbling 26, and defending 36. Each group outputs its predictions for that stat type. This focus makes each specialist better at its job.
 >
-> The "Dropout(0.3)" bit means the model randomly ignores 30% of its connections during training — this is like studying by covering up parts of your notes and forcing yourself to remember. It prevents the model from memorizing specific examples and helps it generalize to new players it hasn't seen before.
+> The model actually trains three copies of each specialist brain (with different random starting points) and averages their predictions — like asking three experts and taking the consensus. Each brain also has two "outputs": one that predicts *how much* a stat will change, and one that predicts *which direction* (up or down). If the direction output strongly disagrees with the magnitude output, the system trusts the direction — it's easier to predict whether a stat goes up or down than by exactly how much.
+>
+> The "Dropout" bit means the model randomly ignores some of its connections during training — this is like studying by covering up parts of your notes and forcing yourself to remember. Different groups use different dropout rates (30-40%) because some stats are noisier than others.
 
-The full 89-feature dictionary is assembled from:
+The full 94-feature dictionary is assembled from:
 - 13 core player per-90 metrics (current club)
 - 10 additional player metrics (xGOT, npxG, dispossessed, duels won %, aerial duels won %, recoveries, fouls won, touches, goals conceded on pitch, xG against on pitch)
 - 4 ability scores (team and league, current and target)
 - 2 raw Elo features (current and target)
 - 2 REEP metadata features (height, age)
-- 3 relative ability features (current, target, gap)
-- 13 league normalisation features (player / source league mean)
-- 13 league mean ratio features (source mean / target mean)
 - 26 team-position per-90 metrics (13 current + 13 target)
 - 3 interaction features (ability gap, gap², league gap)
+- 3 relative team dominance features (current, target, gap)
+- 13 league normalisation features (player / source league mean)
+- 13 league mean ratio features (source mean / target mean)
+- 4 position one-hot encoding (F, M, D, G)
+- 1 minutes-per-match proxy
 
 Each group slices only its relevant features internally (GROUP_FEATURE_SUBSETS), reducing noise — dribbling doesn't need passing team-position averages.
 
@@ -252,9 +325,9 @@ Extreme transfers (elite player to relegation team, or lower-league player to to
 > **In plain English:** Mbappé moving from Real Madrid to a relegation team would see massive stat drops — the model doesn't protect him just because he's elite. But the same player moving from a good team to a *slightly* better one wouldn't see unrealistically huge improvements. The model is calibrated to be realistic in both directions.
 
 ### 4.12 Per-Group Feature Subsets
-Each of the 4 TensorFlow model groups receives only the features relevant to its metric type (GROUP_FEATURE_SUBSETS), not the full 46-feature vector. Shooting uses 19 features, Passing 28, Dribbling 10, and Defending 16. This reduces noise and improves generalization — the dribbling model doesn't need to see passing team-position averages.
+Each of the 6 TensorFlow model groups receives only the features relevant to its metric type (GROUP_FEATURE_SUBSETS), not the full 94-feature vector. Shooting uses 41 features, Creation 37, Distribution 32, Crossing 26, Dribbling 26, and Defending 36. This reduces noise and improves generalization — the dribbling model doesn't need to see passing team-position averages.
 
-> **In plain English:** Each specialist brain only looks at the data that matters for its job. The shooting expert doesn't waste time looking at long ball accuracy. This makes each model more focused and less likely to be confused by irrelevant information.
+> **In plain English:** Each specialist brain only looks at the data that matters for its job. The shooting expert doesn't waste time looking at long ball accuracy. The crossing expert uses a lean 26-feature input because crosses are driven by a focused set of factors. This makes each model more focused and less likely to be confused by irrelevant information.
 
 ### 4.13 Robust Team Name Resolution
 Matching team names across four data sources (Opta, ClubElo, WorldFootballElo, Sofascore) requires handling abbreviations, accents, and regional naming differences. TransferScope uses a 3-step lookup: exact match → accent-normalized match → fuzzy matching with a 5-priority cascade (including 502 extreme abbreviation aliases covering Europe, MLS, Saudi Pro League, and J-League, plus 531 ClubElo-to-Sofascore canonicalization entries). The SequenceMatcher similarity threshold is set at 0.70 to reject false positives where short common suffixes (like "City") drive enough similarity to match unrelated teams (e.g. "Orlando City SC" must not match "Man City"). At runtime, `_build_dynamic_aliases()` augments these with ~45,000 additional team name variants from the REEP open data register, providing near-universal coverage without manual maintenance.
@@ -304,7 +377,7 @@ Shot maps, pass networks, and heatmaps from StatsBomb open data provide spatial 
 | Spatial data | StatsBomb via `statsbombpy` + `mplsoccer` | Shot maps, pass networks, heatmaps |
 | Coefficient calibration | football-data.co.uk CSVs | Data-driven style coefficient refinement |
 | Team alias augmentation | REEP register (~45K clubs) | Dynamic team name resolution |
-| Testing | pytest + unittest (488 tests) | Makes sure nothing is broken |
+| Testing | pytest + unittest (689 tests) | Makes sure nothing is broken |
 
 ---
 
