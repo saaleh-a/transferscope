@@ -2,6 +2,33 @@
 
 ---
 
+## TL;DR — Quick Start for New Developers
+
+- **What it does**: Predicts how a footballer's per-90 stats will change after a transfer, using team quality, opposition quality, and tactical style signals.
+- **Three user-facing tools**: Transfer Impact dashboard (predicted % change), Shortlist Generator (K-means replacement ranking), Hot or Not (quick rumour validator).
+- **Tech stack**: Python 3.12 · Streamlit UI · TensorFlow multi-head NN · scikit-learn Ridge models · Plotly charts · diskcache.
+- **Entry point**: `app.py` → Streamlit. Read `ARCHITECTURE.md` first for the full design reference.
+- **Two prediction paths**: TensorFlow neural net (when trained) or `paper_heuristic_predict()` fallback (default for most users). Both must stay in sync.
+- **6 model groups, 13 output heads**: shooting (xG, shots), creation (xA, chances_created, touches_opp_box), distribution (passes, pass%, long_balls), crossing (crosses), dribbling (dribbles), defending (clearances, interceptions, poss_won_final_3rd). Each head is dual-output: regression + direction.
+- **94-dimensional feature vector**: player per-90 stats, team/league abilities, Elo scores, REEP metadata, team-position averages, interaction terms, league-normalised metrics, position one-hot, and minutes-per-match.
+- **Ensemble inference**: 3 seeds per group, averaged at prediction time for reduced variance. Direction-aware shrinkage modulates confidence.
+- **Data sources**: Sofascore (player stats), Opta (inference Elo), ClubElo + WorldFootballElo (training Elo), StatsBomb (spatial), football-data.co.uk (calibration).
+- **Team name resolution is hard**: 5-priority fuzzy cascade across 4 data sources with different naming conventions. ~45K REEP aliases loaded at runtime.
+- **Everything is per-90, always.** Raw totals exist only momentarily inside `_parse_stats()`.
+- **Tests**: 689 tests across 27 files. All mocked, no network calls. Run with `python -m pytest tests/ -v`.
+- **Caching**: All external API calls go through diskcache (SQLite-backed). Never cache empty/error results.
+- **Log-scale targets**: shooting and crossing groups use log-ratio targets for better handling of low-count metrics.
+
+## ELI5 — Project Overview in Plain English
+
+TransferScope answers one question: "If Player X moves to Club Y, how will their stats change?" It does this by looking at three things — how good the new team is compared to the old one, how strong the opposition will be in the new league, and how the new team's playing style differs. For example, a creative midfielder moving from a defensive team to an attacking one will likely see their assists go up but their interceptions go down.
+
+Under the hood, there's a neural network with 6 specialist model groups (shooting, creation, distribution, crossing, dribbling, defending) that each predict a subset of the 13 output metrics. Each group has two heads — one for "how much will it change?" (regression) and one for "will it go up or down?" (direction). The model takes in a 94-feature vector covering the player's current stats, both teams' strength ratings, tactical style differences, and league context. When no trained model exists (the default state), a carefully calibrated heuristic formula implements the same methodology from the original research paper.
+
+The whole system is wrapped in a Streamlit web app with interactive Plotly charts, shot maps, and radar plots. Data comes from Sofascore (player stats), Opta/ClubElo/WorldFootballElo (team ratings), and StatsBomb (spatial event data). Every API call is cached to avoid hammering external services.
+
+---
+
 ## SECTION 1 — Repository Overview
 
 ### Purpose
@@ -14,7 +41,7 @@ TransferScope is a football transfer intelligence platform that predicts how a p
 |---|---|---|
 | Python | 3.12 | Runtime |
 | Streamlit | ≥1.29.0 | Web UI — single-page app with sidebar navigation |
-| TensorFlow | ≥2.15.0 | Multi-head neural network (4 model groups, 13 output heads) |
+| TensorFlow | ≥2.15.0 | Multi-head neural network (6 model groups, 13 output heads (dual-head: regression + direction)) |
 | scikit-learn | ≥1.3.0 | Ridge regression adjustment models, StandardScaler, KMeans clustering |
 | pandas | ≥2.1.0 | DataFrame operations for Elo data, rolling windows, training pipeline |
 | numpy | ≥1.24.0 | Array operations throughout features and models |
@@ -53,11 +80,11 @@ transferscope/
 │   ├── features/
 │   │   ├── rolling_windows.py          # (188 lines) 1000-min player / 3000-min team rolling per-90 averages
 │   │   ├── power_rankings.py           # (1801 lines) Daily Elo aggregation, 0-100 normalization, fuzzy team matching
-│   │   └── adjustment_models.py        # (1007 lines) sklearn Ridge models + paper_heuristic_predict fallback
+│   │   └── adjustment_models.py        # (1053 lines) sklearn Ridge models + paper_heuristic_predict fallback
 │   ├── models/
-│   │   ├── transfer_portal.py          # (861 lines) TensorFlow 4-group NN — build, fit, predict, save/load
+│   │   ├── transfer_portal.py          # (1578 lines) TensorFlow 6-group NN — build, fit, predict, save/load
 │   │   ├── shortlist_scorer.py         # (388 lines) KMeans + weighted Euclidean distance candidate ranking
-│   │   ├── training_pipeline.py        # (2193 lines) End-to-end: discover transfers → build features → train
+│   │   ├── training_pipeline.py        # (3117 lines) End-to-end: discover transfers → build features → train
 │   │   └── backtester.py              # (293 lines) Post-hoc validation against actual post-transfer per-90
 │   └── utils/
 │       └── league_registry.py          # (483 lines) Central league ID mappings (Sofascore, ClubElo, WorldElo)
@@ -77,7 +104,7 @@ transferscope/
 │       ├── metric_bar.py             # (193 lines) Diverging horizontal bar chart
 │       ├── pitch_viz.py              # (421 lines) Shot maps, pass networks, heatmaps (mplsoccer)
 │       └── player_pizza.py           # (239 lines) Player pizza/radar chart
-├── tests/                              # 488 tests across 24 files (all mocked, no network)
+├── tests/                              # 689 tests across 27 files (all mocked, no network)
 ├── scripts/
 │   └── check_training_ready.py         # Training readiness verification
 ├── data/
@@ -145,7 +172,7 @@ transferscope/
 3. `sofascore_client.get_player_stats(player_id)` → per-90 dict, minutes, position
 4. `power_rankings.get_team_ranking("Arsenal")` and `get_team_ranking("Real Madrid")` → normalized scores, relative abilities
 5. `sofascore_client.get_team_position_averages(team_id, position)` for both clubs → tactical style data
-6. `transfer_portal.build_feature_dict(...)` assembles 46-key feature dict
+6. `transfer_portal.build_feature_dict(...)` assembles 94-key feature dict
 7. `TransferPortalModel.predict(feature_dict)` → if trained: TF neural net; else: `paper_heuristic_predict()`
 8. Same prediction at current club (dual simulation) → compute % changes
 8b. StatsBomb spatial data (if available) → shot maps, pass networks, heatmaps
@@ -158,7 +185,7 @@ transferscope/
 3. **`backend/data/sofascore_client.py`** — The data backbone. Every prediction starts with data from here. Focus on `CORE_METRICS` (line 39), `get_player_stats()`, and `_parse_stats()`.
 4. **`backend/features/adjustment_models.py`** — The prediction brain. Start at `paper_heuristic_predict()` (line 644) — this is the default prediction path. Then read `_TEAM_INFLUENCE`, `_ABILITY_SENSITIVITY`, `_OPP_QUALITY_SENS` dicts above it.
 5. **`backend/features/power_rankings.py`** — The context engine. `compute_daily_rankings()` (line 201) aggregates all Elo data and normalizes globally. `get_team_ranking()` (line 320) resolves team names with fuzzy matching.
-6. **`backend/models/transfer_portal.py`** — The ML model. `build_feature_dict()` shows all 46 feature keys. `predict()` (line 271) shows the TF → heuristic fallback chain.
+6. **`backend/models/transfer_portal.py`** — The ML model. `build_feature_dict()` shows all 94 feature keys. `predict()` (line 271) shows the TF → heuristic fallback chain.
 7. **`frontend/pages/transfer_impact.py`** — The main UI page. `render()` shows the full user-facing flow from input to chart output.
 
 ---
@@ -474,7 +501,7 @@ predicted[m] = max(pred, 0.0)  # per-90 can never be negative
 ### Module: `backend/models/transfer_portal.py` (ML Model)
 
 #### What this does
-Wraps a TensorFlow multi-head neural network with 4 model groups (shooting, passing, dribbling, defending). Falls back to `paper_heuristic_predict` when no trained model exists.
+Wraps a TensorFlow multi-head neural network with 6 model groups (shooting, creation, distribution, crossing, dribbling, defending). Each group has a dual-head architecture: a regression head (predicts scaled deltas or log-ratios) and a direction head (predicts P(post > pre)). Falls back to `paper_heuristic_predict` when no trained model exists.
 
 #### Why it exists
 The paper's methodology uses a neural network to learn the non-linear relationships between player features, team context, and post-transfer performance. This module is the production inference engine.
@@ -490,34 +517,57 @@ if not self.models:                    # no models loaded yet
         return self._heuristic_fallback(feature_dict)  # → paper_heuristic_predict()
 ```
 
-2. **Prepare feature vector:**
+2. **Prepare 94D feature vector:**
 ```python
-full_X = self._prepare_features(feature_dict).reshape(1, -1)  # shape: (1, 46)
+full_X = self._prepare_features(feature_dict).reshape(1, -1)  # shape: (1, 94)
 if self._scaler is not None:
     full_X = self._scaler.transform(full_X)  # StandardScaler normalization
 ```
 
-3. **For each of the 4 groups, slice relevant features and predict:**
+3. **For each of the 6 groups, slice relevant features and predict with ensemble averaging (3 seeds):**
 ```python
-for group_name, targets in MODEL_GROUPS.items():   # "shooting", "passing", ...
+for group_name, targets in MODEL_GROUPS.items():   # "shooting", "creation", "distribution", ...
     group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
-    X_group = full_X[:, group_indices]             # slice to 10-28 features
-    preds = self.models[group_name].predict(X_group)  # TF inference
-    # Inverse-transform back to original scale
-    if target_scaler is not None:
-        preds = target_scaler.inverse_transform(preds)
+    X_group = full_X[:, group_indices]             # slice to relevant features
+    # Average regression and direction outputs across all ensemble members
+    ensemble_members = self._ensemble.get(group_name, [self.models[group_name]])
+    for member in ensemble_members:
+        reg_pred, dir_pred = member.predict(X_group)  # dual-head TF inference
+    # Average across seeds for reduced variance
 ```
-*Analogy: instead of one model trying to predict everything, there are 4 specialist models — a shooting expert, a passing expert, a dribbling expert, and a defending expert.*
+*Analogy: instead of one model trying to predict everything, there are 6 specialist models — a shooting expert, a creation expert, a distribution expert, a crossing expert, a dribbling expert, and a defending expert. Each runs 3 times with different random seeds, and results are averaged.*
 
-4. **Clamp and return:**
+4. **Apply direction-aware shrinkage:**
 ```python
-result[target] = max(0.0, float(preds[i]))  # per-90 can't be negative
+# Direction confidence modulates shrinkage — high-confidence predictions
+# get less shrinkage, letting strong directional signals through.
+# If direction head disagrees with regression sign at high confidence (>0.7),
+# the delta sign is flipped.
+base_shrinkage = _METRIC_SHRINKAGE.get(target, DELTA_SHRINKAGE)
+shrinkage = base_shrinkage * (1 - DIRECTION_SHRINKAGE_ALPHA * (dir_conf - 0.5) * 2)
+```
+
+5. **Handle log-scale groups (shooting, crossing):**
+```python
+# For shooting and crossing, targets are log-ratios: log(post/pre)
+# This better handles low-count metrics where ratios are more meaningful
+if group_name in LOG_SCALE_GROUPS:
+    pred = pre_val * exp(delta)  # convert log-ratio back to absolute
+```
+
+6. **Clamp and return:**
+```python
+result[target] = max(0.0, float(pred))  # per-90 can't be negative
 ```
 
 #### Glossary
-- **Model groups**: Shooting (2 outputs), Passing (7 outputs), Dribbling (1 output), Defending (3 outputs) = 13 total.
-- **Feature subsets**: Each group only uses relevant features (shooting uses 16 of 46, dribbling uses 7). 3 additional interaction features are shared across groups.
-- **`build_feature_dict()`**: Assembles the 46-key input dictionary from player stats, team rankings, and position averages.
+- **Model groups**: Shooting (2 outputs: xG, shots), Creation (3 outputs: xA, chances_created, touches_opp_box), Distribution (3 outputs: passes, pass%, long_balls), Crossing (1 output: crosses), Dribbling (1 output: dribbles), Defending (3 outputs: clearances, interceptions, poss_won_final_3rd) = 13 total.
+- **Dual-head architecture**: Each group model has two output branches — a regression head (predicts the magnitude of change) and a direction head (predicts probability of increase). Direction confidence modulates shrinkage.
+- **Ensemble averaging**: 3 copies of each group model trained with different random seeds. Predictions are averaged at inference time to reduce variance.
+- **Direction-aware shrinkage**: When direction confidence is high, shrinkage is loosened (up to ±30%). When direction head disagrees with regression sign at >70% confidence, the delta sign is flipped.
+- **Log-scale targets**: Shooting and crossing groups use log(post/pre) as targets during training, better handling low-count metrics.
+- **Feature subsets**: Each group only uses relevant features from the 94D vector (e.g., shooting uses ~41 features, dribbling uses fewer).
+- **`build_feature_dict()`**: Assembles the 94-key input dictionary from player stats, team rankings, league means, position one-hot, and minutes-per-match.
 
 ---
 
@@ -570,8 +620,40 @@ confidence = "red" if weight < 0.3 else "amber" if weight <= 0.7 else "green"
 
 - **Framework**: `unittest` (Python standard library), run via `pytest`
 - **Command**: `python -m pytest tests/ -v`
-- **Total tests**: 488
-- **Test files**: 24
+- **Total tests**: 689
+- **Test files**: 27
+
+### Test Files
+
+| # | Test File | Tests | Primary Module Under Test |
+|---|---|---|---|
+| 1 | `test_fuzzy_matching.py` | 96 | `power_rankings.py` — team name resolution |
+| 2 | `test_model_improvements.py` | 56 | `transfer_portal.py` — model architecture improvements |
+| 3 | `test_opta_client.py` | 53 | `opta_client.py` — Opta Power Rankings |
+| 4 | `test_reep_registry.py` | 51 | `reep_registry.py` — team alias registry |
+| 5 | `test_rolling_windows.py` | 48 | `rolling_windows.py` — per-90 rolling averages |
+| 6 | `test_training_pipeline.py` | 47 | `training_pipeline.py` — end-to-end training |
+| 7 | `test_statsbomb_client.py` | 32 | `statsbomb_client.py` — StatsBomb spatial data |
+| 8 | `test_paper_heuristic.py` | 32 | `adjustment_models.py` — heuristic fallback |
+| 9 | `test_whoscored_client.py` | 31 | WhoScored data client |
+| 10 | `test_sofascore_client.py` | 25 | `sofascore_client.py` — Sofascore API |
+| 11 | `test_league_registry.py` | 21 | `league_registry.py` — league ID mappings |
+| 12 | `test_backtester.py` | 20 | `backtester.py` — post-hoc validation |
+| 13 | `test_backtest_validator.py` | 20 | `backtest_validator.py` — UI backtest page |
+| 14 | `test_improvements.py` | 18 | Cross-cutting improvement tests |
+| 15 | `test_new_features.py` | 17 | New feature integration tests |
+| 16 | `test_pitch_viz.py` | 16 | `pitch_viz.py` — shot maps, pass networks |
+| 17 | `test_shortlist_scorer.py` | 15 | `shortlist_scorer.py` — K-means ranking |
+| 18 | `test_hot_or_not.py` | 14 | `hot_or_not.py` — rumour validator UI |
+| 19 | `test_diagnostics.py` | 13 | `diagnostics.py` — system diagnostics page |
+| 20 | `test_footballdata_client.py` | 12 | `footballdata_client.py` — match CSVs |
+| 21 | `test_clubelo_client.py` | 11 | `clubelo_client.py` — European Elo |
+| 22 | `test_elo_router.py` | 10 | `elo_router.py` — Elo source routing |
+| 23 | `test_worldelo_client.py` | 9 | `worldfootballelo_client.py` — non-European Elo |
+| 24 | `test_cache.py` | 8 | `cache.py` — diskcache wrapper |
+| 25 | `test_adjustment_training.py` | 7 | `adjustment_models.py` — Ridge model training |
+| 26 | `test_player_pizza.py` | 6 | `player_pizza.py` — radar chart |
+| 27 | `test_app_no_training.py` | 1 | `app.py` — startup without trained model |
 
 ### Coverage Table
 
@@ -623,7 +705,7 @@ confidence = "red" if weight < 0.3 else "amber" if weight <= 0.7 else "green"
 1. **`paper_heuristic_predict()`** — The default prediction engine every user sees. Wrong coefficients = wrong predictions for every transfer query. ✅ **NOW TESTED (32 tests added in this PR)**
 2. **`rolling_windows.blend_features()`** — Prior blending for low-data players. Bugs here silently corrupt feature inputs to every prediction.
 3. **`power_rankings.get_change_in_relative_ability()`** — Computes the key input (change_relative_ability) that drives 60%+ of prediction magnitude. A sign error here flips all predictions.
-4. **`transfer_portal.build_feature_dict()`** — Assembles the 46-key feature dict that feeds the TF model. Wrong key mapping = wrong model input = wrong prediction, silently.
+4. **`transfer_portal.build_feature_dict()`** — Assembles the 94-key feature dict that feeds the TF model. Wrong key mapping = wrong model input = wrong prediction, silently.
 5. **`rolling_windows.compute_confidence()`** — Controls the RAG badge shown to users. Wrong thresholds = misleading confidence indicators.
 
 ### Test Implementation
@@ -690,9 +772,20 @@ The #1 highest-risk untested function (`paper_heuristic_predict`) now has compre
 
 1. **Every stat is per-90, always.** The entire system stores, computes, and displays statistics normalized to 90 minutes of play. Raw totals exist only momentarily inside `_parse_stats()`. If you see a raw total anywhere else, it's a bug. This matters because per-90 makes players with different minutes comparable — a player with 0.31 xG per 90 in 2700 minutes is directly comparable to one with 0.31 xG per 90 in 900 minutes (though the second has lower confidence).
 
-2. **There are two prediction paths, and most users see the heuristic.** `TransferPortalModel.predict()` checks `is_trained()` first. If no `.keras` files exist in `data/models/` (which is the default — training requires running the full pipeline with live Sofascore data), it silently falls back to `paper_heuristic_predict()`. The heuristic is not a placeholder — it faithfully implements the paper's methodology with calibrated coefficients. Any change to prediction logic must consider both paths.
+2. **There are two prediction paths, and most users see the heuristic.** `TransferPortalModel.predict()` checks `is_trained()` first. If no `.keras` files exist in `data/models/` (which is the default — training requires running the full pipeline with live Sofascore data), it silently falls back to `paper_heuristic_predict()`. The heuristic is not a placeholder — it faithfully implements the paper's methodology with calibrated coefficients. Any change to prediction logic must consider both paths. The trained path uses 6 model groups with dual-head output (regression + direction), ensemble averaging (3 seeds), direction-aware shrinkage, and log-scale targets for shooting/crossing — none of which apply to the heuristic path.
 
 3. **Team name resolution is a 5-priority fuzzy cascade.** Data comes from 4 sources (Sofascore, Opta, ClubElo, WorldFootballElo) that all use different team names. "ManCity" (ClubElo) must match "Manchester City" (Sofascore). The resolution in `power_rankings.py` uses: exact match → accent-normalized → extreme abbreviation lookup (502 entries covering 51 leagues) → substring containment → SequenceMatcher ratio. False positive prevention (e.g., "Orlando City SC" must NOT match "Man City") is enforced by minimum overlap ratios. 531 ClubElo entries are mapped. For inference, Opta's `domestic_league_name` + `country` compound key resolves league codes unambiguously. REEP dynamic aliases provide ~45K automatic mappings at runtime.
+
+### Neural Network Architecture (Current)
+
+The TF model has evolved significantly from the original paper. Key architectural details:
+
+- **6 model groups** (shooting, creation, distribution, crossing, dribbling, defending) — not 4. Each group is a separate Keras model with its own feature subset sliced from the 94D input vector.
+- **Dual-head output**: Each group model outputs both a regression prediction (scaled delta or log-ratio) and a direction prediction (P(post > pre) via sigmoid). The direction head's loss is weighted at 25% of the regression loss.
+- **94-dimensional feature vector**: 13 player core metrics + 10 additional enrichment metrics + 4 team/league abilities + 2 raw Elo + 2 REEP metadata + 26 team-position averages + 3 interaction terms + 3 relative abilities + 13 league-normalised + 13 league mean ratios + 4 position one-hot + 1 minutes-per-match.
+- **Ensemble averaging**: 3 models per group (different random seeds), averaged at inference for reduced variance.
+- **Direction-aware shrinkage**: High-confidence direction predictions loosen shrinkage (up to ±30%); when direction head disagrees with regression sign at >70% confidence, the delta sign is flipped.
+- **Log-scale targets**: Shooting and crossing groups use log(post/pre) as targets, better handling low-count metrics where ratios are more meaningful than absolute deltas.
 
 ### Where Bugs Are Most Likely to Occur and Why
 
