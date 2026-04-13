@@ -8,6 +8,53 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 
 ---
 
+## ELI5 — Explain Like I'm Five
+
+Imagine you have a favourite football player — say a striker who scores loads
+of goals for their team.  Now imagine they move to a completely different club
+in a different country.  Will they still score as many goals?  More?  Fewer?
+
+TransferScope is like a **crystal ball for football scouts**.  It looks at
+everything about the player (how many shots they take, how many passes they
+make, how good they are at dribbling) and everything about the two clubs
+(how strong each team is, what style they play, how tough their league is).
+Then it runs a kind of **football simulation** — almost like a very clever
+video game that plays thousands of invisible matches — to guess what the
+player's stats will look like at the new club.
+
+It doesn't stop there.  It also builds a **shopping list**: "If you want
+someone who plays like this striker, here are the ten closest matches in
+the world, sorted by how similar they are."  Think of it like a football
+sticker album where you can search by playing style instead of by name.
+
+Under the hood it uses a neural network (a brain made of maths) that has
+learned from hundreds of real transfers what tends to happen when players
+change teams.  It adjusts for everything — team quality, league difficulty,
+playing position, tactical system — so the guess is as realistic as
+possible.
+
+---
+
+## TL;DR — Key Facts at a Glance
+
+- **Purpose:** Predict how a player's per-90 stats change after a transfer; generate scouting shortlists; simulate transfer impact.
+- **Built for Arsenal scouting** but works for any player → any club → any league (51 leagues, 34 countries).
+- **94-feature input vector** per prediction (player stats, team/league context, Elo, positional, interaction terms).
+- **6 TensorFlow model groups:** shooting, creation, distribution, crossing, dribbling, defending — each with tailored architecture, loss, and feature subset.
+- **Dual-head architecture:** regression head (scaled delta) + direction head (P(post > pre) via sigmoid). LayerNorm for shooting, BatchNorm for others.
+- **Ensemble of 3** models per group (different seeds), predictions averaged at inference.
+- **Heuristic fallback:** when no trained weights exist, `paper_heuristic_predict()` uses calibrated coefficients from the paper.
+- **Power Rankings:** Opta (inference) / ClubElo + WorldFootballElo (training) — dynamic 0-100 normalized Elo.
+- **Adjustment models:** 13 sklearn LinearRegression (team) + 13 Ridge per position (player, degree-3 polynomial).
+- **Training pipeline:** temporal split, player overlap removal, stability anchoring via non-transfer samples, xG zero-masking for shooting group.
+- **Per-metric shrinkage** (0.80–0.96) calibrated on backtest residuals + direction-aware modulation (±30%).
+- **Shortlist scoring:** K-means clustering + weighted Euclidean distance + 15% same-cluster bonus.
+- **All stats are per-90** — never raw totals.
+- **Stack:** Python 3.12, Streamlit, TensorFlow, sklearn, pandas, Sofascore API, diskcache.
+- **689 tests across 27 files** — all mocked, no network calls.
+
+---
+
 ## Stack — locked, do not deviate
 
 | Layer | Tool |
@@ -78,7 +125,7 @@ transferscope/
 │   │   └── player_pizza.py            # Player pizza/radar chart component
 │   ├── constants.py                    # Shared metric labels for UI display
 │   └── theme.py                        # "Tactical Noir" dark theme + shared UI components
-├── tests/                              # 488 tests across 24 files (all mocked, no network)
+├── tests/                              # 689 tests across 27 files (all mocked, no network)
 ├── scripts/
 │   └── check_training_ready.py         # Utility to verify training readiness
 └── data/
@@ -338,6 +385,92 @@ register (~430K players).
 
 Each group slices internally — external API unchanged.
 
+### Architecture overrides (`_GROUP_ARCH_OVERRIDES`)
+
+| Group | Hidden units | Dropout | L2 | Huber δ |
+|---|---|---|---|---|
+| shooting | [64, 32] | 0.40 | 4e-4 | 0.3 |
+| creation | [64, 32] | 0.35 | 3e-4 | 0.8 |
+| distribution | [96, 48] | 0.35 | 3e-4 | 1.5 |
+| crossing | [32, 16] | 0.40 | 4e-4 | 0.3 |
+| dribbling | [64, 32] | 0.40 | 3e-4 | *(default 1.0)* |
+| defending | [96, 48] | 0.35 | *(default 1e-4)* | *(default 1.0)* |
+
+Default (no override): hidden=[128, 64], dropout=0.3, l2=1e-4, huber_delta=1.0.
+
+### Dual-head architecture
+
+Each group model has two output heads sharing the same backbone:
+1. **Regression head** — Linear × N targets. Predicts scaled delta (or log-ratio
+   for `LOG_SCALE_GROUPS`).
+2. **Direction head** — Sigmoid × N targets. Predicts P(post > pre) via binary
+   cross-entropy. Direction loss weight = **0.25** (25% of regression loss).
+
+Normalization: **LayerNorm** for the shooting group (avoids batch-stat bias from
+~17% zero-weighted xG samples). **BatchNorm** for all other groups.
+
+### Key constants (`transfer_portal.py`)
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `FEATURE_DIM` | 94 | Total input features per sample |
+| `DELTA_SHRINKAGE` | 0.90 | Global fallback shrinkage multiplier |
+| `DELTA_CLIP_MULTIPLIER` | 2.0 | Cap absolute delta to ±2× pre-transfer value |
+| `DELTA_CLIP_FLOOR` | 1.0 | Conservative fallback clip floor for unknown metrics |
+| `DIRECTION_SHRINKAGE_ALPHA` | 0.30 | Max ±30% modulation of shrinkage by direction confidence |
+| `DIRECTION_FLIP_THRESHOLD` | 0.70 | Confidence threshold to flip direction of delta |
+| `_LOG_EPS` | 0.05 | Floor to avoid log(0); stabilizes near-zero xG |
+| `LOG_SCALE_GROUPS` | {"shooting", "crossing"} | Groups using log-ratio instead of scaled delta |
+| `ENSEMBLE_SIZE` | 3 | Number of models per group (different seeds) |
+| `_MIN_MINUTES_THRESHOLD` | 450 | Minimum career minutes to include in predictions |
+| Direction loss weight | 0.25 | Binary cross-entropy weight relative to regression |
+
+### Per-metric shrinkage (`_METRIC_SHRINKAGE`)
+
+Calibrated on backtest residuals. Well-predicted metrics get looser shrinkage;
+weakly-predicted metrics get heavier shrinkage to suppress noise.
+
+| Metric | Shrinkage |
+|---|---|
+| `successful_dribbles` | 0.80 |
+| `interceptions` | 0.82 |
+| `possession_won_final_3rd` | 0.83 |
+| `expected_assists` | 0.85 |
+| `chances_created` | 0.85 |
+| `touches_in_opposition_box` | 0.86 |
+| `expected_goals` | 0.88 |
+| `shots` | 0.88 |
+| `clearances` | 0.88 |
+| `accurate_long_balls` | 0.90 |
+| `successful_passes` | 0.90 |
+| `pass_completion_pct` | 0.92 |
+| `successful_crosses` | 0.96 |
+
+Fallback: `DELTA_SHRINKAGE = 0.90` for metrics not in this dict.
+
+### Per-metric clip floors (`_METRIC_CLIP_FLOORS`)
+
+For small metrics (pre_val near zero), clip floors prevent unreasonably large
+absolute deltas. Values calibrated at ~P95–P99 of observed transfer deltas.
+
+| Metric | Clip floor |
+|---|---|
+| `expected_goals` | 0.30 |
+| `expected_assists` | 0.20 |
+| `shots` | 1.20 |
+| `successful_dribbles` | 1.00 |
+| `successful_crosses` | 0.80 |
+| `touches_in_opposition_box` | 2.50 |
+| `successful_passes` | 15.00 |
+| `pass_completion_pct` | 10.00 |
+| `accurate_long_balls` | 1.80 |
+| `chances_created` | 0.80 |
+| `clearances` | 1.60 |
+| `interceptions` | 0.80 |
+| `possession_won_final_3rd` | 0.80 |
+
+Fallback: `DELTA_CLIP_FLOOR = 1.0` for unknown metrics.
+
 Auto-loads trained weights from `data/models/` when available (`is_trained()` checks
 for `.keras` files + `feature_scaler.pkl`). Falls back to `paper_heuristic_predict()`
 with a warning when no trained model exists.
@@ -362,7 +495,10 @@ with a warning when no trained model exists.
 
 ## Adjustment models
 
-**Team adjustment — 13 sklearn Ridge regression models (3 features each), one per metric:**
+**Team adjustment — `TeamAdjustmentModel`: 13 sklearn LinearRegression models (3 features each), one per metric:**
+
+`_MIN_SAMPLES = 10` — fewer than 10 samples for a metric → identity fallback (predict 0 adjustment).
+
 ```
 target = β₀
        + β₁ * team_relative_feature  (paper A.1 z_{i,j}: (team_per90 - league_mean) / league_mean)
@@ -375,7 +511,12 @@ target = β₀
 Scale team-position features by the same percentage change as the team-level adjustment.
 Example: if team xG drops 40%, striker xG and CB xG both drop 40%.
 
-**Player adjustment — 13 models per position:**
+**Player adjustment — `PlayerAdjustmentModel`: 13 sklearn Ridge(alpha=10.0) models per position (degree-3 polynomial):**
+
+`_PLAYER_MIN_SAMPLES = 30` — fewer samples → identity fallback.
+Uses Ridge instead of OLS to handle multicollinearity from polynomial features (cra, cra², cra³).
+`change_relative_ability` normalized by `/50.0` (mapping -50..+50 to -1..+1).
+
 ```
 target = intercept
        + b1 * player_previous_per90
@@ -472,6 +613,46 @@ Available filters: age, market value, minutes played, position, league, club Pow
 
 ---
 
+## Training pipeline (`training_pipeline.py`, ~3117 lines)
+
+### Key constants
+
+| Constant | Value | Purpose |
+|---|---|---|
+| `_WARMUP_EPOCHS` | 10 | Linear warmup from `_WARMUP_START_LR` to `_TARGET_LR` |
+| `_TARGET_LR` | 5e-4 | Peak learning rate after warmup |
+| `_MIN_LR` | 1e-5 | Cosine-decay floor after warmup |
+| `_MAX_EPOCHS` | 150 | Maximum training epochs per group |
+| EarlyStopping `patience` | 15 | Epochs without improvement before stopping |
+| EarlyStopping `min_delta` | 0.001 | Minimum val-loss improvement to count |
+| `_TRANSFER_BUDGET` | 0.65 | Fraction of total loss budget allocated to transfer samples |
+
+### Training strategy
+
+- **Temporal split** — samples sorted by transfer date; most recent go to test.
+  NOT random — prevents future-leaking.
+- **Player overlap removal** — any player appearing in the test set is removed
+  from train and val to prevent identity leaking.
+- **Stability anchoring** — non-transfer samples (same player, same club,
+  different season) are discovered via `discover_non_transfers()` and mixed into
+  training data. They receive `(1 - _TRANSFER_BUDGET)` share of the loss budget
+  via sample weighting.
+- **xG zero-masking** — for the shooting group, outfield players with xG=0 in
+  the feature vector have their sample weight set to 0.0. This prevents the model
+  from learning to predict "everyone scores 0" from sparse xG data. Goalkeepers
+  are excluded from this mask.
+
+### File line counts (approximate)
+
+| File | Lines |
+|---|---|
+| `transfer_portal.py` | ~1578 |
+| `training_pipeline.py` | ~3117 |
+| `adjustment_models.py` | ~1053 |
+| `sofascore_client.py` | ~1632 |
+
+---
+
 ## Key decisions already made — do not revisit
 
 - Sofascore not FotMob: team search, transfer history, season selector, league-wide stats, team-position averages
@@ -504,10 +685,10 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Pizza/radar charts for player profiles via player_pizza.py component
 - Backtest Validator page: validates predictions against actual post-transfer outcomes
 - Diagnostics page: system health, data source status, cache info
-- 89-feature vector: 13 core + 10 additional + 4 ability + 2 raw Elo + 2 REEP + 3 relative ability + 13 league norm + 13 league mean ratio + 26 team-pos + 3 interaction
+- 94-feature vector: 13 core + 10 additional + 4 team/league ability + 2 raw Elo + 2 REEP + 26 team-pos + 3 interaction + 3 relative ability + 13 league norm + 13 league mean ratio + 4 position one-hot + 1 minutes-per-match
 - Raw Elo features preserve absolute cross-league strength that 0-100 normalization loses
 - TeamAdjustmentModel uses 3 features per metric: team_relative_feature (paper A.1 z_{i,j}), from_ra, to_ra
-- Per-group architecture overrides: dribbling 64→32 + dropout 0.4 (smaller than default 128→64) to combat overfitting with 14 features / 1 target
+- Per-group architecture overrides (_GROUP_ARCH_OVERRIDES): shooting [64,32] dropout=0.40 l2=4e-4 huber=0.3; creation [64,32] dropout=0.35 l2=3e-4 huber=0.8; distribution [96,48] dropout=0.35 l2=3e-4 huber=1.5; crossing [32,16] dropout=0.40 l2=4e-4 huber=0.3; dribbling [64,32] dropout=0.4 l2=3e-4; defending [96,48] dropout=0.35. Default (no override): [128,64] dropout=0.3 l2=1e-4 huber=1.0
 
 ---
 
