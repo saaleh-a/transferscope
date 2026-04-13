@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote as _url_quote
@@ -173,20 +174,27 @@ _PERCENTAGE_METRICS: frozenset[str] = frozenset(
 _BASE_URL = "https://api.sofascore.com/api/v1"
 _HEADERS: dict[str, str] = {
     "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Origin": "https://www.sofascore.com",
     "Referer": "https://www.sofascore.com/",
+    "Origin": "https://www.sofascore.com",
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
 }
 
 _REQUEST_TIMEOUT = int(os.environ.get("SOFASCORE_REQUEST_TIMEOUT", "10"))
 _MAX_RETRIES = int(os.environ.get("SOFASCORE_MAX_RETRIES", "3"))
-_RETRY_BASE_DELAY = float(os.environ.get("SOFASCORE_RETRY_BASE_DELAY", "0"))
+_RETRY_BASE_DELAY = float(os.environ.get("SOFASCORE_RETRY_BASE_DELAY", "1.0"))
 _RETRYABLE_STATUS_CODES = {403, 429, 500, 502, 503, 504}
 _DEFAULT_INTER_REQUEST_DELAY = float(
-    os.environ.get("SOFASCORE_INTER_REQUEST_DELAY", "0")
+    os.environ.get("SOFASCORE_INTER_REQUEST_DELAY", "0.5")
 )
 
 # ── Adaptive rate-limiting state ─────────────────────────────────────────────
@@ -216,8 +224,9 @@ def set_inter_request_delay(seconds: float) -> None:
 def _bump_adaptive_delay() -> None:
     """Increase the adaptive inter-request delay after a rate-limit hit."""
     global _adaptive_delay
+    # Floor at 0.5s so multiplying can't stay stuck at zero
     _adaptive_delay = min(
-        _adaptive_delay * _ADAPTIVE_DELAY_MULTIPLIER,
+        max(_adaptive_delay, 0.5) * _ADAPTIVE_DELAY_MULTIPLIER,
         _ADAPTIVE_DELAY_MAX,
     )
     _log.info("Adaptive rate-limit delay increased to %.1fs", _adaptive_delay)
@@ -232,7 +241,8 @@ def _inter_request_delay() -> None:
     if not _has_made_request:
         _has_made_request = True
         return
-    time.sleep(_adaptive_delay)
+    # base delay + small random jitter to avoid predictable patterns
+    time.sleep(_adaptive_delay + random.uniform(0, 0.3))
 
 
 _NEGATIVE_CACHE_TTL = 86400  # 24 hours — cache dead endpoints to avoid re-fetching
@@ -265,11 +275,9 @@ def _get(path: str) -> Optional[dict]:
     _had_transient_failure = False  # Track if failure was due to transient errors (429/5xx/connection)
     for attempt in range(_MAX_RETRIES):
         try:
-            # Adaptive throttle before each outbound request (not on retries
-            # — retry backoff is handled below).  This keeps the overall
-            # request rate low enough to avoid triggering Cloudflare/rate-limits.
-            if attempt == 0:
-                _inter_request_delay()
+            # Adaptive throttle before every outbound request (including
+            # retries) so the bumped delay is honoured immediately.
+            _inter_request_delay()
             global http_call_count
             http_call_count += 1
             resp = _http.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
@@ -277,7 +285,8 @@ def _get(path: str) -> Optional[dict]:
                 _had_transient_failure = True
                 if resp.status_code in (403, 429):
                     _bump_adaptive_delay()
-                delay = _RETRY_BASE_DELAY * (2 ** attempt)  # 1s, 2s, 4s
+                # Exponential backoff: base * 2^attempt + jitter (cap 30s)
+                delay = min(_RETRY_BASE_DELAY * (2 ** attempt), 30.0) + random.uniform(0, 0.5)
                 _log.info(
                     "Sofascore %d on %s — retry %d/%d in %.1fs",
                     resp.status_code, path, attempt + 1, _MAX_RETRIES, delay,
@@ -303,7 +312,8 @@ def _get(path: str) -> Optional[dict]:
                 _http = _stdlib_requests
                 continue
             _had_transient_failure = True  # Connection errors are transient
-            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            # Exponential backoff: base * 2^attempt + jitter (cap 30s)
+            delay = min(_RETRY_BASE_DELAY * (2 ** attempt), 30.0) + random.uniform(0, 0.5)
             _log.info(
                 "Sofascore connection error on %s — retry %d/%d in %.1fs (%s)",
                 path, attempt + 1, _MAX_RETRIES, delay, exc,
