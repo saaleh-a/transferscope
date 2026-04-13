@@ -8,6 +8,37 @@ Built on the methodology from *Dinsdale & Gallagher (2022) — "The Transfer Por
 
 ---
 
+## 🧒 ELI5 (Explain Like I'm 5)
+
+Imagine you have a favourite football player — let's say he plays for a small team and scores lots of goals. Now imagine a really big, famous club wants to buy him. Will he still score lots of goals at the new club? Maybe he'll score *more* because the big club creates more chances. Or maybe he'll score *fewer* because the league is harder. It's really hard to know!
+
+TransferScope is like a crystal ball for football transfers. You tell it "I want to move this player to that club" and it uses maths to figure out what will happen to his stats. It knows how strong every team is, how hard every league is, and what kind of football each team plays. It's looked at thousands of real transfers to learn the patterns.
+
+It's also like a scout's assistant. If your best player gets injured and you need a replacement, TransferScope searches through players in 51 different leagues around the world to find the ones who play most like him. And if you see a transfer rumour on the news, you can type it in and get a quick "thumbs up" or "thumbs down" based on the maths.
+
+The "brain" of the system is a neural network — a computer programme that learns from data, like how you learn from experience. It has six specialist brains: one for shooting, one for creating chances, one for passing, one for crossing, one for dribbling, and one for defending. Each brain only looks at the stats it needs, which makes it really good at its job.
+
+---
+
+## ⚡ TL;DR
+
+- **What:** Football transfer intelligence platform — predicts how a player's per-90 stats change when they move clubs
+- **How:** 6-group dual-head neural network (TensorFlow) + sklearn adjustment models, trained on thousands of real transfers
+- **Input:** 94-dimensional feature vector per player (stats, team strength, league quality, position, Elo ratings, etc.)
+- **Output:** Predicted post-transfer per-90 for 13 core metrics (xG, xA, shots, dribbles, crosses, passes, etc.)
+- **Architecture:** Each of 6 groups (shooting, creation, distribution, crossing, dribbling, defending) has its own model with per-group hidden layers, dropout, L2, and Huber loss delta
+- **Direction head:** Each model also predicts P(post > pre) via sigmoid — used for direction-aware shrinkage and sign-flipping
+- **Ensemble:** 3 seeds per group, predictions averaged before post-processing
+- **Training:** 11 default leagues, 5 seasons back, warmup + cosine annealing LR, temporal split with player overlap removal
+- **Data:** Sofascore (stats), ClubElo + WorldFootballElo (Elo), Opta (inference power rankings), StatsBomb (spatial), REEP (~45K team aliases)
+- **Frontend:** 6 Streamlit pages — Transfer Impact, Shortlist Generator, Hot or Not, Backtest Validator, Diagnostics, About
+- **Tests:** 689 automated tests across 27 files, all mocked (no network needed)
+- **Coverage:** 51 leagues across 5 continents
+- **Shrinkage:** DELTA_SHRINKAGE=0.90 global, plus per-metric shrinkage (0.80 for dribbles → 0.96 for crosses)
+- **Fallback:** Paper heuristic prediction when no trained model exists
+
+---
+
 ## What It Does
 
 TransferScope answers three questions every sporting director asks:
@@ -75,7 +106,7 @@ Paste a transfer rumour. Get an instant HOT / TEPID / NOT verdict backed by pred
 │                           │                                  │
 │  ┌────────────────────────▼───────────────────────────────┐  │
 │  │         TensorFlow Neural Network (the brain)           │  │
-│  │   4 model groups · 46 input features · 13 predictions   │  │
+│  │   6 model groups · 94 input features · 13 predictions   │  │
 │  └────────────────────────┬───────────────────────────────┘  │
 │                           │                                  │
 │  ┌────────────────────────▼───────────────────────────────┐  │
@@ -142,7 +173,7 @@ transferscope/
 │   │   └── player_pizza.py            # Player pizza/radar chart
 │   ├── constants.py                    # Shared metric display labels
 │   └── theme.py                        # The dark "Tactical Noir" visual design
-├── tests/                              # 488 automated tests (no internet needed)
+├── tests/                              # 689 automated tests (no internet needed)
 ├── scripts/
 │   └── check_training_ready.py         # Training readiness verification
 ├── data/
@@ -187,10 +218,10 @@ The app opens at `http://localhost:8501`. No API keys required — all data sour
 ### Run Tests
 
 ```bash
-python -m pytest tests/ -v
+python -m pytest tests/ --ignore=tests/test_seleniumbase.py -v
 ```
 
-All 488 tests use mocked API responses, so they run offline with no network calls.
+All 689 tests use mocked API responses, so they run offline with no network calls.
 
 ---
 
@@ -199,10 +230,12 @@ All 488 tests use mocked API responses, so they run offline with no network call
 | Source | What it gives us | Plain English |
 |---|---|---|
 | **Sofascore** | Player stats, team rosters, transfer history, seasons, match logs | "How many goals/assists/passes did this player make?" |
-| **ClubElo** | Elo ratings for ~600 European clubs | "How strong is this European club right now?" |
-| **WorldFootballElo** | Elo ratings for clubs worldwide | "How strong is this Brazilian/MLS/Saudi club?" |
+| **Opta Power Rankings** | Team strength rankings (inference only) | "How strong is this team right now?" (used for live predictions) |
+| **ClubElo** | Elo ratings for ~600 European clubs (training/historical) | "How strong was this European club back then?" |
+| **WorldFootballElo** | Elo ratings for clubs worldwide (training/historical) | "How strong was this Brazilian/MLS/Saudi club?" |
 | **REEP Register** | Team alias mappings (~45K clubs worldwide) | "What other names does this club go by?" |
 | **StatsBomb** | Spatial data — shot locations, pass networks, heatmaps | "Where on the pitch does this player operate?" |
+| **WhoScored** | Spatial data fallback when StatsBomb doesn't cover the match | "Backup pitch visualisation data" |
 | **football-data.co.uk** | Match-level CSVs for coefficient calibration | "How do league playing styles compare?" |
 
 All API calls are routed through a local cache (`backend/data/cache.py`). Player stats cache for 1 day, search results for 7 days, Elo ratings for 1 day. This means the app stays fast and doesn't repeatedly hit external servers. REEP team aliases cache for 7 days.
@@ -266,7 +299,7 @@ Any league available on Sofascore can be added by extending the league registry.
 | K-means shortlist scoring | Cluster candidates by playing style, 15% same-cluster bonus, weighted Euclidean distance | Finds replacements with similar playing profiles, not just similar raw numbers |
 | Shortlist rate-limit protection | 1.5s inter-league delay, Big 5 default, player's own league first | Prevents Sofascore 403/429 errors that caused 0 results when scanning too many leagues |
 | None-passthrough filters | Candidates with unknown age/minutes pass through filters instead of being excluded | Sparse API data shouldn't silently drop valid candidates |
-| Per-group feature subsets | Shooting 19, Passing 28, Dribbling 10, Defending 16 features (46 total including 3 interaction features) | Each model group only sees relevant features, reducing noise |
+| Per-group feature subsets | Shooting 41, Creation 37, Distribution 32, Crossing 26, Dribbling 26, Defending 36 features (94 total) | Each model group only sees relevant features, reducing noise |
 | 3-step team name matching | Exact → accent-normalized → fuzzy (502 abbreviation aliases + 531 ClubElo mappings + dynamic REEP aliases) | Reliably matches team names across ClubElo, WorldFootballElo, and Sofascore |
 | Streamlit | Fast to build; sufficient for a personal tool | Web app framework that gets us a UI without a separate frontend team |
 | diskcache | Local tool, SQLite is enough | Simple on-disk cache, no need for a database server |
@@ -274,6 +307,87 @@ Any league available on Sofascore can be added by extending the league registry.
 | StatsBomb spatial data | Shot maps, pass networks, heatmaps in Transfer Impact | Visual context beyond raw statistics |
 | Coefficient calibration | football-data.co.uk match CSVs refine style coefficients | Data-driven coefficient tuning, not just defaults |
 | All stats per-90 | Consistent, comparable, position-agnostic | Fair comparisons regardless of minutes played |
+| Dual-head output | Regression (scaled delta) + direction (sigmoid P(post>pre)) per metric | Direction head catches sign errors and modulates shrinkage |
+| Direction-aware shrinkage | DELTA_SHRINKAGE=0.90, modulated ±30% by direction confidence | High-confidence direction signals get less conservative shrinkage |
+| Log-scale targets | Shooting and crossing groups use log-ratio targets | Multiplicative changes are more natural for count-based stats |
+| Ensemble averaging | 3 seeds per group, averaged before post-processing | Reduces variance and single-seed bias |
+| Non-transfer samples | 35% of training budget is same-club controls | Stabilises learning by anchoring on no-change baseline |
+
+---
+
+## Neural Network Architecture
+
+TransferScope uses a **6-group dual-head neural network**. Each group specialises in a different type of football output:
+
+| Group | Metrics | Hidden Layers | Dropout | L2 | Huber δ | Normalisation |
+|-------|---------|---------------|---------|-----|---------|---------------|
+| **Shooting** | xG, shots | 64 → 32 | 0.40 | 4e-4 | 0.3 | LayerNorm |
+| **Creation** | xA, chances created, touches in opp box | 64 → 32 | 0.35 | 3e-4 | 0.8 | BatchNorm |
+| **Distribution** | passes, pass completion %, long balls | 96 → 48 | 0.35 | 3e-4 | 1.5 | BatchNorm |
+| **Crossing** | crosses | 32 → 16 | 0.40 | 4e-4 | 0.3 | BatchNorm |
+| **Dribbling** | dribbles | 64 → 32 | 0.40 | 3e-4 | 1.0 | BatchNorm |
+| **Defending** | clearances, interceptions, possession won | 96 → 48 | 0.35 | 1.0 | BatchNorm |
+
+> **In plain English:** Instead of one big brain that tries to predict everything, there are six specialist brains. The "shooting brain" only thinks about goals and shots. The "creation brain" only thinks about assists and chance-making. This specialisation makes each brain better at its job. The shooting brain even uses a different kind of maths (LayerNorm instead of BatchNorm) because shooting stats need special handling.
+
+### Feature Vector (94 dimensions)
+
+Each player is described by a 94-number fingerprint:
+
+| Block | Count | What it captures |
+|-------|-------|-----------------|
+| Core per-90 metrics | 13 | The player's actual stats per 90 min |
+| Additional per-90 metrics | 10 | Enrichment stats (duels won %, recoveries, etc.) |
+| Team/league abilities | 4 | How strong the current and target teams/leagues are |
+| Raw Elo scores | 2 | Current and target club Elo ratings |
+| REEP metadata | 2 | Player height (cm) and age |
+| Team-position per-90 | 26 | What players in this position typically do at both clubs (13 × 2) |
+| Interaction features | 3 | Ability gap, gap², league gap |
+| Relative dominance | 3 | How dominant each team is in their league |
+| League-normalised stats | 13 | Player stats divided by league average |
+| League mean ratios | 13 | Ratio of target league mean to source league mean |
+| Position one-hot | 4 | F, M, D, or G |
+| Minutes per match | 1 | Starter vs substitute indicator |
+
+### Post-Processing Pipeline
+
+After the neural network produces raw predictions, several safety mechanisms are applied:
+
+1. **Inverse scaling** — Convert from StandardScaler space back to per-90
+2. **Direction-aware shrinkage** — `DELTA_SHRINKAGE=0.90` modulated ±30% based on direction head confidence (`DIRECTION_SHRINKAGE_ALPHA=0.30`)
+3. **Direction gating** — If the direction head says P(post > pre) < 0.30 but the regression says positive delta (or vice versa), flip the sign (`DIRECTION_FLIP_THRESHOLD=0.70`)
+4. **Per-metric shrinkage** — Additional metric-specific shrinkage (dribbles: 0.80, interceptions: 0.82, xA: 0.85, ... crosses: 0.96)
+5. **Delta clipping** — Clip to plausible ranges using per-metric floors calibrated from historical P95-P99 distributions
+
+---
+
+## Training Pipeline
+
+The training pipeline (`backend/models/training_pipeline.py`, ~3,117 lines) runs end-to-end:
+
+```
+1. Discover transfers    →  Scan 11 leagues × 5 seasons, find all transfers with ≥450 min pre/post
+2. Discover non-transfers →  Find same-club controls (35% of training budget)
+3. Build feature matrices →  94D feature vectors + 13D label vectors for each sample
+4. Temporal split         →  Train/Val/Test split by date (removes player overlap)
+5. Train adjustment models →  13 LinearRegression (team) + 4×13 Ridge (player by position)
+6. Train neural network   →  6 group models × 3 ensemble seeds
+7. Backtest              →  Evaluate on held-out test set
+```
+
+**Key training hyperparameters:**
+- LR schedule: Linear warmup (10 epochs, 1e-5 → 5e-4) then cosine annealing (to 1e-5 over 150 epochs)
+- EarlyStopping: patience=15, min_delta=0.001
+- Batch size: 32
+- Validation split: 15%
+- xG zero-masking: Samples missing xG data get zero weight in shooting group only
+
+**Run training:**
+```bash
+python -m backend.models.training_pipeline --leagues ENG1,ESP1,GER1 --seasons-back 5
+```
+
+**CLI flags:** `--skip-discovery`, `--skip-build`, `--skip-training`, `--val-ratio`, `--test-ratio`, `--api-delay`
 
 ---
 
