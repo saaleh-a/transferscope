@@ -568,7 +568,7 @@ The direction head is used during inference for direction-aware shrinkage (see �
 > - Each brain makes two predictions: "how much will this stat change?" (regression) and "will it go up or down?" (direction). When both heads agree, we're more confident.
 > - **Dense layer** = a layer of artificial neurons. The width varies by group (e.g. 64→32 for shooting, 96→48 for distribution). Each neuron looks at the group's inputs and learns to focus on certain patterns.
 > - **ReLU activation** = "if the answer is negative, just output zero; otherwise output the answer." This helps the network learn non-linear patterns (like "moving up 30 power ranking points affects stats differently than moving up 5").
-> - **Dropout 30%** = during training, randomly turn off 30% of neurons (preceded by BatchNormalization to stabilize each layer's inputs). This is like studying by covering up parts of your notes — it forces the model to not rely too heavily on any single piece of information and makes it better at generalizing.
+> - **Dropout (35–40%)** = during training, randomly turn off 35–40% of neurons (varies by group; preceded by normalization to stabilize each layer's inputs). This is like studying by covering up parts of your notes — it forces the model to not rely too heavily on any single piece of information and makes it better at generalizing.
 > - **Linear output** = the final prediction is just a number (the predicted per-90 value), with no cap or floor.
 
 ### 8.2 Input Features (94D feature vector, per-group slicing)
