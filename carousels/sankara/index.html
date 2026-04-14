@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1080" />
+  <title>Thomas Sankara — 10-Slide Instagram Carousel</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<!--
+  PHOTO VARIANT
+  ─────────────
+  Each slide has class="slide slide-N" by default (no-photo mode).
+  Add "with-photo" to any slide to activate its .photo-slot.
+  Put your image inside: <img src="your-photo.jpg" alt="…" />
+  See README.md for sourcing guidance.
+
+  EXPORT
+  ──────
+  Open in Chrome → 1080px window width → DevTools → Capture full-page screenshot
+  OR: print each .slide individually to PDF at 1080×1350 (see README.md).
+-->
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SLIDE 1 — COVER
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-1">
+
+  <!-- Diagonal corner accents -->
+  <div class="diag-block diag-tr"></div>
+  <div class="diag-block diag-bl" style="background:var(--gold); opacity:0.90;"></div>
+
+  <!-- Large ghost character -->
+  <div class="bg-num">S</div>
+
+  <!-- Photo slot (activate with .with-photo on parent) -->
+  <div class="photo-slot" data-label="Photo placeholder — Sankara portrait"></div>
+  <div class="photo-overlay"></div>
+
+  <div class="content">
+    <div class="label">Thomas Sankara</div>
+
+    <h1 class="display" style="margin-bottom: 6px;">
+      BURKINA<br>FASO,<br><span class="red">1983.</span>
+    </h1>
+
+    <div class="gap-md"></div>
+    <div class="gold-rule"></div>
+    <p class="gold-note">He sold the presidential jet. Planted trees instead.</p>
+
+    <div class="gap-md"></div>
+    <p class="body" style="max-width: 820px;">
+      He ran a country for <strong>4 years, 3 months</strong>.
+      No foreign debt. No luxury cars. No airbrushed statues.
+    </p>
+
+    <div class="gap-md"></div>
+    <div class="stamp">Africa's most radical president</div>
+  </div>
+
+  <div class="footer">
+    <span class="slide-num">01 / 10</span>
+    <span class="account">@s7.exe</span>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SLIDE 2 — WHO HE WAS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-2 light">
+
+  <div class="diag-block diag-tr" style="background: var(--ink); opacity:0.06;"></div>
+  <div class="bg-num" style="right:-40px; bottom:-80px;">33</div>
+
+  <!-- Thick top bar -->
+  <div style="position:absolute; top:0; left:0; right:0; height:10px; background:var(--red); z-index:5;"></div>
+
+  <div class="content">
+    <div class="label">Who he was</div>
+    <div class="gap-sm"></div>
+
+    <h2 class="headline">
+      Born<br>1949,<br>Yako.
+    </h2>
+
+    <div class="gap-md"></div>
+    <div class="rule-thick"></div>
+    <div class="gap-sm"></div>
+
+    <p class="body">
+      Army captain. Musician. Read Che Guevara
+      and Franz Fanon. Became president at <strong>33</strong>.
+      Flew his own plane to summits.
+    </p>
+
+    <div class="gap-lg"></div>
+    <div class="gold-rule"></div>
+    <p class="gold-note" style="color: #b89000;">
+      Called himself "a soldier of the people."
+    </p>
+
+    <div class="gap-md"></div>
+    <p class="body-sm">
+      He refused the title of "Your Excellency." Ministers called him
+      <em>comrade.</em>
+    </p>
+  </div>
+
+  <div class="footer">
+    <span class="slide-num">02 / 10</span>
+    <span class="account">@s7.exe</span>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SLIDE 3 — AUSTERITY AT THE TOP
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-3">
+
+  <div class="diag-block diag-bl" style="background: var(--red);"></div>
+  <div class="bg-num" style="right:-60px; top:180px; font-size:480px;">5</div>
+
+  <!-- Horizontal stripe across mid-section -->
+  <div style="position:absolute; top:580px; left:0; right:0; height:5px; background:var(--gold); opacity:0.6; z-index:4;"></div>
+
+  <div class="content">
+    <div class="kicker">Austerity started at the top</div>
+    <h2 class="headline" style="font-size:118px;">
+      MINISTERS<br>DROVE<br>RENAULT 5s.
+    </h2>
+
+    <div class="gap-lg"></div>
+    <div class="gold-rule"></div>
+    <p class="gold-note">His salary: $450 / month. Published.</p>
+
+    <div class="gap-md"></div>
+    <p class="body">
+      No air conditioning in government offices. No business-class flights.
+      No expense accounts. The Renault 5 was the cheapest car
+      on the Burkinabé market. That was the point.
+    </p>
+
+    <div class="gap-md"></div>
+    <p class="body-sm">
+      First act: sell the government's Mercedes fleet.
+    </p>
+  </div>
+
+  <div class="footer">
+    <span class="slide-num">03 / 10</span>
+    <span class="account">@s7.exe</span>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SLIDE 4 — VACCINATIONS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-4 light">
+
+  <!-- Photo slot — optional portrait or health-worker photo -->
+  <div class="photo-slot" style="top:0; right:0; width:480px; height:600px;"
+       data-label="Photo placeholder — health workers / children"></div>
+  <div class="photo-overlay"></div>
+
+  <div style="position:absolute; top:0; left:0; right:0; height:8px; background:var(--gold); z-index:5;"></div>
+
+  <div class="content">
+    <div class="label">Health</div>
+    <div class="gap-sm"></div>
+
+    <div class="stat">2.5<span class="stat-unit" style="font-size:60px; color: var(--ink);">M</span></div>
+    <h3 class="subhead" style="font-size:68px; margin-top:4px;">
+      children vaccinated<br>in 15 days.
+    </h3>
+
+    <div class="gap-lg"></div>
+    <div class="gold-rule" style="background:#b89000;"></div>
+    <p class="gold-note" style="color:#b89000;">No foreign NGOs. Local workers, local logistics.</p>
+
+    <div class="gap-md"></div>
+    <p class="body">
+      Meningitis. Yellow fever. Measles.
+      All three campaigns ran simultaneously.
+      The WHO called it <strong>impossible.</strong>
+    </p>
+
+    <div class="gap-md"></div>
+    <div class="stamp" style="border-color:var(--red); color:var(--red);">1984</div>
+  </div>
+
+  <div class="footer">
+    <span class="slide-num">04 / 10</span>
+    <span class="account">@s7.exe</span>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SLIDE 5 — FOOD SOVEREIGNTY
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-5">
+
+  <div class="diag-block diag-tr" style="background:var(--gold); opacity:0.85;"></div>
+
+  <!-- Halftone band at bottom -->
+  <div style="position:absolute; bottom:0; left:0; right:0; height:200px;
+              background: repeating-linear-gradient(
+                to right,
+                rgba(248,197,24,0.06) 0px, rgba(248,197,24,0.06) 1px,
+                transparent 1px, transparent 26px
+              ); z-index:2;"></div>
+
+  <div class="content">
+    <div class="kicker">Food sovereignty</div>
+    <div class="gap-sm"></div>
+
+    <div class="quote" style="font-size:82px; margin-bottom:0;">
+      "He who feeds you<br>controls you."
+    </div>
+
+    <div class="gap-lg"></div>
+    <div class="gold-rule"></div>
+    <p class="gold-note">Burkina Faso went from deficit to surplus.</p>
+
+    <div class="gap-md"></div>
+    <p class="body">
+      Refused international food aid.
+      Grew wheat in the Sahel instead.
+      Taught farmers irrigation techniques.
+      Called dependency <strong>the first enemy.</strong>
+    </p>
+
+    <div class="gap-md"></div>
+    <p class="body-sm">
+      "Imperialism is a force that oppresses us from outside,
+      but there is also an enemy within."
+    </p>
+  </div>
+
+  <div class="footer">
+    <span class="slide-num">05 / 10</span>
+    <span class="account">@s7.exe</span>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SLIDE 6 — WOMEN'S RIGHTS
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-6 light">
+
+  <div style="position:absolute; top:0; left:0; width:12px; height:100%; background:var(--red); z-index:5;"></div>
+
+  <div class="content" style="padding-left: 30px;">
+    <div class="label">Women</div>
+    <h2 class="headline" style="font-size:104px;">
+      BEFORE<br>MOST OF<br>THE WORLD.
+    </h2>
+
+    <div class="gap-md"></div>
+    <div class="gold-rule" style="background:#b89000;"></div>
+    <p class="gold-note" style="color:#b89000;">1984. Four years in power.</p>
+
+    <div class="gap-md"></div>
+
+    <div class="list-item">
+      <span class="bullet">—</span>
+      <p class="body" style="font-size:32px;">Banned female genital mutilation.</p>
+    </div>
+    <div class="list-item">
+      <span class="bullet">—</span>
+      <p class="body" style="font-size:32px;">Banned forced marriages.</p>
+    </div>
+    <div class="list-item">
+      <span class="bullet">—</span>
+      <p class="body" style="font-size:32px;">Banned polygamy for civil servants.</p>
+    </div>
+    <div class="list-item">
+      <span class="bullet">—</span>
+      <p class="body" style="font-size:32px;">Appointed women to senior cabinet posts.</p>
+    </div>
+    <div class="list-item">
+      <span class="bullet">—</span>
+      <p class="body" style="font-size:32px;">Recruited women into the armed forces.</p>
+    </div>
+
+  </div>
+
+  <div class="footer">
+    <span class="slide-num">06 / 10</span>
+    <span class="account">@s7.exe</span>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SLIDE 7 — DEBT
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-7">
+
+  <div class="diag-block diag-bl" style="background: var(--cream); opacity:0.07;"></div>
+
+  <!-- Vertical red stripe -->
+  <div style="position:absolute; top:0; right:var(--mg-x); width:5px; height:100%; background:var(--red); opacity:0.6; z-index:3;"></div>
+
+  <div class="content">
+    <div class="kicker">Addis Ababa, 1987</div>
+    <div class="gap-sm"></div>
+
+    <div class="quote" style="font-size:74px; line-height:1.02;">
+      "Debt is a cleverly<br>managed reconquest<br>of Africa."
+    </div>
+
+    <div class="gap-md"></div>
+    <div class="rule"></div>
+
+    <p class="body-sm" style="color:var(--grey); font-size:26px;">
+      OAU summit, Addis Ababa. He proposed
+      every African nation refuse repayment. Simultaneously.
+      The hall went silent.
+    </p>
+
+    <div class="gap-md"></div>
+    <div class="gold-rule"></div>
+    <p class="gold-note">No African head of state seconded the motion.</p>
+
+    <div class="gap-md"></div>
+    <p class="body">
+      He said it anyway. On the record.
+      In front of the men who owed the most.
+    </p>
+  </div>
+
+  <div class="footer">
+    <span class="slide-num">07 / 10</span>
+    <span class="account">@s7.exe</span>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SLIDE 8 — THE TREES
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-8 light">
+
+  <div class="bg-num" style="bottom:-60px; left:-80px; font-size:520px;">10M</div>
+
+  <div style="position:absolute; top:0; left:0; right:0; height:8px; background:var(--ink); z-index:5;"></div>
+
+  <div class="content">
+    <div class="label">Environment</div>
+    <div class="gap-sm"></div>
+
+    <div class="stat" style="color:var(--ink); font-size:190px; line-height:0.84;">10M</div>
+    <h3 class="subhead" style="font-size:66px; margin-top:8px;">
+      trees planted.<br>3 years. Shovels.
+    </h3>
+
+    <div class="gap-lg"></div>
+    <div class="gold-rule" style="background:#b89000;"></div>
+    <p class="gold-note" style="color:#b89000;">
+      Stopped the Sahara advancing south.
+    </p>
+
+    <div class="gap-md"></div>
+    <p class="body">
+      No machines. No aid money.
+      Villagers did it themselves, organised by region.
+      The <strong>Great Green Wall</strong> programme
+      traces a direct line back here.
+    </p>
+
+    <div class="gap-md"></div>
+    <p class="body-sm" style="color:#555;">
+      He also banned charcoal burning in the capital.
+      In 1985.
+    </p>
+  </div>
+
+  <div class="footer">
+    <span class="slide-num">08 / 10</span>
+    <span class="account">@s7.exe</span>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SLIDE 9 — THE NAME
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-9">
+
+  <div class="diag-block diag-tr"></div>
+
+  <!-- Horizontal construction lines -->
+  <div style="position:absolute; top:400px; left:0; right:0; height:2px; background:rgba(255,255,255,0.06); z-index:3;"></div>
+  <div style="position:absolute; top:700px; left:0; right:0; height:2px; background:rgba(255,255,255,0.06); z-index:3;"></div>
+
+  <div class="content">
+    <div class="label">1984 — The renaming</div>
+    <div class="gap-sm"></div>
+
+    <h2 class="headline" style="font-size:96px;">
+      UPPER VOLTA<br>WAS A<br>COLONIAL<br>LABEL.
+    </h2>
+
+    <div class="gap-md"></div>
+    <div class="rule"></div>
+    <div class="gap-sm"></div>
+
+    <p class="body">
+      He renamed it <span class="red-block">BURKINA FASO</span>.
+      <br>Two languages. One meaning.
+    </p>
+
+    <div class="gap-md"></div>
+    <div class="gold-rule"></div>
+    <p class="gold-note">Mooré + Dioula: "Land of Upright People."</p>
+
+    <div class="gap-md"></div>
+    <p class="body-sm">
+      He also designed a new flag. New anthem. New currency name.
+      All in the first year.
+    </p>
+  </div>
+
+  <div class="footer">
+    <span class="slide-num">09 / 10</span>
+    <span class="account">@s7.exe</span>
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════
+     SLIDE 10 — CLOSE
+     ═══════════════════════════════════════════════════════════════════ -->
+<div class="slide slide-10 light">
+
+  <div class="bg-num" style="top:-60px; left:-80px; font-size:580px; -webkit-text-stroke:1.5px rgba(0,0,0,0.06);">87</div>
+
+  <!-- Bottom fill strip -->
+  <div style="position:absolute; bottom:0; left:0; right:0; height:10px; background:var(--red); z-index:5;"></div>
+
+  <div class="content">
+    <div class="flex-push"></div>
+
+    <h2 class="headline" style="font-size:102px; color:var(--ink);">
+      OCT 15, 1987.<br>
+      <span style="color:var(--red);">Age 37.</span>
+    </h2>
+
+    <div class="gap-md"></div>
+    <p class="body" style="color:var(--ink);">
+      His guards were bribed.
+      The revolution was four years, three months old.
+      He had refused a bodyguard.
+    </p>
+
+    <div class="gap-lg"></div>
+    <div class="gold-rule" style="background:#b89000;"></div>
+    <p class="gold-note" style="color:#b89000;">
+      Some questions outlive the people who asked them.
+    </p>
+
+    <div class="gap-xl"></div>
+
+    <div style="display:flex; justify-content:space-between; align-items:flex-end;">
+      <div>
+        <div class="stamp" style="border-color:var(--ink); color:var(--ink); transform:rotate(-1.5deg);">
+          Burkina Faso
+        </div>
+        <div class="gap-sm"></div>
+        <p class="body-sm" style="color:#555; font-size:24px;">
+          — thread compiled by
+        </p>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-family:'Barlow Condensed',sans-serif; font-size:56px; font-weight:900;
+                    color:var(--ink); letter-spacing:-0.01em; line-height:1;">
+          @s7.exe
+        </div>
+        <p class="body-sm" style="color:#555; font-size:22px; text-align:right;">
+          football &amp; history
+        </p>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- No footer bar on last slide — attribution is part of the content -->
+
+</div>
+
+</body>
+</html>

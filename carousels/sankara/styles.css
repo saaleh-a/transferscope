@@ -1,0 +1,549 @@
+/* =====================================================================
+   SANKARA CAROUSEL — Design System
+   1080 × 1350 px per slide (Instagram portrait)
+   Fonts  : Barlow Condensed (headlines) · DM Sans (body)
+   Palette: #0A0A0A · #C8102E · #F5C518 · #F0EDE4 · #808080
+   Variants: default = no-photo | add .with-photo to a slide for photo
+   Rule   : every slide carries exactly one gold accent line
+   ===================================================================== */
+
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,300;0,400;0,700;0,900;1,700;1,900&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;1,9..40,300;1,9..40,400&display=swap');
+
+/* ── Design tokens ─────────────────────────────────────────────────── */
+:root {
+  --ink:    #0A0A0A;
+  --red:    #C8102E;
+  --gold:   #F5C518;
+  --cream:  #F0EDE4;
+  --grey:   #808080;
+
+  /* Derived / ghost tokens */
+  --gold-ghost-stroke: rgba(248, 197, 24, 0.08);
+  --grey-ghost-stroke: rgba(128, 128, 128, 0.12);
+
+  /* Slide dimensions */
+  --w:      1080px;
+  --h:      1350px;
+
+  /* Instagram safe margins (≈ 5 %) */
+  --mg-x:   56px;
+  --mg-y:   72px;
+}
+
+/* ── Reset ─────────────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+/* ── Page shell (browser preview) ─────────────────────────────────── */
+body {
+  background: #1c1c1c;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 48px;
+  padding: 48px 24px;
+  font-family: 'DM Sans', sans-serif;
+}
+
+/* ── Slide base ────────────────────────────────────────────────────── */
+.slide {
+  position: relative;
+  width: var(--w);
+  height: var(--h);
+  overflow: hidden;
+  background: var(--ink);
+  color: var(--cream);
+  flex-shrink: 0;
+}
+
+.slide.light {
+  background: var(--cream);
+  color: var(--ink);
+}
+
+/* ── Halftone dot field (global texture layer) ─────────────────────── */
+.slide::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    circle,
+    rgba(128, 128, 128, 0.16) 1.5px,
+    transparent 1.5px
+  );
+  background-size: 26px 26px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ── Content wrapper ───────────────────────────────────────────────── */
+.content {
+  position: absolute;
+  top: var(--mg-y);
+  left: var(--mg-x);
+  right: var(--mg-x);
+  bottom: calc(var(--mg-y) + 60px); /* leave room for footer */
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Typography scale ──────────────────────────────────────────────── */
+
+/* Section label / eyebrow */
+.label {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 20px;
+  font-weight: 400;
+  letter-spacing: 0.20em;
+  text-transform: uppercase;
+  color: var(--grey);
+  margin-bottom: 16px;
+}
+.light .label { color: var(--grey); }
+
+/* Kicker — coloured pre-headline */
+.kicker {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 30px;
+  font-weight: 400;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-bottom: 10px;
+}
+
+/* Headline tiers */
+h1.display {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 160px;
+  font-weight: 900;
+  line-height: 0.88;
+  text-transform: uppercase;
+  letter-spacing: -0.025em;
+}
+
+h2.headline {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 108px;
+  font-weight: 900;
+  line-height: 0.90;
+  text-transform: uppercase;
+  letter-spacing: -0.02em;
+}
+
+h3.subhead {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 76px;
+  font-weight: 700;
+  line-height: 0.94;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+}
+
+/* Body copy */
+p.body {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 36px;
+  font-weight: 300;
+  line-height: 1.50;
+}
+p.body strong { font-weight: 500; }
+p.body em     { font-style: italic; font-weight: 300; }
+
+p.body-sm {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 28px;
+  font-weight: 300;
+  line-height: 1.55;
+  color: var(--grey);
+}
+.light p.body-sm { color: #555; }
+
+/* Stat / big number callout */
+.stat {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 200px;
+  font-weight: 900;
+  line-height: 0.88;
+  letter-spacing: -0.04em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.stat .stat-unit {
+  font-size: 72px;
+  font-weight: 400;
+  letter-spacing: 0em;
+  vertical-align: super;
+}
+
+/* Pull-quote */
+.quote {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-style: italic;
+  font-size: 80px;
+  font-weight: 700;
+  line-height: 0.96;
+  text-transform: uppercase;
+  letter-spacing: -0.01em;
+  border-left: 6px solid var(--red);
+  padding-left: 32px;
+}
+.light .quote { border-left-color: var(--red); }
+
+/* ── Gold rule (one per slide) ─────────────────────────────────────── */
+.gold-rule {
+  width: 100%;
+  height: 3px;
+  background: var(--gold);
+  flex-shrink: 0;
+  margin: 20px 0;
+}
+
+/* Gold text annotation that sits on or near the gold rule */
+.gold-note {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold);
+  margin-top: 10px;
+}
+.light .gold-note { color: #b89000; }
+
+/* ── Colour utilities ──────────────────────────────────────────────── */
+.ink   { color: var(--ink); }
+.red   { color: var(--red); }
+.gold  { color: var(--gold); }
+.grey  { color: var(--grey); }
+
+.bg-red   { background: var(--red); }
+.bg-gold  { background: var(--gold); }
+.bg-ink   { background: var(--ink); }
+.bg-cream { background: var(--cream); }
+
+/* Inline red reverse-highlight */
+.red-block {
+  background: var(--red);
+  color: var(--cream);
+  display: inline;
+  padding: 2px 10px;
+  line-height: 1.2;
+}
+.light .red-block { color: var(--cream); }
+
+/* ── Stamp / wax-seal mark ─────────────────────────────────────────── */
+.stamp {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 4px solid var(--red);
+  color: var(--red);
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  padding: 8px 22px;
+  transform: rotate(-2.5deg);
+}
+.stamp.gold-stamp {
+  border-color: var(--gold);
+  color: var(--gold);
+  transform: rotate(1.5deg);
+}
+.light .stamp {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+/* ── Large ghost number (background decoration) ────────────────────── */
+.bg-num {
+  position: absolute;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 580px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -0.06em;
+  color: transparent;
+  -webkit-text-stroke: 1.5px rgba(128, 128, 128, 0.12);
+  text-stroke: 1.5px rgba(128, 128, 128, 0.12);
+  user-select: none;
+  pointer-events: none;
+  z-index: 2;
+}
+.light .bg-num {
+  -webkit-text-stroke: 1.5px rgba(0, 0, 0, 0.07);
+  text-stroke: 1.5px rgba(0, 0, 0, 0.07);
+}
+
+/* ── Diagonal accent block ─────────────────────────────────────────── */
+.diag-block {
+  position: absolute;
+  background: var(--red);
+  z-index: 3;
+}
+.diag-block.gold { background: var(--gold); }
+.diag-block.ink  { background: var(--ink); }
+.diag-block.cream { background: var(--cream); }
+
+/* Clipped diagonal bar — top right */
+.diag-tr {
+  top: -60px;
+  right: -60px;
+  width: 340px;
+  height: 340px;
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+
+/* Clipped diagonal bar — bottom left */
+.diag-bl {
+  bottom: -60px;
+  left: -60px;
+  width: 260px;
+  height: 260px;
+  clip-path: polygon(0 0, 100% 100%, 0 100%);
+}
+
+/* Full-width diagonal stripe */
+.diag-stripe {
+  width: 100%;
+  height: 90px;
+  clip-path: polygon(0 0, 100% 30px, 100% 100%, 0 60px);
+}
+
+/* ── Horizontal rule / divider ─────────────────────────────────────── */
+.rule {
+  width: 100%;
+  height: 1px;
+  background: rgba(128, 128, 128, 0.3);
+  margin: 16px 0;
+}
+.light .rule { background: rgba(0, 0, 0, 0.15); }
+
+/* Thick rule */
+.rule-thick {
+  width: 80px;
+  height: 5px;
+  background: var(--red);
+  margin: 20px 0;
+}
+.light .rule-thick { background: var(--red); }
+
+/* ── Spacer utility ────────────────────────────────────────────────── */
+.gap-sm { height: 20px; flex-shrink: 0; }
+.gap-md { height: 40px; flex-shrink: 0; }
+.gap-lg { height: 64px; flex-shrink: 0; }
+.gap-xl { height: 96px; flex-shrink: 0; }
+.flex-push { flex: 1; } /* push remaining items to bottom */
+
+/* ── Footer ────────────────────────────────────────────────────────── */
+.footer {
+  position: absolute;
+  bottom: var(--mg-y);
+  left: var(--mg-x);
+  right: var(--mg-x);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 20;
+}
+
+.footer .slide-num {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 19px;
+  font-weight: 300;
+  letter-spacing: 0.14em;
+  color: var(--grey);
+  text-transform: uppercase;
+}
+.light .footer .slide-num { color: #aaa; }
+
+.footer .account {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--gold);
+  text-transform: lowercase;
+}
+.light .footer .account {
+  color: #b89000;
+}
+
+/* ── Photo variant ─────────────────────────────────────────────────── */
+.photo-slot {
+  display: none;
+  position: absolute;
+  z-index: 4;
+  overflow: hidden;
+  background: #222;  /* dark placeholder fill */
+}
+
+.photo-slot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Placeholder label (shown when no src is set) */
+.photo-slot::after {
+  content: attr(data-label);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 22px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.3);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+
+.photo-overlay {
+  display: none;
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    175deg,
+    rgba(10, 10, 10, 0.10) 0%,
+    rgba(10, 10, 10, 0.72) 60%,
+    rgba(10, 10, 10, 0.90) 100%
+  );
+  z-index: 5;
+}
+
+/* Activate photo elements */
+.with-photo .photo-slot    { display: block; }
+.with-photo .photo-overlay { display: block; }
+
+/* When using photo, push content z-index above overlay */
+.with-photo .content { z-index: 12; }
+
+/* =====================================================================
+   Per-slide layout overrides
+   ===================================================================== */
+
+/* ── Slide 1 — Cover ───────────────────────────────────────────────── */
+.slide-1 .content {
+  justify-content: flex-end;
+  padding-bottom: 20px;
+}
+
+.slide-1 .photo-slot {
+  top: 0; left: 0; right: 0;
+  height: 680px;
+}
+
+.slide-1 .bg-num {
+  top: -40px;
+  right: -60px;
+  font-size: 520px;
+  color: transparent;
+  -webkit-text-stroke: 1px var(--gold-ghost-stroke);
+}
+
+/* ── Slide 2 ───────────────────────────────────────────────────────── */
+.slide-2 .bg-num {
+  bottom: -80px;
+  right: -40px;
+}
+
+.slide-2 .content {
+  justify-content: center;
+}
+
+/* ── Slide 3 ───────────────────────────────────────────────────────── */
+.slide-3 .content {
+  justify-content: flex-start;
+  padding-top: 20px;
+}
+
+.slide-3 .bg-num {
+  top: 200px;
+  right: -60px;
+  font-size: 480px;
+}
+
+/* ── Slide 4 ───────────────────────────────────────────────────────── */
+.slide-4 .content {
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.slide-4 .photo-slot {
+  right: 0; top: 0;
+  width: 460px;
+  height: 560px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 10% 100%);
+}
+
+/* ── Slide 5 ───────────────────────────────────────────────────────── */
+.slide-5 .content {
+  justify-content: center;
+}
+
+/* ── Slide 6 ───────────────────────────────────────────────────────── */
+.slide-6 .content {
+  justify-content: center;
+}
+
+.slide-6 .list-item {
+  display: flex;
+  gap: 20px;
+  align-items: baseline;
+  margin-bottom: 28px;
+}
+.slide-6 .list-item .bullet {
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 32px;
+  font-weight: 900;
+  color: var(--red);
+  flex-shrink: 0;
+  width: 30px;
+}
+.slide-6 .list-item p.body {
+  font-size: 32px;
+}
+
+/* ── Slide 7 ───────────────────────────────────────────────────────── */
+.slide-7 .content {
+  justify-content: center;
+}
+
+/* ── Slide 8 ───────────────────────────────────────────────────────── */
+.slide-8 .content {
+  justify-content: flex-start;
+  padding-top: 10px;
+}
+
+.slide-8 .bg-num {
+  bottom: -60px;
+  left: -80px;
+  font-size: 520px;
+}
+
+/* ── Slide 9 ───────────────────────────────────────────────────────── */
+.slide-9 .content {
+  justify-content: center;
+}
+
+/* ── Slide 10 — Close ──────────────────────────────────────────────── */
+.slide-10 .content {
+  justify-content: flex-end;
+  padding-bottom: 20px;
+}
+
+.slide-10 .bg-num {
+  top: -60px;
+  left: -60px;
+  font-size: 600px;
+}
