@@ -292,3 +292,63 @@ Any league available on Sofascore can be added by extending the league registry.
 ## License
 
 This project is for personal and educational use. Not affiliated with Sofascore, ClubElo, or any football club.
+
+---
+
+## Thomas Sankara Poster — `sankara_poster.html`
+
+A self-contained Instagram carousel poster about Thomas Sankara, built in radical street-poster / agitprop aesthetic. No external assets — all CSS and fonts are embedded or use system-font stacks.
+
+### Viewing
+
+Open `sankara_poster.html` directly in any modern browser.  
+Use **← → arrow keys** or the on-screen Prev / Next buttons to navigate the 10 slides.
+
+### Exporting to Instagram-ready PNGs (1080 × 1350 px)
+
+**Option A — Chrome/Chromium headless (recommended)**
+
+```bash
+# Install Playwright (once)
+pip install playwright
+playwright install chromium
+
+# Export all 10 slides as PNGs
+python - <<'EOF'
+import asyncio
+from playwright.async_api import async_playwright
+from pathlib import Path
+
+HTML = Path("sankara_poster.html").resolve().as_uri()
+
+async def export():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        # Wide viewport so nothing overflows; height generous
+        page = await browser.new_page(viewport={"width": 1080, "height": 1500})
+        await page.goto(HTML, wait_until="networkidle")
+        for i in range(10):
+            if i > 0:
+                await page.evaluate("navigate(1)")
+                await page.wait_for_timeout(150)
+            # Screenshot the active slide element — exactly 1080×1350 px
+            el = page.locator(".slide.active")
+            await el.screenshot(path=f"sankara_slide_{i+1:02d}.png")
+            print(f"Saved sankara_slide_{i+1:02d}.png")
+        await browser.close()
+
+asyncio.run(export())
+EOF
+```
+
+**Option B — Chrome DevTools manual screenshot**
+
+1. Open `sankara_poster.html` in Chrome.
+2. Open DevTools → Device Toolbar (`Ctrl+Shift+M` / `Cmd+Shift+M`).
+3. Set custom dimensions: **1080 × 1350**.
+4. Navigate to each slide and use `Ctrl+Shift+P` → "Capture screenshot" (or right-click → "Capture node screenshot" on the slide element).
+
+**Option C — Print to PDF**
+
+Open the file in a browser and `Ctrl+P` → Save as PDF.  
+Each slide is styled with `page-break-after: always` so each slide prints as a separate page at the correct ratio.
