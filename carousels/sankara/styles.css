@@ -1,0 +1,1338 @@
+/* ============================================================
+   SANKARA CAROUSEL — @s7.exe
+   Typography : Barlow Condensed + DM Sans
+   Palette    : #0A0A0A · #C8102E · #F5C518 · #F0EDE4 · #808080
+   Canvas     : 1080 × 1350 px per slide (Instagram Portrait)
+   ============================================================ */
+
+/* ── TOKENS ──────────────────────────────────────────────── */
+:root {
+  --black    : #0A0A0A;
+  --dark     : #0D0D0D;
+  --red      : #C8102E;
+  --gold     : #F5C518;
+  --offwhite : #F0EDE4;
+  --grey     : #808080;
+  --dim      : #444444;
+  --rule     : #1e1e1e;
+
+  --font-display : 'Barlow Condensed', sans-serif;
+  --font-body    : 'DM Sans', sans-serif;
+
+  /* Safe margin for IG UI chrome */
+  --safe : 80px;
+}
+
+/* ── RESET ───────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing  : border-box;
+  margin      : 0;
+  padding     : 0;
+}
+
+body {
+  background  : #141414;
+  display     : flex;
+  flex-direction: column;
+  align-items : center;
+  min-height  : 100vh;
+  font-family : var(--font-body);
+  padding     : 2.5rem 1rem 4rem;
+  color       : var(--offwhite);
+}
+
+/* ── VIEWER CHROME ───────────────────────────────────────── */
+
+.carousel-header {
+  text-align    : center;
+  margin-bottom : 1.8rem;
+}
+
+.carousel-header h1 {
+  font-family   : var(--font-display);
+  font-weight   : 700;
+  font-size     : 1rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color         : var(--grey);
+}
+
+.carousel-viewer {
+  display        : flex;
+  flex-direction : column;
+  align-items    : center;
+  gap            : 1.4rem;
+}
+
+/* The clipping window (1080 × 0.45 = 486px, 1350 × 0.45 = 607.5px) */
+.slide-window {
+  width     : 486px;   /* 1080px × 45% */
+  height    : 607.5px; /* 1350px × 45% */
+  overflow  : hidden;
+  position  : relative;
+  box-shadow: 0 24px 72px rgba(0,0,0,0.8);
+}
+
+/* Full-size stage that gets scaled down */
+.slide-stage {
+  width             : 1080px;
+  height            : 1350px;
+  transform         : scale(0.45);
+  transform-origin  : top left;
+  position          : absolute;
+  top               : 0;
+  left              : 0;
+}
+
+/* ── NAVIGATION ──────────────────────────────────────────── */
+
+.nav-bar {
+  display    : flex;
+  align-items: center;
+  gap        : 1.8rem;
+}
+
+.nav-btn {
+  background   : transparent;
+  border       : 1px solid #333;
+  color        : var(--offwhite);
+  width        : 42px;
+  height       : 42px;
+  cursor       : pointer;
+  font-family  : var(--font-display);
+  font-size    : 1.1rem;
+  transition   : border-color .15s, color .15s;
+  display      : flex;
+  align-items  : center;
+  justify-content: center;
+}
+.nav-btn:hover {
+  border-color: var(--gold);
+  color       : var(--gold);
+}
+
+.nav-counter {
+  font-family   : var(--font-display);
+  font-weight   : 700;
+  font-size     : 1rem;
+  letter-spacing: 0.12em;
+  color         : var(--grey);
+  min-width     : 60px;
+  text-align    : center;
+}
+
+.toolbar {
+  display    : flex;
+  align-items: center;
+  gap        : 1rem;
+}
+
+.toggle-btn {
+  background   : transparent;
+  border       : 1px solid #333;
+  color        : var(--grey);
+  padding      : 7px 16px;
+  cursor       : pointer;
+  font-family  : var(--font-display);
+  font-weight  : 600;
+  font-size    : 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  transition   : all .15s;
+}
+.toggle-btn:hover,
+.toggle-btn.active {
+  border-color: var(--gold);
+  color       : var(--gold);
+}
+
+.hint {
+  font-size    : 0.7rem;
+  color        : #333;
+  font-family  : var(--font-body);
+  text-align   : center;
+  letter-spacing: 0.05em;
+}
+
+/* ── SLIDE BASE ──────────────────────────────────────────── */
+
+.slide {
+  width      : 1080px;
+  height     : 1350px;
+  background : var(--black);
+  position   : relative;
+  overflow   : hidden;
+  display    : none;
+  padding    : var(--safe);
+  color      : var(--offwhite);
+}
+
+.slide.active {
+  display: block;
+}
+
+/* ── SHARED COMPONENTS ───────────────────────────────────── */
+
+/* Gold line — exactly one per slide */
+.gold-line {
+  display   : block;
+  height    : 2px;
+  background: var(--gold);
+}
+
+/* Footer strip */
+.footer {
+  position       : absolute;
+  bottom         : 0;
+  left           : 0;
+  right          : 0;
+  height         : 80px;
+  padding        : 0 var(--safe);
+  display        : flex;
+  align-items    : center;
+  justify-content: space-between;
+  border-top     : 1px solid var(--rule);
+}
+
+.footer-handle {
+  font-family   : var(--font-display);
+  font-weight   : 700;
+  font-size     : 26px;
+  letter-spacing: 0.06em;
+  color         : var(--grey);
+}
+
+.footer-count {
+  font-family   : var(--font-display);
+  font-weight   : 600;
+  font-size     : 18px;
+  letter-spacing: 0.18em;
+  color         : #2a2a2a;
+}
+
+/* Eyebrow / section label */
+.eyebrow {
+  font-family   : var(--font-display);
+  font-weight   : 600;
+  font-size     : 22px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color         : var(--grey);
+  display       : flex;
+  align-items   : center;
+  gap           : 16px;
+  margin-bottom : 48px;
+}
+
+.eyebrow::before {
+  content   : '';
+  display   : inline-block;
+  width     : 28px;
+  height    : 2px;
+  background: var(--red);
+  flex-shrink: 0;
+}
+
+/* Inline red label */
+.badge-red {
+  display      : inline-block;
+  background   : var(--red);
+  color        : var(--offwhite);
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  font-size    : 22px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding      : 4px 14px;
+  vertical-align: middle;
+}
+
+/* Stamp outline */
+.stamp {
+  display      : inline-block;
+  border       : 3px solid var(--red);
+  color        : var(--red);
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  transform    : rotate(-2.5deg);
+}
+
+/* Photo placeholder (shown only in photo mode) */
+.photo-slot {
+  display   : none;
+  position  : absolute;
+  background: #111;
+  border    : 2px dashed #222;
+  overflow  : hidden;
+}
+
+.photo-slot img {
+  width     : 100%;
+  height    : 100%;
+  object-fit: cover;
+  opacity   : 0.55;
+  display   : block;
+}
+
+.photo-slot .photo-caption {
+  position  : absolute;
+  bottom    : 0;
+  left      : 0;
+  right     : 0;
+  padding   : 8px 14px;
+  background: rgba(0,0,0,0.72);
+  font-family: var(--font-body);
+  font-size  : 18px;
+  color      : var(--grey);
+  font-style : italic;
+}
+
+/* Halftone pattern overlay */
+.halftone {
+  position        : absolute;
+  background-image: radial-gradient(
+    circle,
+    currentColor 1.5px,
+    transparent  1.5px
+  );
+  background-size : 16px 16px;
+  opacity         : 0.06;
+  pointer-events  : none;
+  color           : var(--grey);
+}
+
+/* Giant ghost number (background texture) */
+.ghost-num {
+  position      : absolute;
+  font-family   : var(--font-display);
+  font-weight   : 900;
+  color         : #111111;
+  line-height   : 1;
+  user-select   : none;
+  pointer-events: none;
+}
+
+/* ================================================================
+   SLIDE 1 — COVER
+   ================================================================ */
+
+.slide-1 {
+  padding: 0;
+}
+
+.s1-grid {
+  position: absolute;
+  inset    : 0;
+  /* subtle rule grid */
+  background-image:
+    linear-gradient(var(--rule) 1px, transparent 1px),
+    linear-gradient(90deg, var(--rule) 1px, transparent 1px);
+  background-size : 120px 120px;
+  opacity         : 0.35;
+}
+
+.s1-thomas {
+  position     : absolute;
+  top          : 78px;
+  left         : 80px;
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  font-style   : italic;
+  font-size    : 116px;
+  line-height  : 1;
+  color        : var(--red);
+  letter-spacing: -0.01em;
+  z-index      : 2;
+}
+
+.s1-sankara {
+  position     : absolute;
+  top          : 170px;
+  left         : -6px;
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 272px;
+  line-height  : 0.88;
+  color        : var(--offwhite);
+  letter-spacing: -0.04em;
+  z-index      : 2;
+  white-space  : nowrap;
+}
+
+.s1-red-band {
+  position    : absolute;
+  top         : 500px;
+  left        : 0;
+  right       : 0;
+  height      : 118px;
+  background  : var(--red);
+  clip-path   : polygon(0 14%, 100% 0, 100% 86%, 0 100%);
+  display     : flex;
+  align-items : center;
+  padding     : 0 80px;
+  z-index     : 3;
+}
+
+.s1-band-text {
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  font-size    : 40px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color        : var(--offwhite);
+}
+
+.s1-gold-line {
+  position  : absolute;
+  top       : 648px;
+  left      : 80px;
+  width     : 300px;
+  height    : 2px;
+  background: var(--gold);
+  z-index   : 4;
+}
+
+.s1-tagline {
+  position    : absolute;
+  top         : 680px;
+  left        : 80px;
+  right       : 80px;
+  font-family : var(--font-body);
+  font-weight : 300;
+  font-size   : 38px;
+  line-height : 1.45;
+  color       : var(--offwhite);
+  z-index     : 4;
+  max-width   : 700px;
+}
+
+.s1-footer {
+  position       : absolute;
+  bottom         : 0;
+  left           : 0;
+  right          : 0;
+  height         : 80px;
+  padding        : 0 80px;
+  display        : flex;
+  align-items    : center;
+  justify-content: space-between;
+  border-top     : 1px solid var(--rule);
+  z-index        : 4;
+}
+
+/* Photo variant for slide 1 */
+.s1-photo {
+  position  : absolute;
+  inset     : 0;
+  z-index   : 1;
+  display   : none;
+}
+
+.s1-photo img {
+  width     : 100%;
+  height    : 100%;
+  object-fit: cover;
+  opacity   : 0.35;
+}
+
+.s1-photo::after {
+  content   : '';
+  position  : absolute;
+  inset     : 0;
+  background: linear-gradient(
+    180deg,
+    rgba(10,10,10,0.25) 0%,
+    rgba(10,10,10,0.92) 70%
+  );
+}
+
+/* ================================================================
+   SLIDE 2 — THE MAN
+   ================================================================ */
+
+.slide-2 .ghost-num {
+  right    : -48px;
+  top      : 60px;
+  font-size: 720px;
+  color    : #111111;
+  z-index  : 0;
+}
+
+.s2-red-rule {
+  position  : absolute;
+  left      : 80px;
+  top       : 115px;
+  bottom    : 90px;
+  width     : 6px;
+  background: var(--red);
+  z-index   : 1;
+}
+
+.s2-content {
+  position  : absolute;
+  left      : 122px;
+  top       : 115px;
+  right     : 80px;
+  z-index   : 2;
+}
+
+.s2-headline {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 192px;
+  line-height  : 0.86;
+  color        : var(--offwhite);
+  letter-spacing: -0.03em;
+  margin-bottom: 10px;
+}
+
+.s2-headline .accent {
+  color: var(--red);
+}
+
+.s2-sub {
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  font-size    : 48px;
+  letter-spacing: 0.04em;
+  color        : var(--grey);
+  margin-bottom: 18px;
+  text-transform: uppercase;
+}
+
+.s2-gold-line {
+  width        : 240px;
+  height       : 2px;
+  background   : var(--gold);
+  margin-bottom: 52px;
+}
+
+.s2-body {
+  font-family  : var(--font-body);
+  font-size    : 38px;
+  line-height  : 1.55;
+  color        : var(--offwhite);
+  font-weight  : 300;
+  max-width    : 720px;
+}
+
+.s2-body b {
+  font-weight: 500;
+  color      : var(--offwhite);
+}
+
+/* ================================================================
+   SLIDE 3 — THE NAME
+   ================================================================ */
+
+.s3-before-block {
+  position   : absolute;
+  top        : 0;
+  left       : 0;
+  right      : 0;
+  height     : 600px;
+  background : #0E0E0E;
+  clip-path  : polygon(0 0, 100% 0, 100% 91%, 0 100%);
+  padding    : 90px 80px 100px;
+  display    : flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  z-index    : 1;
+}
+
+.s3-before-label {
+  font-family  : var(--font-display);
+  font-weight  : 600;
+  font-size    : 22px;
+  letter-spacing: 0.22em;
+  color        : var(--grey);
+  text-transform: uppercase;
+  margin-bottom: 20px;
+}
+
+.s3-strikeout {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 132px;
+  line-height  : 0.88;
+  color        : #2e2e2e;
+  letter-spacing: -0.02em;
+  position     : relative;
+  display      : inline-block;
+}
+
+.s3-strikeout::after {
+  content   : '';
+  position  : absolute;
+  left      : -8px;
+  right     : -8px;
+  top       : 52%;
+  height    : 7px;
+  background: var(--red);
+  transform : rotate(-2.5deg) translateY(-50%);
+}
+
+.s3-arrow {
+  position     : absolute;
+  top          : 574px;
+  left         : 80px;
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 80px;
+  color        : var(--gold);
+  line-height  : 1;
+  z-index      : 3;
+  letter-spacing: -0.02em;
+}
+
+.s3-after-block {
+  position  : absolute;
+  bottom    : 82px;
+  left      : 80px;
+  right     : 80px;
+  z-index   : 2;
+}
+
+.s3-after-label {
+  font-family  : var(--font-display);
+  font-weight  : 600;
+  font-size    : 22px;
+  letter-spacing: 0.22em;
+  color        : var(--grey);
+  text-transform: uppercase;
+  margin-bottom: 16px;
+}
+
+.s3-after-name {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 132px;
+  line-height  : 0.88;
+  color        : var(--offwhite);
+  letter-spacing: -0.02em;
+  margin-bottom: 32px;
+}
+
+.s3-gold-line {
+  width        : 100%;
+  height       : 2px;
+  background   : var(--gold);
+  margin-bottom: 28px;
+}
+
+.s3-after-sub {
+  font-family: var(--font-body);
+  font-size  : 34px;
+  line-height: 1.5;
+  color      : var(--grey);
+  font-weight: 300;
+}
+
+/* ================================================================
+   SLIDE 4 — THE DEBT
+   ================================================================ */
+
+.s4-bigquote {
+  position      : absolute;
+  top           : 50px;
+  left          : 52px;
+  font-family   : var(--font-display);
+  font-weight   : 900;
+  font-size     : 560px;
+  line-height   : 1;
+  color         : var(--red);
+  opacity       : 0.08;
+  pointer-events: none;
+  user-select   : none;
+  z-index       : 0;
+}
+
+.s4-content {
+  position  : relative;
+  z-index   : 1;
+  padding-top: 170px;
+}
+
+.s4-eyebrow {
+  font-family  : var(--font-display);
+  font-weight  : 600;
+  font-size    : 22px;
+  letter-spacing: 0.22em;
+  color        : var(--grey);
+  text-transform: uppercase;
+  margin-bottom: 52px;
+  display      : flex;
+  align-items  : center;
+  gap          : 16px;
+}
+
+.s4-eyebrow::before {
+  content   : '';
+  display   : inline-block;
+  width     : 28px;
+  height    : 2px;
+  background: var(--red);
+}
+
+.s4-quote {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 96px;
+  line-height  : 0.95;
+  color        : var(--offwhite);
+  letter-spacing: -0.01em;
+  margin-bottom: 28px;
+}
+
+.s4-quote .hl {
+  color: var(--gold);
+}
+
+.s4-attr {
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  font-size    : 26px;
+  letter-spacing: 0.14em;
+  color        : var(--red);
+  text-transform: uppercase;
+  margin-bottom: 58px;
+}
+
+.s4-gold-line {
+  width        : 100%;
+  height       : 2px;
+  background   : var(--gold);
+  margin-bottom: 40px;
+}
+
+.s4-body {
+  font-family: var(--font-body);
+  font-size  : 36px;
+  line-height: 1.6;
+  color      : var(--grey);
+  font-weight: 300;
+  max-width  : 820px;
+}
+
+/* ================================================================
+   SLIDE 5 — WOMEN
+   ================================================================ */
+
+.s5-year-ghost {
+  position      : absolute;
+  right         : -60px;
+  top           : 40px;
+  font-family   : var(--font-display);
+  font-weight   : 900;
+  font-size     : 500px;
+  line-height   : 1;
+  color         : #111111;
+  pointer-events: none;
+  user-select   : none;
+  z-index       : 0;
+}
+
+.s5-content {
+  position  : relative;
+  z-index   : 1;
+}
+
+.s5-eyebrow {
+  font-family  : var(--font-display);
+  font-weight  : 600;
+  font-size    : 22px;
+  letter-spacing: 0.22em;
+  color        : var(--grey);
+  text-transform: uppercase;
+  margin-bottom: 48px;
+  display      : flex;
+  align-items  : center;
+  gap          : 16px;
+}
+
+.s5-eyebrow::before {
+  content   : '';
+  display   : inline-block;
+  width     : 28px;
+  height    : 2px;
+  background: var(--red);
+}
+
+.s5-year {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 210px;
+  line-height  : 0.86;
+  color        : var(--offwhite);
+  letter-spacing: -0.04em;
+  margin-bottom: 10px;
+}
+
+.s5-year-sub {
+  font-family  : var(--font-body);
+  font-size    : 30px;
+  color        : var(--grey);
+  font-weight  : 300;
+  margin-bottom: 60px;
+}
+
+.s5-gold-line {
+  width        : 100%;
+  height       : 2px;
+  background   : var(--gold);
+  margin-bottom: 52px;
+}
+
+.s5-list {
+  list-style    : none;
+  display       : flex;
+  flex-direction: column;
+  gap           : 30px;
+  margin-bottom : 54px;
+}
+
+.s5-list li {
+  font-family : var(--font-body);
+  font-size   : 40px;
+  line-height : 1.3;
+  color       : var(--offwhite);
+  font-weight : 400;
+  display     : flex;
+  align-items : flex-start;
+  gap         : 22px;
+}
+
+.s5-list li::before {
+  content    : '—';
+  color      : var(--red);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.s5-quote {
+  font-family  : var(--font-body);
+  font-size    : 30px;
+  line-height  : 1.55;
+  color        : var(--grey);
+  font-style   : italic;
+  font-weight  : 300;
+  padding-left : 28px;
+  border-left  : 3px solid var(--gold);
+}
+
+/* ================================================================
+   SLIDE 6 — TREES
+   ================================================================ */
+
+.s6-halftone {
+  position        : absolute;
+  top             : 0;
+  right           : 0;
+  width           : 640px;
+  height          : 760px;
+  background-image: radial-gradient(circle, #C8102E 1.5px, transparent 1.5px);
+  background-size : 20px 20px;
+  opacity         : 0.05;
+  pointer-events  : none;
+}
+
+.s6-content {
+  position  : relative;
+  z-index   : 1;
+}
+
+.s6-eyebrow {
+  font-family  : var(--font-display);
+  font-weight  : 600;
+  font-size    : 22px;
+  letter-spacing: 0.22em;
+  color        : var(--grey);
+  text-transform: uppercase;
+  margin-bottom: 68px;
+  display      : flex;
+  align-items  : center;
+  gap          : 16px;
+}
+
+.s6-eyebrow::before {
+  content   : '';
+  display   : inline-block;
+  width     : 28px;
+  height    : 2px;
+  background: var(--red);
+}
+
+.s6-num {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 340px;
+  line-height  : 0.84;
+  color        : var(--offwhite);
+  letter-spacing: -0.05em;
+}
+
+.s6-unit {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 170px;
+  line-height  : 0.84;
+  color        : var(--red);
+  letter-spacing: -0.04em;
+  margin-bottom: 12px;
+}
+
+.s6-label {
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  font-size    : 88px;
+  line-height  : 0.88;
+  color        : var(--offwhite);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 20px;
+}
+
+.s6-gold-line {
+  width        : 380px;
+  height       : 2px;
+  background   : var(--gold);
+  margin-bottom: 44px;
+}
+
+.s6-body {
+  font-family: var(--font-body);
+  font-size  : 35px;
+  line-height: 1.6;
+  color      : var(--grey);
+  font-weight: 300;
+  max-width  : 800px;
+}
+
+/* ================================================================
+   SLIDE 7 — HEALTH
+   ================================================================ */
+
+.s7-content {
+  position  : relative;
+  z-index   : 1;
+}
+
+.s7-eyebrow {
+  font-family  : var(--font-display);
+  font-weight  : 600;
+  font-size    : 22px;
+  letter-spacing: 0.22em;
+  color        : var(--grey);
+  text-transform: uppercase;
+  margin-bottom: 68px;
+  display      : flex;
+  align-items  : center;
+  gap          : 16px;
+}
+
+.s7-eyebrow::before {
+  content   : '';
+  display   : inline-block;
+  width     : 28px;
+  height    : 2px;
+  background: var(--red);
+}
+
+.s7-num {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 280px;
+  line-height  : 0.84;
+  color        : var(--offwhite);
+  letter-spacing: -0.05em;
+}
+
+.s7-label {
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  font-size    : 80px;
+  line-height  : 0.9;
+  color        : var(--gold);
+  letter-spacing: 0.04em;
+  margin-bottom: 16px;
+}
+
+.s7-stamp {
+  display      : inline-block;
+  border       : 3px solid var(--red);
+  color        : var(--red);
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  font-size    : 60px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding      : 10px 28px;
+  transform    : rotate(-2.5deg);
+  margin-bottom: 50px;
+  line-height  : 1;
+}
+
+.s7-gold-line {
+  width        : 100%;
+  height       : 2px;
+  background   : var(--gold);
+  margin-bottom: 44px;
+}
+
+.s7-body {
+  font-family: var(--font-body);
+  font-size  : 36px;
+  line-height: 1.6;
+  color      : var(--grey);
+  font-weight: 300;
+  max-width  : 820px;
+}
+
+/* ================================================================
+   SLIDE 8 — EDUCATION
+   ================================================================ */
+
+.s8-content {
+  position  : relative;
+  z-index   : 1;
+}
+
+.s8-eyebrow {
+  font-family  : var(--font-display);
+  font-weight  : 600;
+  font-size    : 22px;
+  letter-spacing: 0.22em;
+  color        : var(--grey);
+  text-transform: uppercase;
+  margin-bottom: 68px;
+  display      : flex;
+  align-items  : center;
+  gap          : 16px;
+}
+
+.s8-eyebrow::before {
+  content   : '';
+  display   : inline-block;
+  width     : 28px;
+  height    : 2px;
+  background: var(--red);
+}
+
+.s8-progress-nums {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 210px;
+  line-height  : 0.86;
+  letter-spacing: -0.04em;
+  display      : flex;
+  align-items  : baseline;
+  gap          : 24px;
+  margin-bottom: 24px;
+}
+
+.s8-before {
+  color   : #2e2e2e;
+  position: relative;
+}
+
+.s8-before::after {
+  content  : '';
+  position : absolute;
+  top      : 52%;
+  left     : -6px;
+  right    : -6px;
+  height   : 6px;
+  background: var(--red);
+  transform: rotate(-4deg) translateY(-50%);
+}
+
+.s8-arrow {
+  font-size: 80px;
+  color    : var(--gold);
+}
+
+.s8-after {
+  color: var(--offwhite);
+}
+
+.s8-bar-wrap {
+  height        : 14px;
+  background    : #1a1a1a;
+  width         : 100%;
+  margin-bottom : 8px;
+  position      : relative;
+  overflow      : hidden;
+}
+
+.s8-bar-before {
+  position  : absolute;
+  left      : 0;
+  top       : 0;
+  bottom    : 0;
+  width     : 13%;
+  background: #333;
+}
+
+.s8-bar-after {
+  position  : absolute;
+  left      : 0;
+  top       : 0;
+  bottom    : 0;
+  width     : 73%;
+  background: var(--gold);
+  opacity   : 0.88;
+}
+
+.s8-bar-labels {
+  display        : flex;
+  justify-content: space-between;
+  font-family    : var(--font-display);
+  font-size      : 22px;
+  color          : var(--grey);
+  letter-spacing : 0.1em;
+  margin-bottom  : 48px;
+}
+
+.s8-gold-line {
+  width        : 100%;
+  height       : 2px;
+  background   : var(--gold);
+  margin-bottom: 44px;
+}
+
+.s8-body {
+  font-family: var(--font-body);
+  font-size  : 36px;
+  line-height: 1.6;
+  color      : var(--grey);
+  font-weight: 300;
+  max-width  : 820px;
+}
+
+.s8-body b {
+  font-weight: 500;
+  color      : var(--offwhite);
+}
+
+/* ================================================================
+   SLIDE 9 — OCTOBER 15
+   ================================================================ */
+
+.s9-date-ghost {
+  position      : absolute;
+  top           : 50%;
+  left          : 50%;
+  transform     : translate(-50%, -50%);
+  font-family   : var(--font-display);
+  font-weight   : 900;
+  font-size     : 200px;
+  line-height   : 0.9;
+  color         : #101010;
+  text-align    : center;
+  white-space   : nowrap;
+  letter-spacing: -0.03em;
+  pointer-events: none;
+  user-select   : none;
+  z-index       : 0;
+}
+
+.s9-content {
+  position: relative;
+  z-index : 1;
+}
+
+.s9-eyebrow {
+  font-family  : var(--font-display);
+  font-weight  : 600;
+  font-size    : 22px;
+  letter-spacing: 0.22em;
+  color        : var(--grey);
+  text-transform: uppercase;
+  margin-bottom: 56px;
+  display      : flex;
+  align-items  : center;
+  gap          : 16px;
+}
+
+.s9-eyebrow::before {
+  content   : '';
+  display   : inline-block;
+  width     : 28px;
+  height    : 2px;
+  background: var(--red);
+}
+
+.s9-date {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 118px;
+  line-height  : 0.88;
+  color        : var(--red);
+  letter-spacing: -0.02em;
+  margin-bottom: 16px;
+}
+
+.s9-age {
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  font-size    : 44px;
+  letter-spacing: 0.16em;
+  color        : var(--grey);
+  text-transform: uppercase;
+  margin-bottom: 72px;
+}
+
+.s9-gold-line {
+  width        : 100%;
+  height       : 2px;
+  background   : var(--gold);
+  margin-bottom: 56px;
+}
+
+.s9-body {
+  font-family: var(--font-body);
+  font-size  : 42px;
+  line-height: 1.55;
+  color      : var(--offwhite);
+  font-weight: 300;
+  max-width  : 840px;
+}
+
+.s9-coda {
+  margin-top : 48px;
+  font-family: var(--font-body);
+  font-size  : 30px;
+  line-height: 1.55;
+  color      : var(--dim);
+  font-weight: 300;
+  font-style : italic;
+  max-width  : 720px;
+}
+
+/* ================================================================
+   SLIDE 10 — OUTRO
+   ================================================================ */
+
+.s10-open-mark {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 180px;
+  line-height  : 0.5;
+  color        : var(--red);
+  margin-bottom: 24px;
+}
+
+.s10-quote {
+  font-family  : var(--font-display);
+  font-weight  : 900;
+  font-size    : 132px;
+  line-height  : 0.9;
+  color        : var(--offwhite);
+  letter-spacing: -0.02em;
+  margin-bottom: 28px;
+}
+
+.s10-quote .hl {
+  color: var(--gold);
+}
+
+.s10-attr {
+  font-family  : var(--font-display);
+  font-weight  : 600;
+  font-size    : 30px;
+  letter-spacing: 0.14em;
+  color        : var(--grey);
+  text-transform: uppercase;
+  margin-bottom: 72px;
+}
+
+.s10-gold-line {
+  width        : 100%;
+  height       : 2px;
+  background   : var(--gold);
+  margin-bottom: 52px;
+}
+
+.s10-cta {
+  font-family: var(--font-body);
+  font-size  : 34px;
+  line-height: 1.55;
+  color      : var(--grey);
+  font-weight: 300;
+}
+
+.s10-handle {
+  font-family  : var(--font-display);
+  font-weight  : 700;
+  font-size    : 52px;
+  letter-spacing: 0.05em;
+  color        : var(--offwhite);
+  margin-top   : 20px;
+}
+
+/* ================================================================
+   PHOTO MODE
+   Active when <body class="photo-mode"> or toggle is ON
+   ================================================================ */
+
+body.photo-mode .photo-slot {
+  display: block;
+}
+
+body.photo-mode .s1-photo {
+  display: block;
+}
+
+/* ================================================================
+   PRINT / EXPORT
+   Print each slide on its own page at 1080 × 1350
+   ================================================================ */
+
+@media print {
+  @page {
+    size  : 1080px 1350px;
+    margin: 0;
+  }
+
+  body {
+    background: none;
+    padding   : 0;
+    margin    : 0;
+  }
+
+  .carousel-header,
+  .nav-bar,
+  .toolbar,
+  .hint {
+    display: none !important;
+  }
+
+  .carousel-viewer {
+    gap: 0;
+  }
+
+  .slide-window {
+    width     : 1080px;
+    height    : 1350px;
+    overflow  : visible;
+    box-shadow: none;
+    page-break-after: always;
+    break-after     : page;
+  }
+
+  .slide-stage {
+    transform       : none !important;
+    width           : 1080px;
+    height          : 1350px;
+    position        : relative;
+    page-break-after: always;
+    break-after     : page;
+  }
+
+  /* Show all slides, each on its own page */
+  .slide {
+    display: block !important;
+  }
+}
