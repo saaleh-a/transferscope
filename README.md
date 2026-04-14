@@ -308,18 +308,21 @@ Use **← → arrow keys** or the on-screen Prev / Next buttons to navigate the 
 
 **Option A — Chrome/Chromium headless (recommended)**
 
-```bash
-# Install Playwright (once)
-pip install playwright
-playwright install chromium
+> Run all commands from the **repository root** (the directory containing `sankara_poster.html`).
 
-# Export all 10 slides as PNGs
+```bash
+# Install Playwright into a virtual environment (recommended)
+python -m pip install playwright
+python -m playwright install chromium
+
+# Export all 10 slides as PNGs (run from repo root)
 python - <<'EOF'
 import asyncio
-from playwright.async_api import async_playwright
 from pathlib import Path
+from playwright.async_api import async_playwright
 
-HTML = Path("sankara_poster.html").resolve().as_uri()
+# Resolves relative to cwd — run this script from the repo root
+HTML = (Path.cwd() / "sankara_poster.html").resolve().as_uri()
 
 async def export():
     async with async_playwright() as p:
