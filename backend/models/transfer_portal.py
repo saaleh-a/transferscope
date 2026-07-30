@@ -689,21 +689,41 @@ class TransferPortalModel:
         self.fitted = True
         return histories
 
-    def is_trained(self) -> bool:
-        """Return True if saved TF weights and feature scaler both exist."""
+    @staticmethod
+    def missing_groups() -> List[str]:
+        """Return the names of MODEL_GROUPS with no saved weights on disk."""
         model_dir = os.path.join(_MODELS_DIR, "transfer_portal")
+        if not os.path.isdir(model_dir):
+            return list(MODEL_GROUPS)
+        missing = []
+        for group_name in MODEL_GROUPS:
+            single = os.path.join(model_dir, f"{group_name}.keras")
+            ensemble = os.path.join(model_dir, f"{group_name}_seed0.keras")
+            if not os.path.exists(single) and not os.path.exists(ensemble):
+                missing.append(group_name)
+        return missing
+
+    def is_trained(self) -> bool:
+        """Return True only if the feature scaler and *every* group model exist.
+
+        A partial set of weights is treated as untrained.  Requiring only one
+        group would let the app report itself as trained while the metrics
+        belonging to the missing groups silently produced nothing — which is
+        exactly what happened when the 4-group architecture was split into 6
+        and the stale artefacts were left on disk.
+        """
         scaler_path = os.path.join(_MODELS_DIR, "feature_scaler.pkl")
         if not os.path.exists(scaler_path):
             return False
-        if not os.path.isdir(model_dir):
+        missing = self.missing_groups()
+        if missing:
+            _log.warning(
+                "Trained weights incomplete — missing group models: %s. "
+                "Treating model as untrained; run the training pipeline to rebuild.",
+                ", ".join(missing),
+            )
             return False
-        # Check at least one .keras file exists (single or ensemble)
-        for group_name in MODEL_GROUPS:
-            if os.path.exists(os.path.join(model_dir, f"{group_name}.keras")):
-                return True
-            if os.path.exists(os.path.join(model_dir, f"{group_name}_seed0.keras")):
-                return True
-        return False
+        return True
 
     def predict(self, feature_dict: Dict[str, float]) -> Dict[str, float]:
         """Predict per-90 metrics for a single transfer scenario.
@@ -739,7 +759,26 @@ class TransferPortalModel:
         # Build full feature vector and optionally scale it
         full_X = self._prepare_features(feature_dict).reshape(1, -1)
         if self._scaler is not None:
+            expected = getattr(self._scaler, "n_features_in_", full_X.shape[1])
+            if expected != full_X.shape[1]:
+                _log.error(
+                    "Feature scaler expects %d features but the current code builds "
+                    "%d (FEATURE_DIM). The saved artefacts in data/models/ are stale "
+                    "relative to this code — retrain with "
+                    "`python -m backend.models.training_pipeline --skip-build`. "
+                    "Falling back to heuristics for this prediction.",
+                    expected, full_X.shape[1],
+                )
+                return self._heuristic_fallback(feature_dict)
             full_X = self._scaler.transform(full_X)
+            # Neutralise features that were constant during training.  A
+            # zero-variance column gives StandardScaler scale_=1, so a live
+            # non-zero value would pass through unscaled into a network that
+            # only ever saw the constant — a large out-of-distribution input.
+            # Forcing the scaled value to 0 reproduces the training constant.
+            var = getattr(self._scaler, "var_", None)
+            if var is not None:
+                full_X[:, np.asarray(var) == 0.0] = 0.0
 
         # Pre-compute column indices for each group's feature subset
         all_keys = _feature_keys()

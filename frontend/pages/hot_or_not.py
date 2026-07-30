@@ -22,6 +22,7 @@ from backend.models.transfer_portal import (
 )
 from frontend.theme import (
     section_header, confidence_badge, verdict_display, player_info_card, COLORS,
+    score_ring, tone_for_value,
 )
 
 from frontend.constants import METRIC_LABELS as _LABELS
@@ -393,8 +394,29 @@ def render():
 
     st.markdown("---")
 
-    # Big verdict display
-    verdict_display(verdict, player_name, current_team, target_club)
+    # Big verdict display, with a score ring quantifying the verdict strength
+    verdict_col, ring_col = st.columns([3, 1])
+    with verdict_col:
+        verdict_display(verdict, player_name, current_team, target_club)
+    with ring_col:
+        if has_real_data:
+            n_strong = strong_up_count + strong_down_count
+            st.markdown(
+                score_ring(
+                    avg_change,
+                    label="net change",
+                    sublabel=(
+                        f"{n_strong} of {len(pct_changes)} metrics move &gt;"
+                        f"{_MIXED_SIGNAL_THRESHOLD:.0f}%"
+                    ),
+                    tone=tone_for_value(
+                        avg_change,
+                        good_above=_VERDICT_THRESHOLD,
+                        bad_below=-_VERDICT_THRESHOLD,
+                    ),
+                ),
+                unsafe_allow_html=True,
+            )
 
     if mixed_override_active:
         st.info(

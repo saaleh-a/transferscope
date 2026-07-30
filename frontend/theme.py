@@ -8,6 +8,8 @@ intent — no generic defaults.
 
 from __future__ import annotations
 
+import math
+
 import streamlit as st
 
 # ── Color palette ────────────────────────────────────────────────────────────
@@ -177,6 +179,121 @@ def player_info_card(
         f"</div>",
         unsafe_allow_html=True,
     )
+
+
+# ── Scalar display components ────────────────────────────────────────────────
+
+
+def _tone_color(tone: str) -> str:
+    """Map a semantic tone name to a Tactical Noir accent colour."""
+    return {
+        "positive": COLORS["accent_green"],
+        "warning": COLORS["accent_amber"],
+        "negative": COLORS["accent_crimson"],
+        "info": COLORS["accent_blue"],
+        "neutral": COLORS["text_secondary"],
+    }.get(tone, COLORS["text_secondary"])
+
+
+def tone_for_value(
+    value: float, good_above: float = 5.0, bad_below: float = -5.0,
+) -> str:
+    """Classify a signed value into a semantic tone."""
+    if value >= good_above:
+        return "positive"
+    if value <= bad_below:
+        return "negative"
+    return "warning"
+
+
+def badge(text: str, tone: str = "neutral") -> str:
+    """Return HTML for a small pill badge (use inside st.markdown).
+
+    Tones: positive, warning, negative, info, neutral.
+    """
+    color = _tone_color(tone)
+    return (
+        f'<span style="display:inline-flex; align-items:center; gap:0.4em; '
+        f'padding:0.25em 0.7em; border-radius:999px; font-size:0.75rem; '
+        f'font-weight:600; letter-spacing:0.04em; text-transform:uppercase; '
+        f'color:{color}; background:{color}1A; border:1px solid {color}40;">'
+        f'<span style="width:6px; height:6px; border-radius:50%; '
+        f'background:{color};"></span>{text}</span>'
+    )
+
+
+def score_ring(
+    value: float,
+    label: str = "",
+    sublabel: str = "",
+    vmin: float = -30.0,
+    vmax: float = 30.0,
+    size: int = 132,
+    tone: str | None = None,
+) -> str:
+    """Return a self-contained SVG circular gauge as an HTML string.
+
+    ``value`` is displayed verbatim (signed, one decimal); the arc length is
+    the position of ``value`` within ``[vmin, vmax]``.  No JavaScript and no
+    charting library — safe to drop into ``st.markdown(..., unsafe_allow_html=True)``.
+    """
+    span = (vmax - vmin) or 1.0
+    frac = (value - vmin) / span
+    frac = min(1.0, max(0.0, frac))
+
+    color = _tone_color(tone if tone is not None else tone_for_value(value))
+
+    radius = size / 2 - 10
+    circumference = 2 * math.pi * radius
+    dash = circumference * frac
+    centre = size / 2
+
+    label_html = ""
+    if label:
+        label_html = (
+            f'<text x="{centre}" y="{centre + 20}" text-anchor="middle" '
+            f'fill="{COLORS["text_secondary"]}" font-size="10" '
+            f'letter-spacing="1.2" font-family="DM Sans, sans-serif">'
+            f'{label.upper()}</text>'
+        )
+
+    sub_html = ""
+    if sublabel:
+        sub_html = (
+            f'<div style="margin-top:0.4em; font-size:0.72rem; '
+            f'color:{COLORS["text_muted"]}; text-align:center;">{sublabel}</div>'
+        )
+
+    return (
+        f'<div style="display:flex; flex-direction:column; align-items:center;">'
+        f'<svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" '
+        f'role="img" aria-label="{label or "score"}: {value:+.1f}">'
+        f'<circle cx="{centre}" cy="{centre}" r="{radius}" fill="none" '
+        f'stroke="{COLORS["border"]}" stroke-width="8"/>'
+        f'<circle cx="{centre}" cy="{centre}" r="{radius}" fill="none" '
+        f'stroke="{color}" stroke-width="8" stroke-linecap="round" '
+        f'stroke-dasharray="{dash:.2f} {circumference:.2f}" '
+        f'transform="rotate(-90 {centre} {centre})"/>'
+        f'<text x="{centre}" y="{centre + 4}" text-anchor="middle" '
+        f'fill="{color}" font-size="24" font-weight="600" '
+        f'font-family="JetBrains Mono, monospace">{value:+.1f}%</text>'
+        f'{label_html}'
+        f'</svg>{sub_html}</div>'
+    )
+
+
+def apply_plotly_theme(fig, title: str = "", **overrides):
+    """Stamp the Tactical Noir layout onto a Plotly figure.
+
+    Replaces the ``layout = dict(PLOTLY_LAYOUT); fig.update_layout(**layout)``
+    boilerplate repeated across the chart components.
+    """
+    layout = dict(PLOTLY_LAYOUT)
+    if title:
+        layout["title"] = dict(text=title, **PLOTLY_LAYOUT["title"])
+    layout.update(overrides)
+    fig.update_layout(**layout)
+    return fig
 
 
 # ── Master CSS ───────────────────────────────────────────────────────────────

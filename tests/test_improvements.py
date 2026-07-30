@@ -35,12 +35,20 @@ class TestSofascoreRetry(unittest.TestCase):
         cache.close()
         os.environ["CACHE_DIR"] = _TEMP_DIR
         cache.clear_namespace("sofascore_neg")
+        sofascore_client._reset_session()
 
     def tearDown(self):
         cache.close()
+        sofascore_client._reset_session()
 
-    @patch("backend.data.sofascore_client._http.get")
-    def test_retries_on_429(self, mock_get):
+    @staticmethod
+    def _session(mock_get):
+        """Patch the thread-local session factory to use ``mock_get``."""
+        session = MagicMock()
+        session.get = mock_get
+        return patch("backend.data.sofascore_client._get_session", return_value=session)
+
+    def test_retries_on_429(self):
         """_get should retry on HTTP 429 and eventually return data."""
         resp_429 = MagicMock()
         resp_429.status_code = 429
@@ -50,16 +58,15 @@ class TestSofascoreRetry(unittest.TestCase):
         resp_ok.json.return_value = {"data": "ok"}
         resp_ok.raise_for_status.return_value = None
 
-        mock_get.side_effect = [resp_429, resp_ok]
+        mock_get = MagicMock(side_effect=[resp_429, resp_ok])
 
-        with patch("time.sleep"):  # don't actually sleep
+        with self._session(mock_get), patch("time.sleep"):  # don't actually sleep
             result = sofascore_client._get("/test")
 
         self.assertEqual(result, {"data": "ok"})
         self.assertEqual(mock_get.call_count, 2)
 
-    @patch("backend.data.sofascore_client._http.get")
-    def test_retries_on_500(self, mock_get):
+    def test_retries_on_500(self):
         """_get should retry on HTTP 500."""
         resp_500 = MagicMock()
         resp_500.status_code = 500
@@ -69,39 +76,89 @@ class TestSofascoreRetry(unittest.TestCase):
         resp_ok.json.return_value = {"result": True}
         resp_ok.raise_for_status.return_value = None
 
-        mock_get.side_effect = [resp_500, resp_500, resp_ok]
+        mock_get = MagicMock(side_effect=[resp_500, resp_500, resp_ok])
 
-        with patch("time.sleep"):
+        with self._session(mock_get), patch("time.sleep"):
             result = sofascore_client._get("/test500")
 
         self.assertEqual(result, {"result": True})
         self.assertEqual(mock_get.call_count, 3)
 
-    @patch("backend.data.sofascore_client._http.get")
-    def test_gives_up_after_max_retries(self, mock_get):
+    def test_gives_up_after_max_retries(self):
         """_get returns None after exhausting retries."""
         resp_503 = MagicMock()
         resp_503.status_code = 503
 
-        mock_get.return_value = resp_503
+        mock_get = MagicMock(return_value=resp_503)
 
-        with patch("time.sleep"):
+        with self._session(mock_get), patch("time.sleep"):
             result = sofascore_client._get("/always_fail")
 
         self.assertIsNone(result)
         self.assertEqual(mock_get.call_count, sofascore_client._MAX_RETRIES)
 
-    @patch("backend.data.sofascore_client._http.get")
-    def test_no_retry_on_404(self, mock_get):
+    def test_no_retry_on_404(self):
         """_get should NOT retry on 404 (non-retryable)."""
         resp_404 = MagicMock()
         resp_404.status_code = 404
 
-        mock_get.return_value = resp_404
+        mock_get = MagicMock(return_value=resp_404)
 
-        result = sofascore_client._get("/not_found")
+        with self._session(mock_get):
+            result = sofascore_client._get("/not_found")
+
         self.assertIsNone(result)
         mock_get.assert_called_once()
+
+    def test_retries_on_403_then_succeeds(self):
+        """403 is a TLS block, not a dead endpoint — it must be retried."""
+        resp_403 = MagicMock()
+        resp_403.status_code = 403
+
+        resp_ok = MagicMock()
+        resp_ok.status_code = 200
+        resp_ok.json.return_value = {"data": "recovered"}
+
+        mock_get = MagicMock(side_effect=[resp_403, resp_ok])
+
+        with self._session(mock_get), patch("time.sleep"):
+            result = sofascore_client._get("/blocked_then_ok")
+
+        self.assertEqual(result, {"data": "recovered"})
+        self.assertEqual(mock_get.call_count, 2)
+
+    def test_403_is_not_negative_cached(self):
+        """A 403 must not poison the negative cache and hide later recovery."""
+        resp_403 = MagicMock()
+        resp_403.status_code = 403
+        mock_get = MagicMock(return_value=resp_403)
+
+        with self._session(mock_get), patch("time.sleep"):
+            self.assertIsNone(sofascore_client._get("/blocked"))
+
+        # Second call must hit the network again rather than short-circuit.
+        resp_ok = MagicMock()
+        resp_ok.status_code = 200
+        resp_ok.json.return_value = {"data": "ok"}
+        mock_get2 = MagicMock(return_value=resp_ok)
+
+        with self._session(mock_get2), patch("time.sleep"):
+            self.assertEqual(sofascore_client._get("/blocked"), {"data": "ok"})
+        self.assertEqual(mock_get2.call_count, 1)
+
+    def test_transport_error_rebuilds_session_without_downgrading(self):
+        """A transport exception must retry, not permanently drop impersonation."""
+        resp_ok = MagicMock()
+        resp_ok.status_code = 200
+        resp_ok.json.return_value = {"data": "ok"}
+
+        mock_get = MagicMock(side_effect=[OSError("connection reset"), resp_ok])
+
+        with self._session(mock_get), patch("time.sleep"):
+            result = sofascore_client._get("/flaky")
+
+        self.assertEqual(result, {"data": "ok"})
+        self.assertEqual(mock_get.call_count, 2)
 
 
 # ── Sofascore player age/nationality ────────────────────────────────────────

@@ -190,7 +190,44 @@ The app opens at `http://localhost:8501`. No API keys required — all data sour
 python -m pytest tests/ -v
 ```
 
-All 488 tests use mocked API responses, so they run offline with no network calls.
+All 710 tests use mocked API responses, so they run offline with no network calls.
+They also run automatically on every push and pull request via GitHub Actions
+(`.github/workflows/tests.yml`).
+
+### Training and Model Artefacts
+
+The saved weights in `data/models/` are tied to two things in the code: the
+**group layout** (`MODEL_GROUPS`) and the **feature vector width**
+(`FEATURE_DIM`). If either changes, the artefacts must be regenerated, otherwise
+predictions fail with an error like
+`X has 94 features, but StandardScaler is expecting 93 features`.
+
+Check the artefacts against the current code at any time:
+
+```bash
+python scripts/check_artefacts.py
+```
+
+This runs in CI and reports missing group models, orphaned models from an older
+architecture, and feature-width drift. To retrain from the cached feature
+matrices without re-fetching anything from Sofascore:
+
+```bash
+python -m backend.models.training_pipeline --skip-discovery --skip-build
+```
+
+Drop `--skip-build` to rebuild the feature matrices from the API (slow — it
+re-fetches per-player match logs for every transfer record).
+
+> **In plain English:** The maths models are saved as files. If you change how
+> the model is wired up but forget to retrain, the saved files no longer match
+> the code and predictions break. The checker catches that before you ship it.
+
+### Sofascore access
+
+Sofascore blocks plain HTTP clients with `403 Forbidden` — it fingerprints the
+TLS handshake, not the `User-Agent`. `curl-cffi` (in `requirements.txt`) is
+therefore **required**, not optional; without it every player lookup fails.
 
 ---
 

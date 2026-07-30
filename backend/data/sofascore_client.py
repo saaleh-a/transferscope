@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import threading
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote as _url_quote
@@ -18,16 +19,69 @@ from urllib.parse import quote as _url_quote
 import requests as _stdlib_requests
 
 # Prefer curl_cffi for Cloudflare bypass (TLS fingerprint impersonation).
-# Falls back to stdlib requests if curl_cffi is not installed.
+# Sofascore hard-blocks stdlib requests with HTTP 403 regardless of headers,
+# because it fingerprints the TLS/JA3 handshake rather than the User-Agent.
+# curl_cffi therefore is not an optimisation — it is the only working transport.
+_CURL_IMPERSONATE = os.environ.get("SOFASCORE_IMPERSONATE", "chrome120")
 try:
     from curl_cffi.requests import Session as _CurlSession
-    _http = _CurlSession(impersonate="chrome110")
-except (ImportError, Exception):
-    _http = _stdlib_requests
+    _CURL_AVAILABLE = True
+except ImportError as _exc:  # pragma: no cover - depends on install
+    _CurlSession = None
+    _CURL_AVAILABLE = False
+    logging.getLogger(__name__).error(
+        "curl_cffi is not installed (%s). Sofascore blocks stdlib requests with "
+        "HTTP 403, so every player/stat lookup will fail. Install it with "
+        "`pip install curl-cffi`.",
+        _exc,
+    )
 
 from backend.data import cache
 
 _log = logging.getLogger(__name__)
+
+# ── HTTP transport ───────────────────────────────────────────────────────────
+# The session is held in thread-local storage: curl_cffi Sessions are not
+# documented as thread-safe, and Streamlit reruns scripts on worker threads.
+# Sharing one module-level Session across threads produced sporadic exceptions
+# which the old code treated as "curl_cffi is broken" and responded to by
+# permanently downgrading the whole process to stdlib requests — guaranteeing
+# HTTP 403 on every subsequent call.  Sessions are now per-thread and are
+# rebuilt on error rather than abandoned.
+_thread_local = threading.local()
+
+
+def _get_session():
+    """Return this thread's HTTP session, creating it on first use."""
+    session = getattr(_thread_local, "session", None)
+    if session is None:
+        session = _new_session()
+        _thread_local.session = session
+    return session
+
+
+def _new_session():
+    """Create a fresh session, preferring curl_cffi's TLS impersonation."""
+    if _CURL_AVAILABLE:
+        try:
+            return _CurlSession(impersonate=_CURL_IMPERSONATE)
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.error(
+                "Could not create curl_cffi session (%s) — falling back to stdlib "
+                "requests, which Sofascore blocks with HTTP 403.", exc,
+            )
+    return _stdlib_requests
+
+
+def _reset_session() -> None:
+    """Discard this thread's session so the next call builds a clean one."""
+    _thread_local.session = None
+
+
+def using_curl_impersonation() -> bool:
+    """Return True when the working transport can bypass Sofascore's TLS block."""
+    return _CURL_AVAILABLE
+
 
 # ── Request counter (timing instrumentation) ─────────────────────────────────
 # Incremented on every live HTTP call (not cache hits).  Read by training
@@ -257,24 +311,25 @@ def _retry_delay(attempt: int) -> float:
 
 _NEGATIVE_CACHE_TTL = 86400  # 24 hours — cache dead endpoints to avoid re-fetching
 _NEGATIVE_SENTINEL = "__NEGATIVE__"  # Marker stored in cache for None results
+# Squad profiles (market value, contract) move slowly — cache for a week.
+_SQUAD_PROFILE_TTL = 604800
 
 
 def _get(path: str) -> Optional[dict]:
     """Execute a GET request against the Sofascore API with retry.
 
     Retries up to ``_MAX_RETRIES`` times with exponential backoff for
-    transient HTTP errors (429 rate-limit, 5xx server errors).
+    transient HTTP errors (403 TLS block, 429 rate-limit, 5xx server errors).
     Returns the parsed JSON dict, or None on any permanent error.
 
     HTTP 404 and other non-retryable failures are cached for 24 hours
     so the same dead endpoint is not re-fetched on the next pipeline run.
-    Transient errors (429, 5xx) are NOT cached.
+    Transient errors (403, 429, 5xx) are NOT cached.
 
-    Uses ``curl_cffi`` when available (Cloudflare bypass) and
-    falls back to stdlib ``requests`` if curl_cffi is not installed.
+    Transport errors rebuild this thread's session rather than downgrading to
+    stdlib ``requests``: Sofascore blocks stdlib with HTTP 403, so a permanent
+    downgrade turns one transient blip into total, silent failure.
     """
-    global _http
-
     # Check negative cache — avoid re-fetching known-dead endpoints
     neg_key = cache.make_key("sofascore_neg", path)
     neg_cached = cache.get(neg_key, max_age=_NEGATIVE_CACHE_TTL)
@@ -282,7 +337,7 @@ def _get(path: str) -> Optional[dict]:
         return None
 
     url = f"{_BASE_URL}{path}"
-    _had_transient_failure = False  # Track if failure was due to transient errors (429/5xx/connection)
+    _had_transient_failure = False  # Track if failure was due to transient errors (403/429/5xx/connection)
     for attempt in range(_MAX_RETRIES):
         try:
             # Adaptive throttle before every outbound request (including
@@ -290,11 +345,21 @@ def _get(path: str) -> Optional[dict]:
             _inter_request_delay()
             global http_call_count
             http_call_count += 1
-            resp = _http.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
+            resp = _get_session().get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT)
             if resp.status_code in _RETRYABLE_STATUS_CODES:
                 _had_transient_failure = True
                 if resp.status_code in (403, 429):
                     _bump_adaptive_delay()
+                if resp.status_code == 403:
+                    # 403 here is a TLS-fingerprint block, not rate limiting.
+                    # Sleeping alone never clears it — rebuild the session so
+                    # the next attempt presents a fresh handshake.
+                    _reset_session()
+                    if not _CURL_AVAILABLE:
+                        _log.error(
+                            "Sofascore returned 403 and curl_cffi is not installed — "
+                            "install it with `pip install curl-cffi`.",
+                        )
                 # Exponential backoff: base * 2^attempt + jitter (cap 30s)
                 delay = _retry_delay(attempt)
                 _log.info(
@@ -311,38 +376,21 @@ def _get(path: str) -> Optional[dict]:
                 cache.set(neg_key, _NEGATIVE_SENTINEL)
                 return None
             return resp.json()
-        except (ConnectionError, OSError) as exc:
-            # curl_cffi may raise OSError on certain platforms.  Fall back
-            # to stdlib requests and retry this attempt.
-            if _http is not _stdlib_requests:
-                _log.warning(
-                    "curl_cffi unavailable (%s), falling back to stdlib requests",
-                    exc,
-                )
-                _http = _stdlib_requests
-                continue
-            _had_transient_failure = True  # Connection errors are transient
-            # Exponential backoff: base * 2^attempt + jitter (cap 30s)
+        except Exception as exc:
+            # Any transport-level failure (connection reset, timeout, or a
+            # curl_cffi-specific error) is treated as transient.  Rebuild the
+            # session and back off; never abandon TLS impersonation, because
+            # the stdlib fallback is guaranteed to be blocked.
+            _had_transient_failure = True
+            _reset_session()
             delay = _retry_delay(attempt)
             _log.info(
-                "Sofascore connection error on %s — retry %d/%d in %.1fs (%s)",
-                path, attempt + 1, _MAX_RETRIES, delay, exc,
+                "Sofascore transport error on %s — retry %d/%d in %.1fs (%s: %s)",
+                path, attempt + 1, _MAX_RETRIES, delay, type(exc).__name__, exc,
             )
             time.sleep(delay)
-        except Exception as exc:
-            # If curl_cffi raises a non-standard exception, fall back once.
-            if _http is not _stdlib_requests:
-                _log.warning(
-                    "curl_cffi error (%s), falling back to stdlib requests",
-                    exc,
-                )
-                _http = _stdlib_requests
-                continue
-            _log.warning("Sofascore permanent error on %s: %s", path, exc)
-            cache.set(neg_key, _NEGATIVE_SENTINEL)
-            return None
     _log.warning("Sofascore request failed after %d retries: %s", _MAX_RETRIES, path)
-    # Do NOT cache transient failures (429/5xx/connection) — they should be retried next run
+    # Do NOT cache transient failures (403/429/5xx/connection) — they should be retried next run
     if not _had_transient_failure:
         cache.set(neg_key, _NEGATIVE_SENTINEL)
     return None
@@ -613,6 +661,122 @@ def _parse_batch_league_stats(
         }
 
     return list(players_map.values())
+
+
+def get_team_squad_profiles(team_id: int) -> Dict[int, Dict[str, Any]]:
+    """Return squad profile data for one club, keyed by player id.
+
+    The ``/team/{id}/players`` endpoint returns market value, contract expiry,
+    height, weight and preferred foot for an entire squad in a **single**
+    request.  The bulk league-statistics endpoint carries none of these, and
+    fetching them per player would cost hundreds of calls per league, so
+    enrichment is done per club instead (~20 calls per league).
+
+    Values are returned as-is from Sofascore:
+
+    - ``market_value``      : EUR, or None when Sofascore has no valuation
+    - ``contract_until``    : unix timestamp of contract expiry, or None
+    - ``contract_years_left``: float years from now, or None
+    - ``height_cm`` / ``weight_kg`` / ``preferred_foot`` / ``age``
+
+    Coverage is roughly 90% at major clubs and degrades in minor leagues, so
+    every consumer must treat missing values as *unknown*, never as zero.
+    """
+    cache_key = cache.make_key("sofascore_squad_profiles", str(team_id))
+    cached = cache.get(cache_key, max_age=_SQUAD_PROFILE_TTL)
+    if cached is not None:
+        return {int(k): v for k, v in cached.items()}
+
+    raw = _get(f"/team/{team_id}/players")
+    profiles: Dict[int, Dict[str, Any]] = {}
+
+    if isinstance(raw, dict):
+        entries = raw.get("players") or []
+        now = time.time()
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            player = entry.get("player") or {}
+            if not isinstance(player, dict):
+                continue
+            pid = player.get("id")
+            if pid is None:
+                continue
+
+            market_value = player.get("proposedMarketValue")
+            if market_value is None:
+                raw_mv = player.get("proposedMarketValueRaw")
+                if isinstance(raw_mv, dict):
+                    market_value = raw_mv.get("value")
+            try:
+                market_value = float(market_value) if market_value else None
+            except (TypeError, ValueError):
+                market_value = None
+
+            contract_until = player.get("contractUntilTimestamp")
+            contract_years_left = None
+            if contract_until:
+                try:
+                    contract_until = int(contract_until)
+                    contract_years_left = round(
+                        (contract_until - now) / (365.25 * 86400), 2
+                    )
+                except (TypeError, ValueError):
+                    contract_until = None
+
+            age = None
+            dob_ts = player.get("dateOfBirthTimestamp")
+            if dob_ts is not None:
+                try:
+                    age_seconds = now - int(dob_ts)
+                    if age_seconds > 0:
+                        age = int(age_seconds / (365.25 * 86400))
+                except (TypeError, ValueError):
+                    pass
+
+            def _num(value):
+                try:
+                    return float(value) if value else None
+                except (TypeError, ValueError):
+                    return None
+
+            profiles[int(pid)] = {
+                "market_value": market_value,
+                "contract_until": contract_until,
+                "contract_years_left": contract_years_left,
+                "height_cm": _num(player.get("height")),
+                "weight_kg": _num(player.get("weight")),
+                "preferred_foot": player.get("preferredFoot") or None,
+                "age": age,
+            }
+
+    if profiles:
+        cache.set(cache_key, {str(k): v for k, v in profiles.items()})
+    return profiles
+
+
+def get_league_squad_profiles(
+    tournament_id: int,
+    season_id: int,
+    max_teams: int = 40,
+) -> Dict[int, Dict[str, Any]]:
+    """Aggregate squad profiles for every club in a league.
+
+    Costs one request per club (cached for a week), rather than one per player.
+    Returns an empty dict when the league's teams cannot be resolved, so
+    callers degrade to "no value data" instead of failing.
+    """
+    teams = _get_league_team_ids(tournament_id, season_id)
+    combined: Dict[int, Dict[str, Any]] = {}
+    for team in teams[:max_teams]:
+        tid = team.get("id")
+        if not tid:
+            continue
+        try:
+            combined.update(get_team_squad_profiles(int(tid)))
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.warning("Squad profile fetch failed for team %s: %s", tid, exc)
+    return combined
 
 
 def _get_league_team_ids(
@@ -1080,13 +1244,30 @@ def get_player_stats(
     if tournament_id:
         season_id = _get_current_season_id(tournament_id)
 
-    # Step 3 — Fetch statistics if we have the required IDs
+    # Step 3 — Fetch statistics if we have the required IDs.
+    #
+    # The newest season in Sofascore's list starts existing before a ball is
+    # kicked, so between roughly May and August the "current" season returns
+    # 404 / empty stats for everyone.  That is precisely the transfer window,
+    # when this tool is most used, so fall back through recent seasons until
+    # one has real minutes rather than returning an empty player.
     stats_raw: Optional[dict] = None
     if tournament_id and season_id:
-        stats_raw = _get(
-            f"/player/{player_id}/unique-tournament/{tournament_id}"
-            f"/season/{season_id}/statistics/overall"
-        )
+        for candidate_season in _recent_season_ids(tournament_id, season_id):
+            candidate_raw = _get(
+                f"/player/{player_id}/unique-tournament/{tournament_id}"
+                f"/season/{candidate_season}/statistics/overall"
+            )
+            if _has_usable_minutes(candidate_raw):
+                stats_raw = candidate_raw
+                if candidate_season != season_id:
+                    _log.info(
+                        "Player %d has no stats for season %s — using %s instead",
+                        player_id, season_id, candidate_season,
+                    )
+                    season_id = candidate_season
+                break
+        result["season_id"] = season_id
 
     if isinstance(stats_raw, dict):
         stats = stats_raw.get("statistics") or {}
@@ -1628,6 +1809,62 @@ def _unix_to_iso(ts: Any) -> Optional[str]:
         return datetime.fromtimestamp(int(ts), tz=timezone.utc).strftime("%Y-%m-%d")
     except (ValueError, TypeError, OSError):
         return None
+
+
+def _has_usable_minutes(stats_raw: Any) -> bool:
+    """Return True when a statistics payload contains real playing time."""
+    if not isinstance(stats_raw, dict):
+        return False
+    stats = stats_raw.get("statistics")
+    if not isinstance(stats, dict):
+        return False
+    try:
+        return int(stats.get("minutesPlayed") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+# How many seasons to walk back when the newest one has no data yet.
+_SEASON_FALLBACK_DEPTH = int(os.environ.get("SOFASCORE_SEASON_FALLBACK_DEPTH", "3"))
+
+
+def _recent_season_ids(
+    tournament_id: int,
+    preferred_season_id: int,
+) -> List[int]:
+    """Return ``preferred_season_id`` followed by the seasons just before it.
+
+    Used to survive the pre-season gap, when the newest season exists in
+    Sofascore's season list but no matches have been played yet.
+    """
+    ordered: List[int] = [int(preferred_season_id)]
+    try:
+        seasons = get_season_list(tournament_id) or []
+    except Exception:  # pragma: no cover - defensive
+        return ordered
+
+    ids: List[int] = []
+    for season in seasons:
+        sid = season.get("id") if isinstance(season, dict) else None
+        if sid is None:
+            continue
+        try:
+            ids.append(int(sid))
+        except (TypeError, ValueError):
+            continue
+
+    # get_season_list is newest-first; start immediately after the preferred one.
+    if int(preferred_season_id) in ids:
+        start = ids.index(int(preferred_season_id)) + 1
+    else:
+        start = 0
+
+    for sid in ids[start:]:
+        if sid not in ordered:
+            ordered.append(sid)
+        if len(ordered) >= _SEASON_FALLBACK_DEPTH:
+            break
+    return ordered
 
 
 def _get_current_season_id(tournament_id: int) -> Optional[int]:

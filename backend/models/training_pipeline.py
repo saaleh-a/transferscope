@@ -2931,11 +2931,29 @@ def run_pipeline(
                 )
                 mpm_col = np.zeros((X.shape[0], 1), dtype=np.float32)
                 # Populate from metadata if available
+                n_populated = 0
                 for i, m_dict in enumerate(metadata):
-                    mpm_col[i, 0] = float(m_dict.get("pre_minutes_per_match", 0.0))
+                    val = m_dict.get("pre_minutes_per_match")
+                    if val is not None:
+                        mpm_col[i, 0] = float(val)
+                        n_populated += 1
                 X = np.concatenate([X, mpm_col], axis=1).astype(np.float32)
                 np.save(X_path, X)
                 _log.info("Migrated and saved — X shape now %s", X.shape)
+                if n_populated == 0:
+                    _report(
+                        "WARNING: pre_minutes_per_match missing from all %d cached "
+                        "records (matrices predate Phase 9) — the column is constant "
+                        "zero and carries no signal. Models will train fine, but "
+                        "rebuild without --skip-build to actually use this feature."
+                        % len(metadata),
+                    )
+                elif n_populated < len(metadata):
+                    _report(
+                        "WARNING: pre_minutes_per_match only present for %d/%d cached "
+                        "records — remainder defaulted to 0."
+                        % (n_populated, len(metadata)),
+                    )
 
             elif X.shape[1] != FEATURE_DIM:
                 _report(
