@@ -3053,7 +3053,11 @@ def run_pipeline(
         from backend.models.backtester import run_backtest, show_example_predictions
 
         _log.info(f"TIMER: backtest start — {datetime.now().strftime('%H:%M:%S')}")
-        run_backtest(X_test, y_test, meta_test, meta_train=meta_train)
+        run_backtest(
+            X_test, y_test, meta_test,
+            meta_train=meta_train,
+            X_train=X_train, y_train=y_train,
+        )
         show_example_predictions(meta_test, n=10)
         _log.info(f"TIMER: backtest end — {datetime.now().strftime('%H:%M:%S')}")
     else:

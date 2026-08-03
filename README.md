@@ -226,6 +226,33 @@ re-fetches per-player match logs for every transfer record).
 > the model is wired up but forget to retrain, the saved files no longer match
 > the code and predictions break. The checker catches that before you ship it.
 
+### How good is the model, honestly?
+
+Every backtest reports against **two** baselines, because the obvious one is too
+easy to beat:
+
+| Baseline | What it predicts | Why it matters |
+|---|---|---|
+| Persistence | `post = pre` (no change) | Weak. Per-90 metrics are noisy, so a player with an unusually high season regresses toward average *whether or not they transfer*. A model that learned nothing except "shrink toward the mean" still beats this. |
+| **Regression to the mean** | `pre + λ·(league_mean − pre)`, with `λ` fitted on the training set only | The real test. Beating this means the model has learned something about the transfer, not just about noise. |
+
+Each metric also carries a **paired bootstrap confidence interval**, so a
+fractional improvement is reported as inconclusive rather than as skill.
+
+On the current temporal test split (1,344 held-out transfers):
+
+- Beats persistence on **13/13** metrics
+- Beats regression to the mean on **13/13**, mean **+5.9%**
+- Of those, **11/13** hold up at 95% confidence
+- Inconclusive: `successful_passes` (+1.5%) and `pass_completion_pct` (+1.4%) —
+  both heavily team-determined, so there is little room to add over the baseline
+
+> **In plain English:** It is easy to look clever by predicting "this player
+> will get closer to average", because most players do. So we check the model
+> against a rival that *only* does that, and we check whether the win is big
+> enough to be real rather than luck. It wins on 11 of 13 stats. On passing
+> volume and pass accuracy we cannot prove it is better, and we say so.
+
 ### Sofascore access
 
 Sofascore blocks plain HTTP clients with `403 Forbidden` — it fingerprints the

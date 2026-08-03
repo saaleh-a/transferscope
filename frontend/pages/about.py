@@ -279,7 +279,7 @@ league/position priors.
         """
 **Two prediction modes:**
 
-1. **Trained TensorFlow model** — 4-group multi-head neural network trained on
+1. **Trained TensorFlow model** — 6-group multi-head neural network trained on
    historical transfer data (pre/post transfer per-90 stats across 5+ seasons and
    11+ leagues). Validated via held-out temporal test set with backtesting.
 
@@ -305,6 +305,33 @@ league/position priors.
                 f"- Metrics improved: **{overall.get('metrics_improved', 0)}** "
                 f"/ {overall.get('metrics_total', 13)}"
             )
+
+            # The naive baseline above is persistence (post = pre), which is a
+            # weak opponent for noisy per-90 metrics.  Report the stronger
+            # comparison when it is available, since that is the one that
+            # distinguishes transfer signal from ordinary noise reversion.
+            n_rtm = overall.get("metrics_with_mean_reversion")
+            if n_rtm:
+                n_sig = overall.get("metrics_beating_mean_reversion_significantly", 0)
+                mean_rtm = overall.get("mean_improvement_vs_mean_reversion_pct", 0.0)
+                inconclusive = overall.get("inconclusive_metrics") or []
+                st.markdown(
+                    "**Versus regression to the mean** — the baseline that matters. "
+                    "A player with an unusually high season tends to regress toward "
+                    "average whether or not they move, so beating a "
+                    "*no-change* baseline can be pure noise reversion:\n"
+                    f"- Beats mean reversion on **{overall.get('metrics_beating_mean_reversion', 0)}"
+                    f"/{n_rtm}** metrics (mean **{mean_rtm:+.1f}%**)\n"
+                    f"- Of those, **{n_sig}/{n_rtm}** hold up under a paired "
+                    "bootstrap at 95% confidence"
+                )
+                if inconclusive:
+                    pretty = ", ".join(m.replace("_", " ") for m in inconclusive)
+                    st.info(
+                        f"Within sampling noise (treat as no measured edge): {pretty}. "
+                        "These are heavily team-determined, so a transfer model has "
+                        "little room to add over the baseline."
+                    )
 
             per_metric = report.get("per_metric", {})
             if per_metric:

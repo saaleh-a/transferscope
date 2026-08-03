@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -156,24 +156,127 @@ def _feature_keys_list() -> List[str]:
     return keys
 
 
+def fit_mean_reversion(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    meta_train: List[Dict[str, Any]],
+    min_samples: int = 50,
+) -> Dict[str, float]:
+    """Fit per-metric shrinkage toward the target-league mean, on training data.
+
+    Returns ``{metric: lambda}`` where the baseline prediction is::
+
+        pred = pre + lambda * (target_league_mean - pre)
+
+    ``lambda`` is chosen by grid search to minimise MSE.  Fitting on training
+    data only keeps the baseline honest: a shrinkage tuned on the test set
+    would be a stronger opponent than anything available at prediction time.
+
+    Why this baseline matters
+    -------------------------
+    Persistence (``post = pre``) is a weak opponent for noisy per-90 metrics.
+    A player with an unusually high xG season regresses downward next season
+    whether or not he moves, so a model that has learned nothing except
+    "shrink toward average" still beats persistence.  Regression to the mean
+    is the baseline that separates transfer insight from that inevitability.
+    """
+    lambdas: Dict[str, float] = {}
+    grid = np.linspace(0.0, 1.0, 101)
+
+    for j, metric in enumerate(CORE_METRICS):
+        pre_vals, post_vals, mean_vals = [], [], []
+        for i in range(min(len(X_train), len(meta_train))):
+            target = _target_league_mean(meta_train[i], metric)
+            if target is None:
+                continue
+            pre_vals.append(float(X_train[i, j]))
+            post_vals.append(float(y_train[i, j]))
+            mean_vals.append(target)
+
+        if len(pre_vals) < min_samples:
+            lambdas[metric] = 0.0  # not enough data — fall back to persistence
+            continue
+
+        pre = np.asarray(pre_vals)
+        post = np.asarray(post_vals)
+        mean = np.asarray(mean_vals)
+        mses = [float(np.mean((pre + lam * (mean - pre) - post) ** 2)) for lam in grid]
+        lambdas[metric] = float(grid[int(np.argmin(mses))])
+
+    return lambdas
+
+
+def _target_league_mean(record: Dict[str, Any], metric: str) -> Optional[float]:
+    """Target-league mean for a metric, or None when unavailable."""
+    league_means = record.get("league_means") or {}
+    value = league_means.get(metric)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _paired_bootstrap_ci(
+    baseline_errors: List[float],
+    model_errors: List[float],
+    n_resamples: int = 2000,
+    seed: int = 0,
+) -> Tuple[Optional[float], Optional[float], bool]:
+    """Bootstrap CI for the paired MAE difference (baseline − model).
+
+    A positive interval means the model is genuinely better; an interval
+    spanning zero means the headline percentage is within sampling noise and
+    should not be reported as skill.
+
+    Returns ``(low, high, significant)``.
+    """
+    if not baseline_errors or len(baseline_errors) != len(model_errors):
+        return None, None, False
+
+    diff = np.asarray(baseline_errors) - np.asarray(model_errors)
+    if len(diff) < 2:
+        return None, None, False
+
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(diff), size=(n_resamples, len(diff)))
+    boot = diff[idx].mean(axis=1)
+    low, high = np.percentile(boot, [2.5, 97.5])
+    return float(low), float(high), bool(low > 0)
+
+
 def run_backtest(
     X_test: np.ndarray,
     y_test: np.ndarray,
     meta_test: List[Dict[str, Any]],
     meta_train: Optional[List[Dict[str, Any]]] = None,
+    X_train: Optional[np.ndarray] = None,
+    y_train: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     """Run backtest on held-out test set.
 
-    Compares trained model predictions and naive baseline against actual
-    post-transfer per-90 stats.
+    Compares the trained model against two baselines:
+
+    * **persistence** — ``post = pre``.  Weak, but the historical baseline.
+    * **regression to the mean** — ``pre + lambda * (league_mean - pre)``,
+      with ``lambda`` fitted on the training set.  This is the baseline that
+      matters: beating persistence alone can be pure noise reversion.
+
+    Each per-metric comparison carries a paired bootstrap confidence interval,
+    so a small improvement is reported as inconclusive rather than as skill.
 
     Parameters
     ----------
-    X_test : ndarray, shape (N, 46)
+    X_test : ndarray, shape (N, FEATURE_DIM)
     y_test : ndarray, shape (N, 13)
     meta_test : list[dict]
     meta_train : list[dict], optional
-        If provided, used to check for data leakage (overlapping player IDs).
+        Used to check for data leakage (overlapping player IDs), and with
+        ``X_train``/``y_train`` to fit the mean-reversion baseline.
+    X_train, y_train : ndarray, optional
+        Training matrices.  When supplied alongside ``meta_train``, the
+        regression-to-the-mean baseline is fitted and reported.
 
     Returns
     -------
@@ -193,6 +296,11 @@ def run_backtest(
     metric_to_idx = {m: i for i, m in enumerate(CORE_METRICS)}
     keys = _feature_keys_list()
 
+    # Fit the mean-reversion baseline on training data only.
+    mean_reversion_lambdas: Dict[str, float] = {}
+    if X_train is not None and y_train is not None and meta_train is not None:
+        mean_reversion_lambdas = fit_mean_reversion(X_train, y_train, meta_train)
+
     # Load trained model — model.load() handles both model weights and
     # scaler loading (feature_scaler.pkl + target_scalers.pkl) internally.
     model = TransferPortalModel()
@@ -208,6 +316,11 @@ def run_backtest(
     trained_pct_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
     naive_abs_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
     naive_pct_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
+    # Mean-reversion baseline errors, and the paired model errors on exactly
+    # the same samples (a league mean is not always available, so the two
+    # must be collected together to stay paired).
+    rtm_abs_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
+    rtm_model_abs_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
     trained_within_10: Dict[str, int] = {m: 0 for m in CORE_METRICS}
     trained_within_20: Dict[str, int] = {m: 0 for m in CORE_METRICS}
     trained_direction: Dict[str, int] = {m: 0 for m in CORE_METRICS}
@@ -267,6 +380,16 @@ def run_backtest(
             n_abs = abs(n_pred - actual)
             trained_abs_errors[m].append(t_abs)
             naive_abs_errors[m].append(n_abs)
+
+            # Mean-reversion baseline, kept paired with the model's error on
+            # the same sample so the bootstrap below compares like with like.
+            if mean_reversion_lambdas:
+                target_mean = _target_league_mean(meta_i, m)
+                if target_mean is not None:
+                    lam = mean_reversion_lambdas.get(m, 0.0)
+                    rtm_pred = n_pred + lam * (target_mean - n_pred)
+                    rtm_abs_errors[m].append(abs(rtm_pred - actual))
+                    rtm_model_abs_errors[m].append(t_abs)
 
             # Percentage errors (avoid div by zero)
             if abs(actual) > 0.001:
@@ -335,6 +458,26 @@ def run_backtest(
             "naive_mse": naive_mse,
         }
 
+        # Mean-reversion comparison with a paired bootstrap interval.
+        if rtm_abs_errors[m]:
+            rtm_mae = float(np.mean(rtm_abs_errors[m]))
+            paired_model_mae = float(np.mean(rtm_model_abs_errors[m]))
+            rtm_improvement = (
+                (rtm_mae - paired_model_mae) / rtm_mae * 100 if rtm_mae > 0 else 0.0
+            )
+            ci_low, ci_high, significant = _paired_bootstrap_ci(
+                rtm_abs_errors[m], rtm_model_abs_errors[m],
+            )
+            report["per_metric"][m].update({
+                "mean_reversion_lambda": mean_reversion_lambdas.get(m, 0.0),
+                "mean_reversion_mae": rtm_mae,
+                "improvement_vs_mean_reversion": rtm_improvement,
+                "mean_reversion_ci_low": ci_low,
+                "mean_reversion_ci_high": ci_high,
+                "beats_mean_reversion": significant,
+                "n_mean_reversion_samples": len(rtm_abs_errors[m]),
+            })
+
     # Overall summary
     mean_trained_mse = float(np.mean(overall_trained_mse)) if overall_trained_mse else 0.0
     mean_naive_mse = float(np.mean(overall_naive_mse)) if overall_naive_mse else 0.0
@@ -355,6 +498,53 @@ def run_backtest(
         "metrics_improved": metrics_improved,
         "metrics_total": len(CORE_METRICS),
     }
+
+    # Headline honesty: how many metrics beat the *strong* baseline, and how
+    # many of those survive a paired bootstrap.  A metric that beats mean
+    # reversion by a fraction of a percent is not evidence of skill.
+    rtm_metrics = [
+        m for m in CORE_METRICS
+        if "improvement_vs_mean_reversion" in report["per_metric"][m]
+    ]
+    if rtm_metrics:
+        beat = [
+            m for m in rtm_metrics
+            if report["per_metric"][m]["improvement_vs_mean_reversion"] > 0
+        ]
+        significant = [
+            m for m in rtm_metrics if report["per_metric"][m]["beats_mean_reversion"]
+        ]
+        mean_rtm_improvement = float(np.mean([
+            report["per_metric"][m]["improvement_vs_mean_reversion"]
+            for m in rtm_metrics
+        ]))
+        report["overall"].update({
+            "metrics_beating_mean_reversion": len(beat),
+            "metrics_beating_mean_reversion_significantly": len(significant),
+            "metrics_with_mean_reversion": len(rtm_metrics),
+            "mean_improvement_vs_mean_reversion_pct": mean_rtm_improvement,
+            "inconclusive_metrics": [m for m in rtm_metrics if m not in significant],
+        })
+
+        print(f"\n{'-' * 88}")
+        print("Versus regression-to-the-mean (the baseline that matters):")
+        print(f"{'Metric':<30} {'RTM MAE':>9} {'Model':>9} {'Improv%':>8} {'95% CI':>22} {'Sig':>5}")
+        for m in rtm_metrics:
+            pm = report["per_metric"][m]
+            ci = f"[{pm['mean_reversion_ci_low']:+.4f}, {pm['mean_reversion_ci_high']:+.4f}]"
+            sig = "yes" if pm["beats_mean_reversion"] else "NO"
+            print(
+                f"{m:<30} {pm['mean_reversion_mae']:>9.4f} {pm['mae']:>9.4f} "
+                f"{pm['improvement_vs_mean_reversion']:>7.1f}% {ci:>22} {sig:>5}"
+            )
+        print(
+            f"\nBeats mean reversion: {len(beat)}/{len(rtm_metrics)} "
+            f"({len(significant)}/{len(rtm_metrics)} significantly), "
+            f"mean {mean_rtm_improvement:+.1f}%"
+        )
+        if len(significant) < len(rtm_metrics):
+            inconclusive = ", ".join(m for m in rtm_metrics if m not in significant)
+            print(f"Inconclusive (within sampling noise): {inconclusive}")
 
     report["meta"] = {
         "n_train": len(meta_train) if meta_train else None,

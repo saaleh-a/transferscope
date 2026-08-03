@@ -11,7 +11,14 @@
       "naive_mae": 0.060127551160473885,
       "improvement_vs_naive": 6.035594872974182,
       "trained_mse": 0.009221895852740122,
-      "naive_mse": 0.010407178051211392
+      "naive_mse": 0.010407178051211392,
+      "mean_reversion_lambda": 0.22,
+      "mean_reversion_mae": 0.058232710950123494,
+      "improvement_vs_mean_reversion": 2.9780773665534133,
+      "mean_reversion_ci_low": 0.00035321982875190786,
+      "mean_reversion_ci_high": 0.003088246251196196,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     },
     "expected_assists": {
       "mae": 0.03478718505122189,
@@ -22,7 +29,14 @@
       "naive_mae": 0.039493327947853214,
       "improvement_vs_naive": 11.916298628581739,
       "trained_mse": 0.002559569721516243,
-      "naive_mse": 0.003815625022591704
+      "naive_mse": 0.003815625022591704,
+      "mean_reversion_lambda": 0.29,
+      "mean_reversion_mae": 0.03648811947079165,
+      "improvement_vs_mean_reversion": 4.66161162657707,
+      "mean_reversion_ci_low": 0.0006265050302548189,
+      "mean_reversion_ci_high": 0.002820501891228075,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     },
     "shots": {
       "mae": 0.3044783871384719,
@@ -33,7 +47,14 @@
       "naive_mae": 0.32635926250865455,
       "improvement_vs_naive": 6.70453634500488,
       "trained_mse": 0.1761942413848314,
-      "naive_mse": 0.20221967022966633
+      "naive_mse": 0.20221967022966633,
+      "mean_reversion_lambda": 0.08,
+      "mean_reversion_mae": 0.3219139399593528,
+      "improvement_vs_mean_reversion": 5.416215533593364,
+      "mean_reversion_ci_low": 0.01057057917110367,
+      "mean_reversion_ci_high": 0.02396598778546154,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     },
     "successful_dribbles": {
       "mae": 0.2427263901243255,
@@ -44,7 +65,14 @@
       "naive_mae": 0.3079808467057544,
       "improvement_vs_naive": 21.187829463879982,
       "trained_mse": 0.13305464581132465,
-      "naive_mse": 0.20420259090494716
+      "naive_mse": 0.20420259090494716,
+      "mean_reversion_lambda": 0.22,
+      "mean_reversion_mae": 0.28453972921329385,
+      "improvement_vs_mean_reversion": 14.695079384722629,
+      "mean_reversion_ci_low": 0.03494809944421243,
+      "mean_reversion_ci_high": 0.04896955493003315,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     },
     "successful_crosses": {
       "mae": 0.21718633272234153,
@@ -55,7 +83,14 @@
       "naive_mae": 0.2286944264426149,
       "improvement_vs_naive": 5.032083159735872,
       "trained_mse": 0.13444563823705963,
-      "naive_mse": 0.14383845905995413
+      "naive_mse": 0.14383845905995413,
+      "mean_reversion_lambda": 0.17,
+      "mean_reversion_mae": 0.22558396444416307,
+      "improvement_vs_mean_reversion": 3.7226190888670776,
+      "mean_reversion_ci_low": 0.004285476701359827,
+      "mean_reversion_ci_high": 0.012419279523926189,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     },
     "touches_in_opposition_box": {
       "mae": 0.835669919216228,
@@ -66,7 +101,14 @@
       "naive_mae": 0.8925647402249476,
       "improvement_vs_naive": 6.374307480976754,
       "trained_mse": 1.2990111202087258,
-      "naive_mse": 1.5677716673501754
+      "naive_mse": 1.5677716673501754,
+      "mean_reversion_lambda": 0.14,
+      "mean_reversion_mae": 0.8704315984974347,
+      "improvement_vs_mean_reversion": 3.9936141267404954,
+      "mean_reversion_ci_low": 0.017096613638603094,
+      "mean_reversion_ci_high": 0.05253708375742504,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     },
     "successful_passes": {
       "mae": 5.144657184601563,
@@ -77,7 +119,14 @@
       "naive_mae": 5.325082138905907,
       "improvement_vs_naive": 3.3882097890308693,
       "trained_mse": 51.0499163617513,
-      "naive_mse": 56.71946165868102
+      "naive_mse": 56.71946165868102,
+      "mean_reversion_lambda": 0.08,
+      "mean_reversion_mae": 5.223109314258036,
+      "improvement_vs_mean_reversion": 1.5020196770975889,
+      "mean_reversion_ci_low": -0.01224329530659202,
+      "mean_reversion_ci_high": 0.16442648756656428,
+      "beats_mean_reversion": false,
+      "n_mean_reversion_samples": 1274
     },
     "pass_completion_pct": {
       "mae": 3.5747901744329855,
@@ -88,7 +137,14 @@
       "naive_mae": 3.743761326117643,
       "improvement_vs_naive": 4.513406089909151,
       "trained_mse": 22.373847194948976,
-      "naive_mse": 24.74385820875093
+      "naive_mse": 24.74385820875093,
+      "mean_reversion_lambda": 0.1,
+      "mean_reversion_mae": 3.6268229256223123,
+      "improvement_vs_mean_reversion": 1.434664781170664,
+      "mean_reversion_ci_low": -0.019561514016752816,
+      "mean_reversion_ci_high": 0.11814799014483122,
+      "beats_mean_reversion": false,
+      "n_mean_reversion_samples": 1274
     },
     "accurate_long_balls": {
       "mae": 0.5459891371698966,
@@ -99,7 +155,14 @@
       "naive_mae": 0.5941872941198492,
       "improvement_vs_naive": 8.111610165166349,
       "trained_mse": 0.6569330365071037,
-      "naive_mse": 0.7715231654631
+      "naive_mse": 0.7715231654631,
+      "mean_reversion_lambda": 0.13,
+      "mean_reversion_mae": 0.574531332344471,
+      "improvement_vs_mean_reversion": 4.9679092449324145,
+      "mean_reversion_ci_low": 0.016278444524533954,
+      "mean_reversion_ci_high": 0.04089689167916159,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     },
     "chances_created": {
       "mae": 0.2778539024918083,
@@ -110,7 +173,14 @@
       "naive_mae": 0.3058412881038814,
       "improvement_vs_naive": 9.150950738399635,
       "trained_mse": 0.1514894492274992,
-      "naive_mse": 0.17752569703023816
+      "naive_mse": 0.17752569703023816,
+      "mean_reversion_lambda": 0.14,
+      "mean_reversion_mae": 0.2926018463292883,
+      "improvement_vs_mean_reversion": 5.040277094110667,
+      "mean_reversion_ci_low": 0.008372463501079057,
+      "mean_reversion_ci_high": 0.021264813459609996,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     },
     "clearances": {
       "mae": 0.48445030608363726,
@@ -121,7 +191,14 @@
       "naive_mae": 0.522387520165959,
       "improvement_vs_naive": 7.262274196418275,
       "trained_mse": 0.4855513782750396,
-      "naive_mse": 0.6102074471697999
+      "naive_mse": 0.6102074471697999,
+      "mean_reversion_lambda": 0.0,
+      "mean_reversion_mae": 0.522387520165959,
+      "improvement_vs_mean_reversion": 7.262274196418275,
+      "mean_reversion_ci_low": 0.023568530306939492,
+      "mean_reversion_ci_high": 0.05325563793338173,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     },
     "interceptions": {
       "mae": 0.23179519308581195,
@@ -132,7 +209,14 @@
       "naive_mae": 0.26555384591139936,
       "improvement_vs_naive": 12.712545250371107,
       "trained_mse": 0.10301875597922726,
-      "naive_mse": 0.13360682766786425
+      "naive_mse": 0.13360682766786425,
+      "mean_reversion_lambda": 0.23,
+      "mean_reversion_mae": 0.2639361072177759,
+      "improvement_vs_mean_reversion": 12.17753587062046,
+      "mean_reversion_ci_low": 0.026372117981347566,
+      "mean_reversion_ci_high": 0.037924980157085474,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     },
     "possession_won_final_3rd": {
       "mae": 0.2531015742876734,
@@ -143,7 +227,14 @@
       "naive_mae": 0.2884341445641835,
       "improvement_vs_naive": 12.249787669867136,
       "trained_mse": 0.11531694475635894,
-      "naive_mse": 0.15605391893591733
+      "naive_mse": 0.15605391893591733,
+      "mean_reversion_lambda": 0.26,
+      "mean_reversion_mae": 0.27760116171404375,
+      "improvement_vs_mean_reversion": 8.82546286013289,
+      "mean_reversion_ci_low": 0.01753734803765916,
+      "mean_reversion_ci_high": 0.03168218548995905,
+      "beats_mean_reversion": true,
+      "n_mean_reversion_samples": 1274
     }
   },
   "overall": {
@@ -151,7 +242,15 @@
     "mean_naive_mse": 6.572653239562877,
     "overall_improvement_pct": 10.24516813786395,
     "metrics_improved": 13,
-    "metrics_total": 13
+    "metrics_total": 13,
+    "metrics_beating_mean_reversion": 13,
+    "metrics_beating_mean_reversion_significantly": 11,
+    "metrics_with_mean_reversion": 13,
+    "mean_improvement_vs_mean_reversion_pct": 5.898258527041308,
+    "inconclusive_metrics": [
+      "successful_passes",
+      "pass_completion_pct"
+    ]
   },
   "meta": {
     "n_train": 7048,
