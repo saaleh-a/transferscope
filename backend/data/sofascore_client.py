@@ -510,6 +510,7 @@ def get_league_player_stats(
     tournament_id: int,
     season_id: Optional[int] = None,
     limit: int = 200,
+    enrich_profiles: bool = True,
 ) -> List[Dict[str, Any]]:
     """Fetch aggregated player stats for an entire league/tournament season.
 
@@ -529,21 +530,32 @@ def get_league_player_stats(
         Specific season ID.  If ``None``, the current season is fetched.
     limit : int
         Maximum number of players to return (default 200).
+    enrich_profiles : bool
+        When True (default), join squad-level profile data — market value,
+        contract expiry, height and preferred foot.  The statistics endpoints
+        carry none of these, so they come from one request per club (cached
+        for a week).  Set False to skip that cost when the caller only needs
+        per-90 output.
 
     Returns
     -------
     list[dict] — each dict has ``id``, ``name``, ``team``, ``team_id``,
-    ``position``, ``age``, ``minutes_played``, ``per90``, ``rating``.
+    ``position``, ``age``, ``minutes_played``, ``per90``, ``rating``, and
+    (when enriched) ``market_value``, ``contract_until``,
+    ``contract_years_left``, ``height_cm``, ``weight_kg``, ``preferred_foot``.
+    Enriched fields are ``None`` when Sofascore has no data for that player —
+    never 0, so that "unknown price" is never mistaken for "cheap".
     """
     if season_id is None:
         season_id = _get_current_season_id(tournament_id)
     if season_id is None:
         return []
 
-    # Check result-level cache (includes limit)
+    # Check result-level cache (includes limit and enrichment flag, since
+    # enriched and unenriched results have different shapes)
     key = cache.make_key(
         "sofascore_league_stats", str(tournament_id), str(season_id),
-        str(limit),
+        str(limit), "enriched" if enrich_profiles else "plain",
     )
     cached = cache.get(key, max_age=3600)
     if cached is not None:
@@ -568,6 +580,10 @@ def get_league_player_stats(
     if isinstance(batch_raw, dict):
         result = _parse_batch_league_stats(batch_raw, limit)
         if result:
+            if enrich_profiles:
+                result = _enrich_with_squad_profiles(
+                    result, tournament_id, season_id,
+                )
             cache.set(key, result)
             return result
 
@@ -581,8 +597,72 @@ def get_league_player_stats(
         tournament_id, season_id, limit,
     )
     if result:
+        if enrich_profiles:
+            result = _enrich_with_squad_profiles(
+                result, tournament_id, season_id,
+            )
         cache.set(key, result)
     return result
+
+
+# Profile fields joined onto league player stats.  Always present after
+# enrichment (as None when unknown) so downstream consumers can rely on the key.
+_PROFILE_FIELDS = (
+    "market_value",
+    "contract_until",
+    "contract_years_left",
+    "height_cm",
+    "weight_kg",
+    "preferred_foot",
+)
+
+
+def _enrich_with_squad_profiles(
+    players: List[Dict[str, Any]],
+    tournament_id: int,
+    season_id: int,
+) -> List[Dict[str, Any]]:
+    """Join market value / contract data onto league player stats.
+
+    Sofascore's statistics endpoints omit market value entirely, so it is
+    fetched per club (one request per team, cached for a week) and joined by
+    player id here.  Enrichment is best-effort: if the squad lookup fails the
+    players are returned unchanged with ``None`` profile fields rather than
+    the whole league failing.
+
+    Missing values stay ``None``.  They must never be coerced to 0, which
+    would make an unpriced player look free to any value-based ranking.
+    """
+    try:
+        profiles = get_league_squad_profiles(tournament_id, season_id)
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.warning(
+            "Squad profile enrichment failed for tid=%s sid=%s: %s",
+            tournament_id, season_id, exc,
+        )
+        profiles = {}
+
+    matched = 0
+    for player in players:
+        pid = player.get("id")
+        profile = profiles.get(pid) if pid is not None else None
+        if profile:
+            matched += 1
+        for field in _PROFILE_FIELDS:
+            # Preserve any value already present; fill the rest from the
+            # squad profile, defaulting to None rather than 0.
+            if player.get(field) is None:
+                player[field] = (profile or {}).get(field)
+        # Squad profiles carry an exact date of birth, so prefer that age.
+        if profile and profile.get("age") is not None:
+            player["age"] = profile["age"]
+
+    if players:
+        _log.info(
+            "Squad profile enrichment: %d/%d players matched (tid=%s)",
+            matched, len(players), tournament_id,
+        )
+    return players
 
 
 def _parse_batch_league_stats(

@@ -33,9 +33,59 @@ from backend.models.shortlist_scorer import (
     score_candidates,
 )
 from backend.utils.league_registry import LEAGUES
+from backend.models.value_score import (
+    ValueCandidate,
+    composite_output,
+    score_candidates as score_value_candidates,
+)
 from frontend.theme import section_header, player_info_card
 
 _log = logging.getLogger(__name__)
+
+
+def _format_market_value(value: Optional[float]) -> str:
+    """Render a market value as €12.5m / €500k, or an em-dash when unknown."""
+    if value is None or value <= 0:
+        return "—"
+    if value >= 1_000_000:
+        return f"€{value / 1_000_000:,.1f}m"
+    return f"€{value / 1_000:,.0f}k"
+
+
+def _score_value_opportunity(candidates, weights):
+    """Return {player_id: ValueScore} for the shortlist.
+
+    The output metric is weighted by the same sliders the user set for style
+    similarity, so "output" means whatever they said matters. Scored within
+    position cohorts, and returns an empty mapping when no candidate has a
+    market value — the score is meaningless without the price dimension.
+    """
+    if not any(c.market_value for c in candidates):
+        return {}
+
+    value_candidates = []
+    for c in candidates:
+        output = composite_output(c.current_per90 or {}, weights)
+        value_candidates.append(
+            ValueCandidate(
+                player_id=c.player_id,
+                name=c.name,
+                market_value=c.market_value,
+                contract_years_left=c.contract_years_left,
+                age=c.age,
+                output=output,
+                team=c.team,
+                position=c.position,
+            )
+        )
+
+    try:
+        scored = score_value_candidates(value_candidates, by_position=True)
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.warning("Value opportunity scoring failed: %s", exc)
+        return {}
+    return {s.player_id: s for s in scored}
+
 
 # Delay between league API calls to avoid Sofascore rate-limiting (seconds).
 # Sofascore returns 403/429 after rapid sequential requests.  A small delay
@@ -137,6 +187,9 @@ def _collect_league_candidates(
                 current_per90=lp_current,
                 club_power_ranking=lp_norm,
                 rating=lp.get("rating"),
+                market_value=lp.get("market_value"),
+                contract_years_left=lp.get("contract_years_left"),
+                height_cm=lp.get("height_cm"),
             ))
         except Exception as exc:
             skipped += 1
@@ -249,6 +302,13 @@ def render():
         )
     with fcol3:
         max_pr = st.slider("Max club Power Ranking", 0, 100, 100, key="f_pr")
+        max_value_m = st.number_input(
+            "Max market value (€m)", 0.0, 300.0, 0.0, step=5.0, key="f_value",
+            help=(
+                "0 = no budget limit. Players Sofascore has no valuation for "
+                "are kept, and shown as '—' rather than assumed cheap."
+            ),
+        )
 
     # Normalize positions for consistent matching between filter and data
     normalized_filter_positions = None
@@ -268,6 +328,7 @@ def render():
         leagues=None if "Any" in selected_leagues else selected_leagues,
         positions=normalized_filter_positions,
         max_power_ranking=max_pr if max_pr < 100 else None,
+        max_market_value=(max_value_m * 1_000_000) if max_value_m > 0 else None,
     )
 
     # ── Season selector ──────────────────────────────────────────────────
@@ -552,6 +613,13 @@ def render():
         f"{len(scored)} passed filters",
     )
 
+    # ── Value Opportunity scoring ────────────────────────────────────────
+    # Joins the price dimension onto style similarity: "who fits, and is
+    # underpriced for what they produce".  Scored within position cohorts —
+    # output-per-euro is not comparable across positions, since a cheap
+    # goalkeeper trivially out-ranks an expensive forward on attacking output.
+    value_lookup = _score_value_opportunity(scored, weights)
+
     rows = []
     for c in scored[:20]:
         changes = compute_percentage_changes(c.current_per90, c.predicted_per90)
@@ -560,6 +628,7 @@ def render():
             f"{_LABELS.get(m, m)}: {v:+.1f}%" for m, v in top_changes
         )
         confidence = "⚠️ Low" if c.low_confidence else "✅ Good"
+        vs = value_lookup.get(c.player_id)
         rows.append({
             "Rank": len(rows) + 1,
             "Player": c.name,
@@ -569,6 +638,15 @@ def render():
             "Age": c.age if c.age is not None else "—",
             "Nat.": c.nationality or "—",
             "Height": f"{c.height_cm} cm" if c.height_cm else "—",
+            "Value": _format_market_value(c.market_value),
+            "Contract": (
+                f"{c.contract_years_left:.1f}y"
+                if c.contract_years_left is not None else "—"
+            ),
+            "Value Score": (
+                f"{vs.score:.0f}" if vs is not None and vs.score is not None else "—"
+            ),
+            "Why": ", ".join(vs.reasons) if vs is not None and vs.reasons else "—",
             "Rating": f"{c.rating:.2f}" if c.rating is not None else "—",
             "Similarity": f"{c.score:.1%}",
             "Confidence": confidence,
@@ -577,6 +655,14 @@ def render():
         })
 
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    n_priced = sum(1 for c in scored[:20] if c.market_value is not None)
+    if n_priced < len(rows):
+        st.caption(
+            f"Market value available for {n_priced} of {len(rows)} shown. "
+            "Players without a Sofascore valuation show '—' and are never "
+            "treated as cheap by the Value Score."
+        )
 
     # ── Detailed view for selected candidate ─────────────────────────────
     if scored:

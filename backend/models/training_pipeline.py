@@ -670,7 +670,15 @@ def build_training_sample(
             try:
                 from datetime import datetime
                 dob = datetime.strptime(str(reep_data["date_of_birth"])[:10], "%Y-%m-%d").date()
-                player_age = (date.today() - dob).days / 365.25
+                # Age must be measured at the transfer, not at build time.
+                # Using date.today() made this feature drift with how long ago
+                # the transfer happened: across the saved matrices it
+                # overstated age by 6.7 years on average (29.1 stored against
+                # 22.4 actual) and by up to 24.9 years for the oldest records,
+                # so the model was told a 20-year-old move belonged to a
+                # 30-year-old.  See backend/models/age_curves.audit_age_bias.
+                as_of = _ranking_date or date.today()
+                player_age = max(0.0, (as_of - dob).days / 365.25)
             except Exception:
                 pass
     except Exception:
@@ -856,6 +864,9 @@ def build_training_sample(
         "source_club_id": record.from_club_id,
         "target_club_id": record.to_club_id,
         "pre_minutes_per_match": float(pre_minutes_per_match),
+        # Age at the transfer (not at build time) so downstream analysis does
+        # not have to reconstruct it from transfer_date.  0.0 when unknown.
+        "player_age": float(player_age),
         "missing_pre_core_metrics": missing_pre_core_metrics,
         "missing_pre_additional_metrics": missing_pre_additional_metrics,
         "missing_post_core_metrics": missing_post_core_metrics,

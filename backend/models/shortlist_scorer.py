@@ -49,6 +49,7 @@ class Candidate:
     nationality: Optional[str] = None
     height_cm: Optional[int] = None
     market_value: Optional[float] = None
+    contract_years_left: Optional[float] = None
     minutes_played: Optional[int] = None
     league: Optional[str] = None
     club_power_ranking: Optional[float] = None

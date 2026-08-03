@@ -228,5 +228,108 @@ class TestSquadProfiles(unittest.TestCase):
             self.assertEqual(sc.get_league_squad_profiles(17, 61627), {})
 
 
+class TestLeagueStatsEnrichment(unittest.TestCase):
+    """Market value must reach league player stats, and stay None when absent."""
+
+    def setUp(self):
+        cache.close()
+        os.environ["CACHE_DIR"] = _TEMP_DIR
+        for ns in ("sofascore_league_stats", "sofascore_league_batch"):
+            cache.clear_namespace(ns)
+
+    def tearDown(self):
+        cache.close()
+
+    @staticmethod
+    def _players():
+        return [
+            {"id": 1, "name": "Priced", "per90": {}, "minutes_played": 900, "age": 20},
+            {"id": 2, "name": "Unpriced", "per90": {}, "minutes_played": 900, "age": 30},
+        ]
+
+    def test_enrichment_joins_profile_fields(self):
+        profiles = {
+            1: {
+                "market_value": 25_000_000.0,
+                "contract_until": 123,
+                "contract_years_left": 1.5,
+                "height_cm": 180.0,
+                "weight_kg": 75.0,
+                "preferred_foot": "Left",
+                "age": 21,
+            }
+        }
+        with patch.object(sc, "get_league_squad_profiles", return_value=profiles):
+            out = sc._enrich_with_squad_profiles(self._players(), 17, 61627)
+
+        priced = next(p for p in out if p["id"] == 1)
+        self.assertEqual(priced["market_value"], 25_000_000.0)
+        self.assertEqual(priced["contract_years_left"], 1.5)
+        self.assertEqual(priced["preferred_foot"], "Left")
+        # Squad profile carries an exact DOB, so it wins over the stats age.
+        self.assertEqual(priced["age"], 21)
+
+    def test_unmatched_players_get_none_not_zero(self):
+        """The invariant: no valuation must never read as free."""
+        with patch.object(sc, "get_league_squad_profiles", return_value={}):
+            out = sc._enrich_with_squad_profiles(self._players(), 17, 61627)
+        for player in out:
+            for field in sc._PROFILE_FIELDS:
+                self.assertIn(field, player)
+                self.assertIsNone(player[field])
+
+    def test_enrichment_failure_does_not_lose_players(self):
+        with patch.object(
+            sc, "get_league_squad_profiles", side_effect=RuntimeError("boom")
+        ):
+            out = sc._enrich_with_squad_profiles(self._players(), 17, 61627)
+        self.assertEqual(len(out), 2)
+        self.assertIsNone(out[0]["market_value"])
+
+    def test_existing_values_are_not_overwritten(self):
+        players = [{"id": 1, "name": "X", "market_value": 999.0}]
+        profiles = {1: {"market_value": 111.0}}
+        with patch.object(sc, "get_league_squad_profiles", return_value=profiles):
+            out = sc._enrich_with_squad_profiles(players, 17, 61627)
+        self.assertEqual(out[0]["market_value"], 999.0)
+
+    def test_league_stats_enriches_by_default(self):
+        with patch.object(sc, "_get_current_season_id", return_value=61627), \
+             patch.object(sc, "_get", return_value={"results": []}), \
+             patch.object(
+                 sc, "_parse_batch_league_stats", return_value=self._players()
+             ), \
+             patch.object(
+                 sc, "get_league_squad_profiles",
+                 return_value={1: {"market_value": 5.0}},
+             ):
+            out = sc.get_league_player_stats(17, 61627)
+        self.assertEqual(out[0]["market_value"], 5.0)
+
+    def test_enrichment_can_be_skipped(self):
+        with patch.object(sc, "_get_current_season_id", return_value=61627), \
+             patch.object(sc, "_get", return_value={"results": []}), \
+             patch.object(
+                 sc, "_parse_batch_league_stats", return_value=self._players()
+             ), \
+             patch.object(sc, "get_league_squad_profiles") as squad:
+            out = sc.get_league_player_stats(17, 61627, enrich_profiles=False)
+        squad.assert_not_called()
+        self.assertNotIn("market_value", out[0])
+
+    def test_enriched_and_plain_use_separate_cache_keys(self):
+        """A plain result must not be served to an enriching caller."""
+        with patch.object(sc, "_get_current_season_id", return_value=61627), \
+             patch.object(sc, "_get", return_value={"results": []}), \
+             patch.object(
+                 sc, "_parse_batch_league_stats", side_effect=lambda *a: self._players()
+             ), \
+             patch.object(sc, "get_league_squad_profiles") as squad:
+            sc.get_league_player_stats(17, 61627, enrich_profiles=False)
+            squad.return_value = {1: {"market_value": 7.0}}
+            out = sc.get_league_player_stats(17, 61627, enrich_profiles=True)
+        self.assertEqual(out[0]["market_value"], 7.0)
+
+
 if __name__ == "__main__":
     unittest.main()
