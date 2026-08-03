@@ -190,7 +190,10 @@ The app opens at `http://localhost:8501`. No API keys required — all data sour
 python -m pytest tests/ -v
 ```
 
-All 710 tests use mocked API responses, so they run offline with no network calls.
+All 802 tests use mocked API responses, so they run offline with no network calls.
+This is enforced rather than assumed: `tests/conftest.py` blocks outbound sockets
+for the whole session, so an unmocked call fails immediately with the address it
+tried to reach. Set `TRANSFERSCOPE_ALLOW_NETWORK=1` for a deliberate live run.
 They also run automatically on every push and pull request via GitHub Actions
 (`.github/workflows/tests.yml`).
 

@@ -36,6 +36,9 @@ jobs:
       - name: Run tests
         # seleniumbase registers a pytest plugin that rejects --timeout,
         # so rely on the job-level timeout instead.
+        # Tests must not touch the network: tests/conftest.py blocks outbound
+        # sockets, because an unmocked live call previously crashed this job
+        # with a native "Bus error" instead of a readable failure.
         run: python -m pytest tests/ -q --no-header -p no:cacheprovider
         env:
           TF_CPP_MIN_LOG_LEVEL: '3'
