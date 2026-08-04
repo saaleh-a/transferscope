@@ -1335,6 +1335,10 @@ def _compute_rankings_from_opta() -> (
 
     all_teams_data: Dict[str, Tuple[float, float, str]] = {}
     # team_name -> (opta_rating, raw_elo, league_code)
+    opta_league_mean_by_team: Dict[str, float] = {}
+    # team_name -> Opta's own seasonAverageRating for that team's league.
+    # Authoritative, and present on every Opta record, so it is preferred over
+    # a mean computed from however many teams of that league we matched.
     all_teams_rank: Dict[str, int] = {}
     # team_name -> best (lowest) Opta rank seen so far for that name.
     # When multiple Opta entries share the same contestantName (e.g. four
@@ -1403,6 +1407,19 @@ def _compute_rankings_from_opta() -> (
 
         all_teams_data[team_name] = (opta_rating, raw_elo, league_code)
         all_teams_rank[team_name] = opta_team.rank
+        # Opta publishes the team's own league average on every record.  Keep
+        # it: our LEAGUES registry maps 51 leagues against Opta's 333, so
+        # roughly 97% of teams resolve to "UNK" and would otherwise be
+        # compared against a global mean of ~51 instead of their real league.
+        # For a Brazilian Serie A club that turns a relative ability of about
+        # +6 into +39, and relative ability is a model input.
+        if opta_team.season_avg_rating:
+            try:
+                opta_league_mean_by_team[team_name] = float(
+                    opta_team.season_avg_rating
+                )
+            except (TypeError, ValueError):
+                pass
 
     if not all_teams_data:
         return None
@@ -1493,8 +1510,17 @@ def _compute_rankings_from_opta() -> (
 
     # Build team rankings
     team_rankings: Dict[str, TeamRanking] = {}
+    n_opta_mean = 0
     for team_name, (opta_rating, raw_elo, code) in all_teams_data.items():
-        league_mean = league_snapshots[code].mean_normalized
+        # Prefer Opta's own league average: it covers every team, whereas the
+        # snapshot mean only exists for the leagues in our registry and
+        # collapses to a global ~51 for the rest.
+        opta_mean = opta_league_mean_by_team.get(team_name)
+        if opta_mean is not None and opta_mean > 0:
+            league_mean = opta_mean
+            n_opta_mean += 1
+        else:
+            league_mean = league_snapshots[code].mean_normalized
         team_rankings[team_name] = TeamRanking(
             team_name=team_name,
             league_code=code,
@@ -1507,12 +1533,14 @@ def _compute_rankings_from_opta() -> (
     unk_count = sum(1 for _, (_, _, c) in all_teams_data.items() if c == "UNK")
     _log.info(
         "Built Opta-based rankings: %d teams, %d leagues "
-        "(%d with ClubElo raw_elo, %d rescaled, %d UNK league)",
+        "(%d with ClubElo raw_elo, %d rescaled, %d UNK league, "
+        "%d using Opta's own league mean)",
         len(team_rankings),
         len(league_snapshots),
         sum(1 for tn in all_teams_data if tn in clubelo_raw),
         sum(1 for tn in all_teams_data if tn not in clubelo_raw),
         unk_count,
+        n_opta_mean,
     )
     return team_rankings, league_snapshots
 
@@ -2023,14 +2051,24 @@ def _opta_fallback_ranking(
         # Determine league code — prefer league_snapshots resolution via
         # tournament_id; fall back to fuzzy match on opta_team.domestic_league;
         # last resort "UNK".
+        #
+        # The league *mean* is taken from Opta's own seasonAverageRating, which
+        # is present on every record, rather than from a snapshot that only
+        # exists for the leagues in our registry.  Without it a team outside
+        # those leagues was compared against a hardcoded 50.
         league_code = "UNK"
         league_mean = 50.0
+        if opta_team.season_avg_rating:
+            try:
+                season_avg = float(opta_team.season_avg_rating)
+                if season_avg > 0:
+                    league_mean = season_avg
+            except (TypeError, ValueError):
+                pass
         if tournament_id is not None:
             for code, li in LEAGUES.items():
                 if li.sofascore_tournament_id == tournament_id:
                     league_code = code
-                    if code in league_snapshots:
-                        league_mean = league_snapshots[code].mean_normalized
                     break
         # If tournament_id didn't resolve a league, try matching
         # opta_team.domestic_league against our LEAGUES display names.
@@ -2045,8 +2083,6 @@ def _opta_fallback_ranking(
                 if sc > best_lc_score and sc >= 70.0:
                     best_lc_score = sc
                     league_code = code
-            if league_code != "UNK" and league_code in league_snapshots:
-                league_mean = league_snapshots[league_code].mean_normalized
         ranking = TeamRanking(
             team_name=team_name,
             league_code=league_code,
