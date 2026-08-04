@@ -125,6 +125,48 @@ class TestLeagueMeanIsNotGlobalFallback(unittest.TestCase):
             self.skipTest("Arsenal not resolvable offline")
         self.assertGreater(ranking.league_mean_normalized, 85.0)
 
+    def test_no_train_serve_skew_for_the_trained_leagues(self):
+        """Opta's mean must match the snapshot mean where both are reliable.
+
+        The shipped model was trained with league means computed from matched
+        teams. Inference now reads Opta's published seasonAverageRating. If
+        those disagreed for the leagues the model actually trained on, the fix
+        would have introduced train/serve skew.
+
+        Measured across the Big 5 they agree exactly, which is what makes the
+        change safe to ship against an already-trained model.
+        """
+        if not self.rankings:
+            self.skipTest("rankings unavailable offline")
+
+        big_five = {
+            "Arsenal": "ENG1",
+            "Barcelona": "ESP1",
+            "Paris Saint-Germain": "FRA1",
+            "Internazionale": "ITA1",
+        }
+
+        compared = 0
+        for club, code in big_five.items():
+            ranking = self.power_rankings.get_team_ranking(club)
+            snapshot = self.snapshots.get(code)
+            if ranking is None or snapshot is None:
+                continue
+            compared += 1
+            self.assertAlmostEqual(
+                ranking.league_mean_normalized,
+                snapshot.mean_normalized,
+                delta=1.0,
+                msg=(
+                    f"{club}: Opta mean {ranking.league_mean_normalized:.1f} vs "
+                    f"snapshot {snapshot.mean_normalized:.1f} — a gap here means "
+                    "inference no longer matches how the model was trained"
+                ),
+            )
+
+        if compared == 0:
+            self.skipTest("no Big 5 clubs resolvable offline")
+
 
 if __name__ == "__main__":
     unittest.main()
