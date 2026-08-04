@@ -267,18 +267,46 @@ All metrics stored and displayed as per-90. Never raw totals.
 
 ## Additional Sofascore metrics (beyond paper)
 
-| Sofascore Field | Label |
-|---|---|
-| `xg_on_target` | xGOT |
-| `non_penalty_xg` | Non-penalty xG |
-| `dispossessed` | Dispossessed |
-| `duels_won_pct` | Duels won % |
-| `aerial_duels_won_pct` | Aerial duels won % |
-| `recoveries` | Recoveries |
-| `fouls_won` | Fouls won |
-| `touches` | Touches |
-| `goals_conceded_on_pitch` | Goals conceded while on pitch |
-| `xg_against_on_pitch` | xG against while on pitch |
+| Sofascore Field | Label | Status |
+|---|---|---|
+| `xg_on_target` | xGOT | ❌ **not served** — constant zero |
+| `non_penalty_xg` | Non-penalty xG | ❌ **not served** — constant zero |
+| `xg_against_on_pitch` | xG against while on pitch | ❌ **not served** — constant zero |
+| `dispossessed` | Dispossessed | ✅ |
+| `duels_won_pct` | Duels won % | ✅ |
+| `aerial_duels_won_pct` | Aerial duels won % | ✅ |
+| `recoveries` | Recoveries | ✅ |
+| `fouls_won` | Fouls won | ✅ |
+| `touches` | Touches | ✅ |
+| `goals_conceded_on_pitch` | Goals conceded while on pitch | ✅ |
+
+The three marked ❌ are constant zero across all 13,449 training rows.
+Sofascore's season statistics endpoint returns 115 keys and the only xG
+variants among them are `expectedGoals` and `expectedAssists` — no xGOT, npxG
+or xGA under any alias. They are dead weight the network must learn to ignore.
+
+`backend/models/feature_audit.py` guards this: it fails when a feature goes
+constant that is not one of these documented gaps, and runs in
+`scripts/check_artefacts.py` so CI catches the next occurrence.
+
+### Unused Sofascore fields — the clearest expansion route
+
+Sofascore serves ~115 keys per player-season; the model consumes 23. The
+unused remainder includes signal no comparable public tool has, verified
+present and coherent across positions:
+
+| Group | Fields | Sanity check |
+|---|---|---|
+| **Physical** | `kilometersCovered`, `numberOfSprints`, `topSpeed` | Rice 372km / 633 sprints vs Alisson 5km / 1 sprint |
+| **Territorial passing** | `accurateFinalThirdPasses`, `accurateOppositionHalfPasses`, `accurateOwnHalfPasses` | Rodri 861 opp-half / 597 own-half; Alisson 59 / 585 |
+| **Defensive quality** | `tackles`, `tacklesWonPercentage`, `dribbledPast`, `blockedShots`, `errorLeadToGoal`, `errorLeadToShot` | — |
+| **Finishing quality** | `bigChancesCreated`, `bigChancesMissed`, `goalConversionPercentage`, `shotsFromInsideTheBox` vs `shotsFromOutsideTheBox` | Haaland 21.4% conversion vs Rodri 6.25% |
+| **Duels split** | `groundDuelsWon`, `aerialDuelsWon` separately, rather than one blended % | Haaland 73 aerial / 57 ground; Saka 22 / 145 |
+
+Adding these changes `FEATURE_DIM` and therefore requires a full matrix
+rebuild plus retrain, so it is a deliberate phase rather than an incremental
+edit. The physical metrics are the most distinctive: distance covered and
+sprint counts are a workload signal absent from every comparable open project.
 
 ---
 

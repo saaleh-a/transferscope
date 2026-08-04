@@ -154,9 +154,42 @@ def _check_artefacts() -> None:
                 )
 
 
+def _check_feature_health() -> None:
+    """Flag features that carry no signal.
+
+    A constant column trains without complaint and contributes nothing. Three
+    such features exist because Sofascore genuinely does not serve those stats;
+    those are documented. Any *other* constant feature means a source stopped
+    supplying data, a key mapping broke, or a migration zero-filled a column.
+    """
+    from backend.models.feature_audit import audit_saved_matrices, format_report
+
+    report = audit_saved_matrices()
+    if report is None:
+        notes.append("No saved feature matrices — skipping feature health check.")
+        return
+
+    notes.append(format_report(report).replace("\n", "\n      "))
+
+    unexpected = report.get("unexpected_dead") or []
+    if unexpected:
+        errors.append(
+            f"Features carry no signal and are not documented gaps: "
+            f"{', '.join(unexpected)}. Either the source stopped supplying "
+            f"them, a key mapping broke, or a migration zero-filled the column."
+        )
+
+    non_finite = report.get("non_finite") or []
+    if non_finite:
+        errors.append(
+            f"Features contain NaN or inf: {', '.join(non_finite)}."
+        )
+
+
 def main() -> int:
     _check_code_internal_consistency()
     _check_artefacts()
+    _check_feature_health()
 
     for note in notes:
         print(f"note: {note}")
