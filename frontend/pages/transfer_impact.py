@@ -901,17 +901,33 @@ def render():
                 else:
                     st.caption("No heatmap data available")
 
-            # Spatial feature summary (StatsBomb first, WhoScored fallback)
+            # Spatial feature summary.
+            #
+            # StatsBomb open data only covers a fraction of current players
+            # (roughly 1 in 4 sampled), and the WhoScored fallback that used
+            # to sit here was dead — every endpoint it called returns 404/406,
+            # and the failure was swallowed silently.  Sofascore's season
+            # heatmap resolved for 7 of 8 sampled players, so it is now the
+            # fallback.
             spatial = statsbomb_client.compute_spatial_features(player_name)
+            territory: dict = {}
             if not spatial:
                 try:
-                    from backend.data import reep_registry, whoscored_client
-                    reep_data = reep_registry.enrich_player(player_id)
-                    ws_id = reep_data.get("whoscored_id")
-                    if ws_id:
-                        spatial = whoscored_client.compute_spatial_features(ws_id)
-                except Exception:
-                    pass
+                    # "Current" leaves selected_season_id unset, and
+                    # get_player_stats records which season it actually used —
+                    # which matters in pre-season, when the newest season has
+                    # no data and the client falls back to the previous one.
+                    heatmap_season = (
+                        selected_season_id
+                        or (player_stats or {}).get("season_id")
+                    )
+                    if tournament_id and heatmap_season:
+                        territory = sofascore_client.compute_territory_features(
+                            player_id, tournament_id, heatmap_season,
+                        )
+                except Exception as exc:
+                    _log.debug("Territory features unavailable: %s", exc)
+
             if spatial:
                 st.markdown(
                     '<div style="display:flex; gap:1rem; margin:0.8rem 0; flex-wrap:wrap;">',
@@ -936,5 +952,34 @@ def render():
                             f'<span class="ts-stat-value">{fmt}</span></div>'
                         )
                 st.markdown("".join(cards) + "</div>", unsafe_allow_html=True)
+            elif territory:
+                st.markdown(
+                    '<div style="display:flex; gap:1rem; margin:0.8rem 0; flex-wrap:wrap;">',
+                    unsafe_allow_html=True,
+                )
+                # Percentage shares of where the player's touches occur.
+                _territory_labels = [
+                    ("territory_final_third", "Final Third"),
+                    ("territory_box", "In the Box"),
+                    ("territory_own_third", "Own Third"),
+                    ("territory_left", "Left"),
+                    ("territory_central", "Central"),
+                    ("territory_right", "Right"),
+                ]
+                cards = []
+                for key, label in _territory_labels:
+                    val = territory.get(key)
+                    if val is not None:
+                        cards.append(
+                            f'<div class="ts-stat-card" style="flex:1; min-width:110px;">'
+                            f'<span class="ts-stat-label">{label}</span>'
+                            f'<span class="ts-stat-value">{val * 100:.0f}%</span></div>'
+                        )
+                st.markdown("".join(cards) + "</div>", unsafe_allow_html=True)
+                st.caption(
+                    "Share of touches by pitch zone, from the Sofascore season "
+                    "heatmap. Left/right are from the attacking player's own "
+                    "perspective."
+                )
     except Exception as exc:
         _log.debug("Spatial viz unavailable: %s", exc)

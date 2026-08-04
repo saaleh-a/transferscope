@@ -460,6 +460,118 @@ def _normalize_transfer_type(raw: Any) -> str:
     return "N/A"
 
 
+def get_player_heatmap(
+    player_id: int,
+    tournament_id: int,
+    season_id: int,
+) -> List[Dict[str, int]]:
+    """Fetch a player's season touch heatmap.
+
+    Returns a list of ``{"x": int, "y": int, "count": int}`` points on a
+    0-100 pitch grid (0,0 = own goal-line, left touchline), or ``[]`` when
+    Sofascore has no heatmap for that player/season.
+
+    This is the only working source of positional data in the project.  The
+    WhoScored client is dead (every endpoint returns 404/406) and StatsBomb's
+    open data covers only a small fraction of current players, whereas this
+    endpoint resolved for 7 of 8 sampled Premier League players — the eighth
+    had left the league, so the 404 was correct.
+    """
+    if player_id <= 0 or tournament_id <= 0 or season_id <= 0:
+        return []
+
+    raw = _get(
+        f"/player/{player_id}/unique-tournament/{tournament_id}"
+        f"/season/{season_id}/heatmap/overall"
+    )
+    if not isinstance(raw, dict):
+        return []
+
+    points = raw.get("points")
+    if not isinstance(points, list):
+        return []
+
+    cleaned: List[Dict[str, int]] = []
+    for point in points:
+        if not isinstance(point, dict):
+            continue
+        try:
+            cleaned.append({
+                "x": int(point["x"]),
+                "y": int(point["y"]),
+                "count": int(point.get("count", 1)),
+            })
+        except (KeyError, TypeError, ValueError):
+            continue
+    return cleaned
+
+
+# Pitch-territory thresholds on Sofascore's 0-100 x-axis, where x is distance
+# toward the opposition goal.
+_FINAL_THIRD_X = 200.0 / 3      # 66.7
+_OWN_THIRD_X = 100.0 / 3        # 33.3
+_BOX_X = 83.0                   # approx 18-yard line
+# The y-axis runs right-to-left from the attacking player's perspective:
+# low y is the RIGHT flank, high y is the LEFT.  Verified against known
+# wingers — Saka (right) sits 84% in the low-y band, Martinelli (left) 60%
+# in the high-y band.  Labelling these the intuitive way round would have
+# reported every winger on the wrong flank.
+_RIGHT_Y_MAX = 100.0 / 3
+_LEFT_Y_MIN = 200.0 / 3
+
+
+def compute_territory_features(
+    player_id: int,
+    tournament_id: int,
+    season_id: int,
+) -> Dict[str, float]:
+    """Summarise where on the pitch a player actually operates.
+
+    Derived from the season heatmap, weighting each grid cell by its touch
+    count.  Returns fractions in 0-1:
+
+    - ``territory_final_third`` / ``territory_middle_third`` / ``territory_own_third``
+    - ``territory_box`` — share of touches inside the opposition box
+    - ``territory_left`` / ``territory_central`` / ``territory_right``
+    - ``territory_avg_x`` / ``territory_avg_y`` — mean position (0-100)
+    - ``territory_width`` — spread across the pitch, as a standard deviation
+
+    Returns ``{}`` when no heatmap exists, so callers can distinguish "we do
+    not know" from "this player never enters the final third".
+    """
+    points = get_player_heatmap(player_id, tournament_id, season_id)
+    if not points:
+        return {}
+
+    total = sum(p["count"] for p in points)
+    if total <= 0:
+        return {}
+
+    def share(predicate) -> float:
+        return sum(p["count"] for p in points if predicate(p)) / total
+
+    mean_x = sum(p["x"] * p["count"] for p in points) / total
+    mean_y = sum(p["y"] * p["count"] for p in points) / total
+    variance_y = sum(((p["y"] - mean_y) ** 2) * p["count"] for p in points) / total
+
+    return {
+        "territory_final_third": round(share(lambda p: p["x"] >= _FINAL_THIRD_X), 4),
+        "territory_middle_third": round(
+            share(lambda p: _OWN_THIRD_X < p["x"] < _FINAL_THIRD_X), 4
+        ),
+        "territory_own_third": round(share(lambda p: p["x"] <= _OWN_THIRD_X), 4),
+        "territory_box": round(share(lambda p: p["x"] >= _BOX_X), 4),
+        "territory_right": round(share(lambda p: p["y"] <= _RIGHT_Y_MAX), 4),
+        "territory_central": round(
+            share(lambda p: _RIGHT_Y_MAX < p["y"] < _LEFT_Y_MIN), 4
+        ),
+        "territory_left": round(share(lambda p: p["y"] >= _LEFT_Y_MIN), 4),
+        "territory_avg_x": round(mean_x, 2),
+        "territory_avg_y": round(mean_y, 2),
+        "territory_width": round(variance_y ** 0.5, 2),
+    }
+
+
 def get_player_transfer_history(player_id: int) -> List[Dict[str, Any]]:
     """Fetch a player's transfer history from Sofascore.
 

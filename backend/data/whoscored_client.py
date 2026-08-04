@@ -1,4 +1,36 @@
-"""WhoScored player data client — spatial event data via public JSON API.
+"""WhoScored player data client — NON-FUNCTIONAL, retained for reference only.
+
+.. warning::
+
+   **Every endpoint in this module is dead.** WhoScored does not serve the
+   ``/api/v1/...`` paths this client calls, and verification on 2026-08-04
+   returned:
+
+   ===================================  ======
+   ``/api/v1/Search/Players/?term=...``  406
+   ``/api/v1/Players/{id}/Statistics``   404
+   ``/api/v1/Players/{id}/MatchHistory`` 404
+   ``/api/v1/Players/{id}/Heatmap``      404
+   ===================================  ======
+
+   The public site is reachable and does not block ``curl_cffi``, but player
+   and search pages are rendered client-side, so there is no JSON to consume
+   without a headless browser. The ``/StatisticsFeed/`` endpoint that does
+   back the site's tables also returns 406 to non-browser callers.
+
+   This module's tests pass because they mock the HTTP layer entirely, so
+   they assert the parsing logic against payloads WhoScored never returns.
+
+   **Use** :func:`backend.data.sofascore_client.compute_territory_features`
+   for positional data. It resolved for 7 of 8 sampled Premier League players
+   (the eighth had left the league), versus roughly 1 in 4 for StatsBomb's
+   open data.
+
+   Reviving this module would need either a headless-browser scrape of the
+   embedded ``matchCentreData`` blob or a licensed Opta feed. Neither is worth
+   it while Sofascore covers the same ground through an API we already use.
+
+Original description follows.
 
 Supplements StatsBomb open data with broader player coverage from
 WhoScored's public endpoints.  Uses ``curl_cffi`` for HTTP requests

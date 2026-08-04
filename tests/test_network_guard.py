@@ -33,13 +33,19 @@ class TestNetworkGuard(unittest.TestCase):
             server.close()
 
     def test_clubelo_client_degrades_instead_of_crashing(self):
-        """The path that crashed CI must now fail cleanly."""
+        """The path that crashed CI must fail cleanly, not raise.
+
+        _try_soccerdata swallows all exceptions and returns None, so a blocked
+        network degrades rather than crashing. It may still return data from
+        soccerdata's own on-disk cache, which is equally fine — the point is
+        that it does not raise or core-dump.
+        """
         from backend.data import clubelo_client
 
-        # _try_soccerdata swallows all exceptions and returns None, so a
-        # blocked network should degrade rather than raise.
-        result = clubelo_client._try_soccerdata("2026-08-02")
-        self.assertIsNone(result)
+        try:
+            clubelo_client._try_soccerdata("2026-08-02")
+        except Exception as exc:  # pragma: no cover - the failure being guarded
+            self.fail(f"_try_soccerdata raised instead of degrading: {exc!r}")
 
 
 if __name__ == "__main__":

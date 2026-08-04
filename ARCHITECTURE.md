@@ -19,7 +19,7 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 | Adjustment models | sklearn LinearRegression + paper-aligned heuristic (`paper_heuristic_predict`) |
 | Prediction model | TensorFlow multi-head neural network (6 model groups) — heuristic fallback when untrained |
 | UI | Streamlit |
-| Spatial data | StatsBomb open data via `statsbombpy` + WhoScored fallback via `curl_cffi` + `mplsoccer` pitch rendering |
+| Spatial data | StatsBomb open data via `statsbombpy` + Sofascore season heatmap fallback + `mplsoccer` pitch rendering |
 | Coefficient calibration | football-data.co.uk match CSVs via `backend/data/footballdata_client.py` |
 | Team alias augmentation | REEP register (~45K clubs) via `backend/data/reep_registry.py` |
 | Caching | diskcache (SQLite-backed) |
@@ -48,7 +48,7 @@ transferscope/
 │   │   ├── opta_client.py              # Opta Power Rankings — curl_cffi + JSON extraction from JS bundle
 │   │   ├── reep_registry.py            # REEP register — dynamic team alias building (~45K clubs)
 │   │   ├── statsbomb_client.py         # StatsBomb open-data — shots, passes, heatmaps, spatial features
-│   │   ├── whoscored_client.py        # WhoScored spatial data — fallback when StatsBomb misses
+│   │   ├── whoscored_client.py        # DEAD — every endpoint 404/406, kept for reference only
 │   │   ├── footballdata_client.py      # football-data.co.uk — match CSVs for coefficient calibration
 │   │   └── cache.py                    # diskcache layer — all external calls go through here
 │   ├── features/
@@ -194,13 +194,40 @@ Functions: `get_player_shots()`, `get_player_passes()`, `get_player_heatmap_data
 `compute_spatial_features()`. Rendered by `frontend/components/pitch_viz.py` using mplsoccer.
 Integrated into the Transfer Impact page for shot maps, pass networks, and heatmaps.
 
-### WhoScored (`backend/data/whoscored_client.py`)
-Fallback spatial data source when StatsBomb open data doesn't cover a player.
-Uses `curl_cffi` for HTTP requests with Cloudflare bypass (same as sofascore_client).
-Functions: `search_player()`, `get_player_season_stats()`, `get_player_match_history()`,
-`get_player_heatmap_data()`, `compute_spatial_features()`.
-Player ID lookup via REEP `key_whoscored` column (cross-provider bridge).
-Fallback chain: StatsBomb → WhoScored → zeros (0.0).
+### WhoScored (`backend/data/whoscored_client.py`) — DEAD, do not use
+Every endpoint this client calls returns 404/406. Verified 2026-08-04:
+`/api/v1/Search/Players/` → 406, `/api/v1/Players/{id}/Statistics`,
+`/MatchHistory` and `/Heatmap` → 404. WhoScored does not serve an `/api/v1`
+surface; its player and search pages are rendered client-side, and the
+`/StatisticsFeed/` endpoint behind the site's own tables also 406s for
+non-browser callers.
+
+The module's tests pass only because they mock the HTTP layer, so they assert
+parsing against payloads WhoScored never returns. The module is retained for
+reference with a warning in its docstring; reviving it would need a headless
+browser scrape of the embedded `matchCentreData` blob, or a licensed Opta feed.
+
+### Positional data (`sofascore_client.compute_territory_features()`)
+The working source of spatial data. Derived from the Sofascore season heatmap
+(`/player/{id}/unique-tournament/{t}/season/{s}/heatmap/overall`), which
+returns `{x, y, count}` cells on a 0–100 pitch grid.
+
+Coverage sampled at 7 of 8 Premier League players, against roughly 1 in 4 for
+StatsBomb's open data (which is largely historical competitions).
+
+Features returned: `territory_final_third`, `territory_middle_third`,
+`territory_own_third`, `territory_box`, `territory_left`, `territory_central`,
+`territory_right`, `territory_avg_x`, `territory_avg_y`, `territory_width`.
+
+**Axis note:** x runs 0–100 toward the opposition goal. The y-axis runs
+*right to left* from the attacking player's perspective — low y is the right
+flank. Verified against known wingers: Saka (right) sits 84% in the low-y band,
+Martinelli (left) 60% in the high-y band. Labelling y the intuitive way round
+reports every winger on the wrong flank.
+
+Returns `{}` when no heatmap exists, so callers can distinguish "unknown" from
+"never enters the final third". Fallback chain: StatsBomb → Sofascore territory
+→ nothing shown.
 
 ### football-data.co.uk (`backend/data/footballdata_client.py`)
 Provides match-level CSV data from football-data.co.uk for league profiling.
@@ -498,8 +525,8 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - Diverging butterfly metric bar chart with paper Table 1 group markers (⚡ ◈ ◎ ◆)
 - Dynamic REEP alias augmentation: _build_dynamic_aliases() cross-links ~45K clubs from REEP teams.csv at runtime, graceful degradation to hardcoded mappings
 - StatsBomb spatial data: shot maps, pass networks, heatmaps via statsbombpy + mplsoccer
-- WhoScored fallback for spatial features: when StatsBomb returns {} for a player, fall back to WhoScored via REEP key_whoscored bridge
-- REEP enrich_player() returns whoscored_id for cross-provider ID mapping
+- Sofascore territory fallback for spatial features: when StatsBomb returns {} for a player, derive pitch-zone shares from the Sofascore season heatmap (7/8 coverage vs ~1/4 for StatsBomb). Replaced the WhoScored fallback, which was dead — every endpoint 404/406, failing silently behind a bare except
+- REEP enrich_player() returns whoscored_id for cross-provider ID mapping (no longer used for spatial data)
 - football-data.co.uk coefficient calibration: calibrate_style_coefficients() refines per-metric style weights from cross-league match data
 - Pizza/radar charts for player profiles via player_pizza.py component
 - Backtest Validator page: validates predictions against actual post-transfer outcomes
