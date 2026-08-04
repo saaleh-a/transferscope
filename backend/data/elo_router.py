@@ -1,8 +1,14 @@
-"""Elo source router — routes club to correct Elo source, merges scores.
+"""Elo source router — routes a club to the best available Elo source.
 
-ClubElo takes priority for European clubs.
-WorldFootballElo as global fallback.
-Returns normalized 0-100 score when requested.
+ClubElo covers roughly 600 European clubs and is the only source of true-scale
+Elo. The WorldFootballElo fallback below is **inert**: eloratings.net rates
+national teams, not clubs, so it returns ``None`` for every club (see
+:mod:`backend.data.worldfootballelo_client`).
+
+It is kept so the routing shape stays explicit, but nothing depends on it.
+Clubs outside ClubElo get an Elo rescaled from their Opta Power Ranking in
+:func:`backend.features.power_rankings._opta_score_to_raw_elo`, which is what
+actually provides global coverage.
 """
 
 from __future__ import annotations

@@ -265,32 +265,59 @@ def _render_cache_health():
 
 def _render_data_source_status():
     section_header(
-        "Data Source Status", "Package availability for each data source"
+        "Data Source Status",
+        "Live probes — each source is actually called, not just imported",
     )
 
-    sources = [
-        ("Sofascore REST API", "backend.data.sofascore_client"),
-        ("ClubElo (soccerdata)", "soccerdata"),
-        ("WorldFootballElo", "backend.data.worldfootballelo_client"),
-        ("StatsBomb Open Data", "backend.data.statsbomb_client"),
-        ("TensorFlow", "tensorflow"),
-        ("scikit-learn", "sklearn"),
-    ]
+    st.caption(
+        "This page previously reported a source healthy whenever its Python "
+        "module imported. That marked WhoScored and WorldFootballElo green for "
+        "months while both returned nothing. Each row below is a real call."
+    )
+
+    if st.button("Run health probes", key="diag_probe"):
+        st.session_state["_diag_health"] = _run_probes()
+
+    results = st.session_state.get("_diag_health")
+    if results is None:
+        st.info("Press **Run health probes** to call every source live.")
+        return
 
     import pandas as pd
 
-    rows = []
-    for name, module_path in sources:
-        try:
-            __import__(module_path)
-            status = "✅ Available"
-        except ImportError:
-            status = "❌ Not installed"
-        except Exception:
-            status = "⚠️ Import error"
-        rows.append({"Data Source": name, "Status": status})
+    from backend.data.source_health import DEAD, DEGRADED, LIVE, summarise
 
+    icon = {LIVE: "✅ Live", DEGRADED: "⚠️ Degraded", DEAD: "❌ Dead"}
+    rows = [
+        {
+            "Data Source": r.name,
+            "Status": icon.get(r.status, "❓ Unknown"),
+            "Detail": r.detail,
+            "Used for": r.used_for,
+            "Secs": f"{r.elapsed_s:.1f}",
+        }
+        for r in results
+    ]
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+    st.caption(summarise(results))
+
+    dead = [r for r in results if r.status == DEAD]
+    if dead:
+        st.warning(
+            "Dead sources: "
+            + ", ".join(r.name for r in dead)
+            + ". These are documented as non-functional and nothing depends on "
+            "them — the probe exists so a *newly* dead source is visible here "
+            "rather than failing silently."
+        )
+
+
+@st.cache_data(ttl=300, show_spinner="Probing data sources…")
+def _run_probes():
+    """Probe all sources, cached briefly so repeated views are cheap."""
+    from backend.data.source_health import probe_all
+
+    return probe_all()
 
 
 # ── Section 5: System Info ───────────────────────────────────────────────────

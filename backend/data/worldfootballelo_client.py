@@ -1,4 +1,27 @@
-"""WorldFootballElo scraper for non-European clubs.
+"""WorldFootballElo scraper — NON-FUNCTIONAL, retained for reference only.
+
+.. warning::
+
+   **This module cannot work, and never could.** It scrapes eloratings.net for
+   *club* Elo scores, but eloratings.net publishes ratings for **national
+   teams** only — its own description reads "Ratings for national football
+   teams based on the Elo rating system". No club has ever resolved through it.
+
+   Verified 2026-08-04: ``get_team_elo()`` returns ``None`` for Flamengo,
+   Palmeiras, Al Hilal, LA Galaxy and Boca Juniors. The site's pages are also
+   client-rendered, so even national teams would need a headless browser.
+
+   The README used to credit this module with answering "How strong is this
+   Brazilian/MLS/Saudi club?". It does not. Global club coverage comes from
+   **Opta Power Rankings** (13,791 clubs across 333 leagues) via
+   :mod:`backend.data.opta_client`, surfaced through
+   :mod:`backend.features.power_rankings`.
+
+   ``elo_router`` still lists this as a fallback after ClubElo. That fallback
+   is inert rather than harmful — it returns ``None``, and the power-rankings
+   layer supplies an Opta-derived Elo instead.
+
+Original description follows.
 
 Scrapes eloratings.net for global Elo scores (South America, MLS, etc.).
 All responses cached with max_age = 1 day.

@@ -157,14 +157,41 @@ def test_data_source_status_renders(mock_st):
 
 @patch("frontend.pages.diagnostics.st")
 def test_data_source_shows_available_packages(mock_st):
-    """At least some packages should show as available."""
+    """The health table renders real probe results, not import checks.
+
+    The old version of this section reported a source healthy whenever its
+    Python module imported, which marked two permanently dead sources green.
+    It now runs live probes on demand, so the table only appears once results
+    exist in session state.
+    """
+    from backend.data.source_health import DEAD, LIVE, SourceHealth
     from frontend.pages.diagnostics import _render_data_source_status
 
+    # No probe run yet — the page must prompt rather than render a stale table.
+    mock_st.session_state = {}
+    mock_st.button.return_value = False
     _render_data_source_status()
-    args = mock_st.dataframe.call_args
-    df = args[0][0]
+    mock_st.dataframe.assert_not_called()
+    mock_st.info.assert_called()
+
+    # With results present, the table reflects them.
+    mock_st.reset_mock()
+    mock_st.session_state = {
+        "_diag_health": [
+            SourceHealth("Sofascore", LIVE, "20 metrics", "model inputs", 0.5),
+            SourceHealth("WhoScored", DEAD, "returned nothing", "Nothing", 0.2),
+        ]
+    }
+    mock_st.button.return_value = False
+    _render_data_source_status()
+
+    mock_st.dataframe.assert_called_once()
+    df = mock_st.dataframe.call_args[0][0]
     statuses = df["Status"].tolist()
-    assert any("Available" in s for s in statuses)
+    assert any("Live" in s for s in statuses)
+    assert any("Dead" in s for s in statuses)
+    # A dead source must be called out, not buried in the table.
+    mock_st.warning.assert_called()
 
 
 # ── Test system info renders ─────────────────────────────────────────────────

@@ -44,7 +44,7 @@ Paste a transfer rumour. Get an instant HOT / TEPID / NOT verdict backed by pred
 ## How It Works (The Short Version)
 
 ```
-1. COLLECT DATA         →  Player stats from Sofascore, club strength ratings from Opta Power Rankings (inference) / ClubElo + WorldFootballElo (training), spatial data from StatsBomb
+1. COLLECT DATA         →  Player stats + market value from Sofascore, club and league strength from Opta Power Rankings, raw Elo from ClubElo, spatial data from Sofascore heatmaps
 2. CRUNCH NUMBERS        →  Rolling averages, league quality scores, team strength comparisons
 3. PREDICT              →  Neural network + adjustment models predict stats at the new club
 4. SHOW RESULTS         →  Charts, tables, and verdicts in a dark-themed web app
@@ -91,8 +91,8 @@ Paste a transfer rumour. Get an instant HOT / TEPID / NOT verdict backed by pred
 │                           │                                  │
 │  ┌────────────────────────▼───────────────────────────────┐  │
 │  │         Data Sources (the raw ingredients)              │  │
-│  │   Sofascore · ClubElo · WorldFootballElo                │  │
-│  │   REEP · StatsBomb · football-data.co.uk                │  │
+│  │   Sofascore · Opta Power Rankings · ClubElo             │  │
+│  │   REEP · football-data.co.uk · StatsBomb (partial)      │  │
 │  │   All calls cached locally to avoid hammering APIs      │  │
 │  └────────────────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────────────────┘
@@ -263,18 +263,51 @@ therefore **required**, not optional; without it every player lookup fails.
 
 ## Data Sources
 
-| Source | What it gives us | Plain English |
-|---|---|---|
-| **Sofascore** | Player stats, team rosters, transfer history, seasons, match logs | "How many goals/assists/passes did this player make?" |
-| **ClubElo** | Elo ratings for ~600 European clubs | "How strong is this European club right now?" |
-| **WorldFootballElo** | Elo ratings for clubs worldwide | "How strong is this Brazilian/MLS/Saudi club?" |
-| **REEP Register** | Team alias mappings (~45K clubs worldwide) | "What other names does this club go by?" |
-| **StatsBomb** | Spatial data — shot locations, pass networks, heatmaps | "Where on the pitch does this player operate?" |
-| **football-data.co.uk** | Match-level CSVs for coefficient calibration | "How do league playing styles compare?" |
+Every source below is probed live on the **Diagnostics** page — a real call
+with a known query, not an import check. Two sources that the project used to
+claim are documented here as dead, because that is what they are.
 
-All API calls are routed through a local cache (`backend/data/cache.py`). Player stats cache for 1 day, search results for 7 days, Elo ratings for 1 day. This means the app stays fast and doesn't repeatedly hit external servers. REEP team aliases cache for 7 days.
+| Source | What it gives us | Status | Plain English |
+|---|---|---|---|
+| **Sofascore** | Per-90 stats, market value, contract expiry, transfer history, squads, match logs, season heatmaps | ✅ Live | "What did this player do, what is he worth, and where does he play?" |
+| **Opta Power Rankings** | 0–100 strength for **13,791 clubs across 333 leagues**, plus each league's average | ✅ Live | "How strong is this club, and how strong is its league?" |
+| **ClubElo** | Raw Elo for ~600 European clubs | ✅ Live | "How strong is this European club, on the classic Elo scale?" |
+| **REEP Register** | ~45K club aliases + player height/DOB | ✅ Live | "What other names does this club go by?" |
+| **football-data.co.uk** | Match-level CSVs, 16 leagues | ✅ Live | "How do league playing styles compare?" |
+| **StatsBomb** | Shot maps, pass networks | ⚠️ Partial | Open data is mostly historical competitions — covered 1 of 4 sampled current players |
+| **WorldFootballElo** | **Nothing** | ❌ Dead | eloratings.net rates **national teams**, not clubs. No club has ever resolved through it |
+| **WhoScored** | **Nothing** | ❌ Dead | Every endpoint returns 404/406; there is no `/api/v1` surface |
 
-> **In plain English:** Elo ratings are like a score for how good a team is — the same system chess uses to rank players. A team gains points when they win and loses points when they lose. We use two different Elo providers because no single one covers the entire world.
+Global club coverage comes from **Opta**, not WorldFootballElo. The Opta data
+is embedded in [The Analyst's](https://dataviz.theanalyst.com/opta-power-rankings/)
+dataviz bundle rather than served by an API, so the client extracts it from the
+JavaScript and caches the parsed result for 7 days.
+
+All API calls are routed through a local cache (`backend/data/cache.py`). Player
+stats cache for 1 day, search results and squad profiles for 7 days, Elo ratings
+for 1 day.
+
+> **In plain English:** Elo is a strength score, the same idea chess uses — win
+> and you gain points, lose and you drop them. Opta's version is rescaled to
+> 0–100 and covers nearly 14,000 clubs worldwide, which is what lets the tool
+> handle South America, MLS and Asia rather than just Europe.
+
+### How a club's strength is turned into a model input
+
+```
+Opta bundle  →  normalized_score (0-100)
+                     │
+ClubElo hit? ────────┼──→ raw_elo (true Elo scale, ~1000-2100)
+   miss     ────────→ linear rescale of the 0-100 score
+
+relative_ability = normalized_score − league_mean
+```
+
+`league_mean` comes from Opta's own `seasonAverageRating`, published on every
+team record. This matters: our internal league registry maps 51 leagues against
+Opta's 333, so deriving the mean ourselves left **97% of clubs** compared
+against a global average of ~51 instead of their own league — which made every
+non-European club look like a runaway domestic champion.
 
 ---
 
@@ -323,7 +356,7 @@ Any league available on Sofascore can be added by extending the league registry.
 | Decision | Why | Plain English |
 |---|---|---|
 | Sofascore over FotMob | Team search, transfer history, season selector, league-wide stats, team-position averages | Sofascore has more features we need |
-| ClubElo + WorldFootballElo | Dynamic, global, faithful to the paper | Two data sources cover the whole world |
+| Opta Power Rankings as the strength backbone | 13,791 clubs / 333 leagues, with each league's own average published per team | One source covers the whole world; ClubElo supplies true Elo where it can, and Opta covers everywhere it can't |
 | Dynamic league Elo from team mean | Updates automatically, no manual maintenance | League quality is calculated fresh every day, not hard-coded |
 | Dual simulation | Predict at both current and target clubs, compare model-vs-model (paper Section 4) | Both predictions use the same model, reducing noise |
 | Per-metric style weights | `_TEAM_INFLUENCE`, `_ABILITY_SENSITIVITY`, `_OPP_QUALITY_SENS`, `_LEAGUE_STYLE_COEFF` keyed per-metric | Different stats respond differently to team/league/opposition changes |
@@ -334,7 +367,7 @@ Any league available on Sofascore can be added by extending the league registry.
 | Shortlist rate-limit protection | 1.5s inter-league delay, Big 5 default, player's own league first | Prevents Sofascore 403/429 errors that caused 0 results when scanning too many leagues |
 | None-passthrough filters | Candidates with unknown age/minutes pass through filters instead of being excluded | Sparse API data shouldn't silently drop valid candidates |
 | Per-group feature subsets | Shooting 19, Passing 28, Dribbling 10, Defending 16 features (46 total including 3 interaction features) | Each model group only sees relevant features, reducing noise |
-| 3-step team name matching | Exact → accent-normalized → fuzzy (502 abbreviation aliases + 531 ClubElo mappings + dynamic REEP aliases) | Reliably matches team names across ClubElo, WorldFootballElo, and Sofascore |
+| 3-step team name matching | Exact → accent-normalized → fuzzy (502 abbreviation aliases + 531 ClubElo mappings + dynamic REEP aliases) | Reliably matches team names across Opta, ClubElo, and Sofascore |
 | Streamlit | Fast to build; sufficient for a personal tool | Web app framework that gets us a UI without a separate frontend team |
 | diskcache | Local tool, SQLite is enough | Simple on-disk cache, no need for a database server |
 | Dynamic REEP alias resolution | At runtime, cross-links ~45K clubs from REEP teams.csv for fuzzy matching | Never goes stale — augments hardcoded aliases automatically |
@@ -347,8 +380,8 @@ Any league available on Sofascore can be added by extending the league registry.
 ## References
 
 - Dinsdale, J. & Gallagher, J. (2022). *The Transfer Portal: Predicting the Impact of a Player Transfer on the Receiving Club.* [Paper](https://doi.org/10.48550/arXiv.2201.11533)
+- Opta Power Rankings: [dataviz.theanalyst.com/opta-power-rankings](https://dataviz.theanalyst.com/opta-power-rankings/)
 - ClubElo: [clubelo.com](http://clubelo.com)
-- WorldFootballElo: [eloratings.net](http://eloratings.net)
 - Sofascore: [sofascore.com](https://www.sofascore.com)
 - REEP Register: [github.com/transfermarkt/reep](https://github.com/transfermarkt/reep)
 - StatsBomb Open Data: [statsbomb.com/what-we-do/open-data](https://statsbomb.com/what-we-do/open-data/)
