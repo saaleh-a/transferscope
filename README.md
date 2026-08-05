@@ -113,7 +113,7 @@ transferscope/
 │   │   ├── elo_router.py              # Picks the right Elo source for each club
 │   │   ├── reep_registry.py           # REEP open data — ~45K team aliases for fuzzy matching
 │   │   ├── statsbomb_client.py        # StatsBomb spatial data — shots, passes, heatmaps
-│   │   ├── footballdata_client.py     # football-data.co.uk match CSVs for calibration
+│   │   ├── footballdata_client.py     # football-data.co.uk match CSVs for league profiling
 │   │   └── cache.py                    # Stores API results locally so we don't re-fetch
 │   ├── features/                       # Turns raw data into model-ready numbers
 │   │   ├── rolling_windows.py          # Recent-form averages (last ~11 games)
@@ -149,6 +149,7 @@ transferscope/
 │   ├── cache/                          # Saved API responses (not in git)
 │   └── models/                         # Saved model weights (not in git)
 ├── ARCHITECTURE.md                     # Full architecture reference (design decisions, metrics, models)
+├── WEIGHTINGS.md                       # Every tunable number: learned vs measured vs asserted
 ├── WHITEPAPER.md                       # Project white paper
 ├── METHODOLOGY.md                      # Technical methodology
 ├── ONBOARDING.md                       # Developer onboarding guide
@@ -366,13 +367,13 @@ Any league available on Sofascore can be added by extending the league registry.
 | K-means shortlist scoring | Cluster candidates by playing style, 15% same-cluster bonus, weighted Euclidean distance | Finds replacements with similar playing profiles, not just similar raw numbers |
 | Shortlist rate-limit protection | 1.5s inter-league delay, Big 5 default, player's own league first | Prevents Sofascore 403/429 errors that caused 0 results when scanning too many leagues |
 | None-passthrough filters | Candidates with unknown age/minutes pass through filters instead of being excluded | Sparse API data shouldn't silently drop valid candidates |
-| Per-group feature subsets | Shooting 19, Passing 28, Dribbling 10, Defending 16 features (46 total including 3 interaction features) | Each model group only sees relevant features, reducing noise |
+| Per-group feature subsets | Shooting 41, Creation 37, Distribution 32, Crossing 26, Dribbling 26, Defending 36, drawn from a 94-feature vector | Each model group only sees relevant features, reducing noise |
 | 3-step team name matching | Exact → accent-normalized → fuzzy (502 abbreviation aliases + 531 ClubElo mappings + dynamic REEP aliases) | Reliably matches team names across Opta, ClubElo, and Sofascore |
 | Streamlit | Fast to build; sufficient for a personal tool | Web app framework that gets us a UI without a separate frontend team |
 | diskcache | Local tool, SQLite is enough | Simple on-disk cache, no need for a database server |
 | Dynamic REEP alias resolution | At runtime, cross-links ~45K clubs from REEP teams.csv for fuzzy matching | Never goes stale — augments hardcoded aliases automatically |
 | StatsBomb spatial data | Shot maps, pass networks, heatmaps in Transfer Impact | Visual context beyond raw statistics |
-| Coefficient calibration | football-data.co.uk match CSVs refine style coefficients | Data-driven coefficient tuning, not just defaults |
+| Hand-set heuristic coefficients | ~58 numbers in `adjustment_models.py`, never fitted | Honest caveat: `calibrate_style_coefficients()` exists but is never called, and the heuristic is measurably worse than the network on 13/13 metrics. See [WEIGHTINGS.md](WEIGHTINGS.md) |
 | All stats per-90 | Consistent, comparable, position-agnostic | Fair comparisons regardless of minutes played |
 
 ---

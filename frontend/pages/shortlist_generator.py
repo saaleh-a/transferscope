@@ -24,6 +24,7 @@ from backend.data.sofascore_client import (
 )
 from backend.features import power_rankings
 from backend.features.adjustment_models import paper_heuristic_predict
+from backend.models.transfer_portal import TransferPortalModel, build_feature_dict
 from backend.models.shortlist_scorer import (
     Candidate,
     MIN_MINUTES_THRESHOLD,
@@ -110,6 +111,76 @@ _WEIGHTS_EXPLANATION = (
 )
 
 
+def _predict_at_source_team(
+    model,
+    lp_current: Dict[str, float],
+    source_pos_avg: Dict[str, float],
+    lp_norm: float,
+    lp_league: float,
+    source_norm: float,
+    source_league: float,
+    position: str,
+) -> Dict[str, float]:
+    """Predict a candidate's per-90 output if they moved to the source team.
+
+    Uses the trained network when available and falls back to the heuristic
+    only when it is not.
+
+    This ordering matters. Measured on the 1,344-transfer temporal test split,
+    the hand-tuned heuristic is worse than the network on **all 13 metrics**
+    (mean 32.5% higher MAE) and worse than assuming no change at all. The
+    shortlist previously called the heuristic directly and never touched the
+    network, so its entire ranking — clustering and similarity both — was
+    built on the weaker predictor.
+
+    The candidate's own per-90 stands in for their team's positional average,
+    as before: fetching every candidate's team would cost hundreds of extra
+    API calls per league scan.
+    """
+    if model is not None:
+        try:
+            fd = build_feature_dict(
+                player_per90=lp_current,
+                team_ability_current=lp_norm,
+                team_ability_target=source_norm,
+                league_ability_current=lp_league,
+                league_ability_target=source_league,
+                team_pos_current=lp_current,
+                team_pos_target=source_pos_avg,
+                position=position,
+            )
+            predicted = model.predict(fd)
+            if predicted:
+                return predicted
+        except Exception as exc:  # pragma: no cover - defensive
+            _log.debug("Network prediction failed for a candidate: %s", exc)
+
+    delta_ra = (source_norm - source_league) - (lp_norm - lp_league)
+    return paper_heuristic_predict(
+        player_per90=lp_current,
+        source_pos_avg=lp_current,
+        target_pos_avg=source_pos_avg,
+        change_relative_ability=delta_ra,
+        source_league_mean=lp_league,
+        target_league_mean=source_league,
+    )
+
+
+@st.cache_resource(show_spinner=False)
+def _load_model():
+    """Load the trained network once per session, or None when untrained."""
+    try:
+        model = TransferPortalModel()
+        if not model.is_trained():
+            _log.info("No trained model — shortlist will use the heuristic")
+            return None
+        model.load(os.path.join("data", "models", "transfer_portal"))
+        return model
+    except Exception as exc:
+        _log.warning("Could not load trained model for shortlist: %s", exc)
+        return None
+
+
 def _collect_league_candidates(
     tid: int,
     season_id: Optional[int],
@@ -131,6 +202,7 @@ def _collect_league_candidates(
         _log.info("Failed to fetch league %s (tid=%d): %s", league_name, tid, exc)
         return []
 
+    model = _load_model()
     candidates: List[Candidate] = []
     skipped = 0
     for lp in league_players:
@@ -149,32 +221,25 @@ def _collect_league_candidates(
                 v = lp_per90.get(m)
                 lp_current[m] = v if v is not None else 0
 
-            # Paper-aligned prediction: use team-position style data
-            # to predict how this candidate would perform at the source team.
             lp_team = lp.get("team", "")
             lp_ranking = power_rankings.get_team_ranking(lp_team)
             lp_norm = lp_ranking.normalized_score if lp_ranking else 50.0
             lp_league = lp_ranking.league_mean_normalized if lp_ranking else 50.0
-            # Relative ability change if player moved to the source team
-            delta_ra = (source_norm - source_league) - (lp_norm - lp_league)
-
-            # Use the candidate's own stats as a proxy for their team's
-            # position average (fetching each candidate's team would be
-            # too many API calls).  The source team's position average
-            # is the real tactical style target.
-            predicted = paper_heuristic_predict(
-                player_per90=lp_current,
-                source_pos_avg=lp_current,
-                target_pos_avg=source_pos_avg,
-                change_relative_ability=delta_ra,
-                player_rating=lp.get("rating"),
-                source_league_mean=lp_league,
-                target_league_mean=source_league,
-            )
 
             # Normalize position for consistent filtering
             raw_pos = lp.get("position", "Unknown")
             norm_pos = normalize_position(raw_pos)
+
+            predicted = _predict_at_source_team(
+                model=model,
+                lp_current=lp_current,
+                source_pos_avg=source_pos_avg,
+                lp_norm=lp_norm,
+                lp_league=lp_league,
+                source_norm=source_norm,
+                source_league=source_league,
+                position=norm_pos,
+            )
 
             candidates.append(Candidate(
                 player_id=lp_id,

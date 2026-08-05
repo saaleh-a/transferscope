@@ -20,7 +20,7 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 | Prediction model | TensorFlow multi-head neural network (6 model groups) — heuristic fallback when untrained |
 | UI | Streamlit |
 | Spatial data | StatsBomb open data via `statsbombpy` + Sofascore season heatmap fallback + `mplsoccer` pitch rendering |
-| Coefficient calibration | football-data.co.uk match CSVs via `backend/data/footballdata_client.py` |
+| League match results | football-data.co.uk match CSVs via `backend/data/footballdata_client.py` |
 | Team alias augmentation | REEP register (~45K clubs) via `backend/data/reep_registry.py` |
 | Caching | diskcache (SQLite-backed) |
 | Python | 3.12 |
@@ -47,7 +47,7 @@ transferscope/
 │   │   ├── opta_client.py              # Opta Power Rankings — curl_cffi + JSON extraction from JS bundle
 │   │   ├── reep_registry.py            # REEP register — dynamic team alias building (~45K clubs)
 │   │   ├── statsbomb_client.py         # StatsBomb open-data — shots, passes, heatmaps, spatial features
-│   │   ├── footballdata_client.py      # football-data.co.uk — match CSVs for coefficient calibration
+│   │   ├── footballdata_client.py      # football-data.co.uk — match CSVs for league profiling
 │   │   └── cache.py                    # diskcache layer — all external calls go through here
 │   ├── features/
 │   │   ├── rolling_windows.py          # 1000-min player rolling averages
@@ -320,8 +320,11 @@ Returns `{}` when no heatmap exists, so callers can distinguish "unknown" from
 
 ### football-data.co.uk (`backend/data/footballdata_client.py`)
 Provides match-level CSV data from football-data.co.uk for league profiling.
-Used by `adjustment_models.calibrate_style_coefficients()` to refine `_LEAGUE_STYLE_COEFF`
-and `_OPP_QUALITY_SENS` via cross-league CV analysis. 60/40 blend (data/defaults).
+
+**Not currently used for calibration.** `adjustment_models.calibrate_style_coefficients()`
+exists and would refine `_LEAGUE_STYLE_COEFF` / `_OPP_QUALITY_SENS` from this data,
+but it is never called from anywhere in the codebase. The heuristic coefficients
+are hand-set. See [WEIGHTINGS.md](WEIGHTINGS.md).
 
 ---
 
@@ -547,7 +550,13 @@ target = intercept
 **Paper-aligned heuristic fallback (`paper_heuristic_predict`):**
 
 When no trained TF model weights exist, this function produces predictions
-using the paper's structure (Appendix A.3) with calibrated default coefficients.
+using the paper's structure (Appendix A.3) with hand-set default coefficients.
+
+> **Caveat, measured 2026-08-05:** on the 1,344-transfer test split the trained
+> network beats this heuristic on 13/13 metrics (mean +32.5%), and the heuristic
+> is *worse than persistence* — predicting no change at all — on all 13. It
+> should be read as a degraded last resort, not a peer method. Full numbers in
+> [WEIGHTINGS.md](WEIGHTINGS.md).
 
 For each metric, three forces compete:
 1. **Style shift** — `team_influence * (target_pos_avg - source_pos_avg)`.
@@ -657,7 +666,7 @@ Available filters: age, market value, minutes played, position, league, club Pow
 - StatsBomb spatial data: shot maps, pass networks, heatmaps via statsbombpy + mplsoccer
 - Sofascore territory fallback for spatial features: when StatsBomb returns {} for a player, derive pitch-zone shares from the Sofascore season heatmap (7/8 coverage vs ~1/4 for StatsBomb). Replaced the WhoScored fallback, which was dead — every endpoint 404/406, failing silently behind a bare except
 - REEP enrich_player() returns whoscored_id for cross-provider ID mapping (no longer used for spatial data)
-- football-data.co.uk coefficient calibration: calibrate_style_coefficients() refines per-metric style weights from cross-league match data
+- ~~football-data.co.uk coefficient calibration~~ — `calibrate_style_coefficients()` is written but never called; coefficients remain hand-set
 - Pizza/radar charts for player profiles via player_pizza.py component
 - Backtest Validator page: validates predictions against actual post-transfer outcomes
 - Diagnostics page: system health, data source status, cache info
