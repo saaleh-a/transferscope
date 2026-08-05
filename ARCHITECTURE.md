@@ -192,6 +192,53 @@ Functions: `get_player_shots()`, `get_player_passes()`, `get_player_heatmap_data
 `compute_spatial_features()`. Rendered by `frontend/components/pitch_viz.py` using mplsoccer.
 Integrated into the Transfer Impact page for shot maps, pass networks, and heatmaps.
 
+### Player attribute overviews (`backend/data/player_attributes.py`)
+Sofascore publishes five 0-100 ratings per player per year, four years back:
+`attacking`, `technical`, `tactical`, `defending`, `creativity`.
+
+**This is the only longitudinal signal in the project.** Everything else is
+cross-sectional — different players compared at a moment in time — which is
+what made the age-curve work untrustworthy (see `age_curves.py`).
+
+**The ratings are absolute, not scaled within position group.** This was the
+open question and it decides usability. Measured on unambiguous players:
+
+| Role | mean defending | mean attacking |
+|---|---|---|
+| CB | 78 | 38 |
+| DM | 63 | 64 |
+| AM | 34 | 76 |
+| W | 32 | 84 |
+| ST | 27 | 84 |
+
+Monotonic and inverted between the two attributes, which is only possible on a
+shared scale. De Bruyne tops creativity at 97, Ødegaard second at 88.
+
+**There are two different `position` fields**, which is what made the payload
+look wrong at first:
+
+- `averageAttributeOverviews[].position` — the player's own position, used to
+  select the positional-average comparison row. Matched the profile position on
+  7 of 7 sampled players.
+- `playerAttributeOverviews[].position` — the position the player was judged to
+  be playing *that year*, and it moves. Saka reads M for three completed
+  seasons and D for the barely-started current one; Ødegaard reads M for older
+  seasons and F for recent ones.
+
+`yearShift == 0` covers a season in progress, so both its ratings and its
+position label come from partial data. `get_attribute_history()` excludes it by
+default.
+
+`compute_trajectory()` returns per-attribute deltas and the raw series, and
+flags `position_changed` — a midfielder moved forward gains attacking without
+having improved at anything. It deliberately emits **no categorical label**
+("Rising Star", "Declining Asset"): three or four annual points with no measure
+of year-to-year noise cannot support a verdict, which is the same mistake the
+age-curve guards exist to prevent.
+
+Not yet a model feature. Adding it changes `FEATURE_DIM` and needs a full
+matrix rebuild.
+
 ### Removed sources — do not re-add
 Both were verified non-functional and deleted on 2026-08-05.
 
