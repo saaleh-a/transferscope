@@ -16,3 +16,7 @@ venv/
 data/cache/
 data/models/*.tmp
 data/models/*.log
+
+# Long-running rebuild output
+rebuild.log
+data/models/matrices/*.prerebuild
