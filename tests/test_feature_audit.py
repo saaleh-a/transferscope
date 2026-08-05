@@ -9,7 +9,10 @@ the next one is caught before it trains into a shipped model.
 from __future__ import annotations
 
 import datetime
+import json
+import os
 import pathlib
+import tempfile
 import unittest
 
 import numpy as np
@@ -17,9 +20,11 @@ import numpy as np
 from backend.models.feature_audit import (
     KNOWN_DEAD_FEATURES,
     SPARSE_THRESHOLD,
+    STALE_MATRIX_PENDING,
     audit_features,
     audit_saved_matrices,
     format_report,
+    matrix_predates_current_pipeline,
     unexpected_dead_features,
 )
 
@@ -119,34 +124,82 @@ class TestUnexpectedDeadFeatures(unittest.TestCase):
         )
 
 
+class TestStalenessDetection(unittest.TestCase):
+    """The stale-matrix escape hatch must be content-based and self-clearing.
+
+    It gates the dead-feature guard, so a detector that is wrong in the
+    permissive direction silently disables the check. mtime cannot be used:
+    the matrices are git-tracked and a fresh CI clone rewrites every timestamp,
+    which would make every checkout look freshly built.
+    """
+
+    def _write(self, tmpdir, records):
+        path = pathlib.Path(tmpdir) / "metadata.json"
+        path.write_text(json.dumps(records), encoding="utf-8")
+        return tmpdir
+
+    def test_metadata_without_the_marker_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, [{"player_id": 1}, {"player_id": 2}])
+            self.assertTrue(matrix_predates_current_pipeline(tmp))
+
+    def test_metadata_with_the_marker_is_current(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, [{"player_id": 1, "pre_minutes_per_match": 74.2}])
+            self.assertFalse(matrix_predates_current_pipeline(tmp))
+
+    def test_partial_marker_counts_as_current(self):
+        """One record carrying it means the pipeline emits it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, [
+                {"player_id": 1},
+                {"player_id": 2, "pre_minutes_per_match": 80.0},
+            ])
+            self.assertFalse(matrix_predates_current_pipeline(tmp))
+
+    def test_missing_metadata_is_not_stale(self):
+        """Unknown provenance must not silence the guard."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(matrix_predates_current_pipeline(tmp))
+
+    def test_unreadable_metadata_is_not_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            (pathlib.Path(tmp) / "metadata.json").write_text("{not json", encoding="utf-8")
+            self.assertFalse(matrix_predates_current_pipeline(tmp))
+
+    def test_empty_metadata_is_not_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, [])
+            self.assertFalse(matrix_predates_current_pipeline(tmp))
+
+    def test_does_not_depend_on_file_mtime(self):
+        """A backdated file with the marker must still read as current."""
+        with tempfile.TemporaryDirectory() as tmp:
+            self._write(tmp, [{"pre_minutes_per_match": 74.2}])
+            path = pathlib.Path(tmp) / "metadata.json"
+            old = datetime.datetime(2020, 1, 1).timestamp()
+            os.utime(path, (old, old))
+            self.assertFalse(matrix_predates_current_pipeline(tmp))
+
+    def test_only_pre_minutes_per_match_is_ever_excused(self):
+        """The escape hatch must not widen into a general whitelist."""
+        self.assertEqual(set(STALE_MATRIX_PENDING), {"pre_minutes_per_match"})
+
+
 class TestSavedMatrices(unittest.TestCase):
     """Guard the real matrices, which is the point of the module."""
-
-    # The date inference started supplying ``pre_minutes_per_match``
-    # (``minutes_per_match_from_stats``). A matrix built before this was
-    # produced by a pipeline whose column was genuinely constant, because no
-    # caller ever passed the value — that is a stale artefact, not a live
-    # regression, and it clears itself the moment the matrices are rebuilt.
-    _INFERENCE_WIRED_ON = datetime.date(2026, 8, 5)
 
     @classmethod
     def setUpClass(cls):
         cls.report = audit_saved_matrices()
-        cls.matrix_path = pathlib.Path("data/models/matrices/X.npy")
-
-    def _matrix_is_stale(self) -> bool:
-        if not self.matrix_path.exists():
-            return False
-        built = datetime.date.fromtimestamp(self.matrix_path.stat().st_mtime)
-        return built < self._INFERENCE_WIRED_ON
 
     def test_no_unexpected_dead_features(self):
         if self.report is None:
             self.skipTest("no saved matrices")
-        if self._matrix_is_stale():
+        if matrix_predates_current_pipeline():
             self.skipTest(
-                f"matrix predates {self._INFERENCE_WIRED_ON} — rebuild pending; "
-                f"currently dead: {self.report['unexpected_dead']}"
+                "matrix metadata predates the current pipeline — rebuild "
+                f"pending; currently dead: {self.report['unexpected_dead']}"
             )
         self.assertEqual(
             self.report["unexpected_dead"], [],

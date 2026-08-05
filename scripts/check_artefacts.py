@@ -173,11 +173,32 @@ def _check_feature_health() -> None:
 
     unexpected = report.get("unexpected_dead") or []
     if unexpected:
-        errors.append(
-            f"Features carry no signal and are not documented gaps: "
-            f"{', '.join(unexpected)}. Either the source stopped supplying "
-            f"them, a key mapping broke, or a migration zero-filled the column."
+        # A matrix built before inference started supplying
+        # pre_minutes_per_match has that column constant by construction. That
+        # is a stale artefact, not a live regression, and it clears itself on
+        # the next rebuild — so warn rather than fail, but keep failing for
+        # anything else.
+        from backend.models.feature_audit import (
+            STALE_MATRIX_PENDING,
+            matrix_predates_current_pipeline,
         )
+
+        stale = matrix_predates_current_pipeline()
+        pending = STALE_MATRIX_PENDING if stale else frozenset()
+        real = [f for f in unexpected if f not in pending]
+
+        if stale and not real:
+            notes.append(
+                f"Matrix metadata predates the current pipeline — "
+                f"{', '.join(unexpected)} constant by construction. "
+                f"Rebuild the matrices to clear this."
+            )
+        elif real:
+            errors.append(
+                f"Features carry no signal and are not documented gaps: "
+                f"{', '.join(real)}. Either the source stopped supplying "
+                f"them, a key mapping broke, or a migration zero-filled the column."
+            )
 
     non_finite = report.get("non_finite") or []
     if non_finite:

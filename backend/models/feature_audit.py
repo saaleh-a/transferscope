@@ -18,7 +18,7 @@ shipped model.
 """
 
 from __future__ import annotations
-
+import datetime
 import json
 import logging
 import os
@@ -108,19 +108,62 @@ def unexpected_dead_features(audits: List[FeatureAudit]) -> List[str]:
     return [a.name for a in audits if a.is_constant and a.name not in known]
 
 
+# ``training_pipeline`` writes ``pre_minutes_per_match`` into every metadata
+# record. A matrix whose metadata lacks it was built before the feature was
+# wired end to end, so its column is constant by construction rather than by
+# regression. Detected from file *content* rather than mtime, because the
+# matrices are git-tracked and a fresh clone rewrites every timestamp.
+_PIPELINE_MARKER_KEY = "pre_minutes_per_match"
+
+# Features whose column is legitimately constant in a pre-marker matrix.
+STALE_MATRIX_PENDING = frozenset({"pre_minutes_per_match"})
+
+
+def matrix_predates_current_pipeline(matrices_dir: Optional[str] = None) -> bool:
+    """True when the saved matrix was built before the current pipeline.
+
+    Returns False when the metadata is missing or unreadable: an unknown
+    provenance should not silence the guard.
+    """
+    path = _metadata_path(matrices_dir)
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            records = json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not isinstance(records, list) or not records:
+        return False
+    return not any(
+        isinstance(r, dict) and _PIPELINE_MARKER_KEY in r for r in records
+    )
+
+
+def _matrix_path(matrices_dir: Optional[str] = None) -> str:
+    return os.path.join(_matrices_dir(matrices_dir), "X.npy")
+
+
+def _metadata_path(matrices_dir: Optional[str] = None) -> str:
+    return os.path.join(_matrices_dir(matrices_dir), "metadata.json")
+
+
+def _matrices_dir(matrices_dir: Optional[str] = None) -> str:
+    if matrices_dir is not None:
+        return matrices_dir
+    root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
+    return os.path.join(root, "data", "models", "matrices")
+
+
 def audit_saved_matrices(
     matrices_dir: Optional[str] = None,
 ) -> Optional[Dict[str, object]]:
     """Audit the matrices on disk. Returns None when they are absent."""
     from backend.models.transfer_portal import _feature_keys
 
-    if matrices_dir is None:
-        root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
-        matrices_dir = os.path.join(root, "data", "models", "matrices")
-
-    x_path = os.path.join(matrices_dir, "X.npy")
+    x_path = _matrix_path(matrices_dir)
     if not os.path.exists(x_path):
         return None
 

@@ -107,53 +107,17 @@ def _prediction_confidence(X_row: np.ndarray) -> float:
 
 
 def _feature_keys_list() -> List[str]:
-    """Return the ordered list of feature keys matching the feature vector.
+    """Return the ordered feature keys — delegates to the single source.
 
-    Must stay in sync with ``_feature_keys()`` in transfer_portal.py —
-    includes raw Elo, REEP metadata, interaction features, relative
-    dominance features, per-metric league-normalised features,
-    10 additional player metrics (enrichment inputs),
-    4 position one-hot features, and minutes-per-match.
+    This used to be a hand-maintained copy of
+    ``transfer_portal._feature_keys()`` carrying a "must stay in sync"
+    docstring. Three copies of a 94-element ordering, kept in step by comment,
+    is how a train/serve skew goes unnoticed: nothing fails when one drifts,
+    the vectors just mean different things at each end.
     """
-    keys = []
-    for m in CORE_METRICS:
-        keys.append(f"player_{m}")
-    # Additional player metrics (enrichment inputs, not prediction targets)
-    for m in ADDITIONAL_METRICS:
-        keys.append(f"player_{m}")
-    keys.extend([
-        "team_ability_current", "team_ability_target",
-        "league_ability_current", "league_ability_target",
-    ])
-    # Raw Elo scores (absolute scale)
-    keys.append("raw_elo_current")
-    keys.append("raw_elo_target")
-    # REEP player metadata
-    keys.append("player_height_cm")
-    keys.append("player_age")
-    for m in CORE_METRICS:
-        keys.append(f"team_pos_current_{m}")
-    for m in CORE_METRICS:
-        keys.append(f"team_pos_target_{m}")
-    # Interaction features (must match transfer_portal._feature_keys())
-    keys.append("interaction_ability_gap")
-    keys.append("interaction_gap_squared")
-    keys.append("interaction_league_gap")
-    # Relative team dominance within league (Phase 6)
-    keys.append("relative_ability_current")
-    keys.append("relative_ability_target")
-    keys.append("relative_ability_gap")
-    # Per-metric league-normalised features (Phase 5)
-    for m in CORE_METRICS:
-        keys.append(f"league_norm_{m}")
-    for m in CORE_METRICS:
-        keys.append(f"league_mean_ratio_{m}")
-    # Position one-hot encoding (Phase 8)
-    for pos in POSITION_LABELS:
-        keys.append(f"position_{pos}")
-    # Minutes-per-match (Phase 9)
-    keys.append("pre_minutes_per_match")
-    return keys
+    from backend.models.transfer_portal import _feature_keys
+
+    return _feature_keys()
 
 
 def fit_mean_reversion(
