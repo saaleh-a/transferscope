@@ -188,8 +188,11 @@ _PROBES = [
 # a record so nobody re-adds them expecting they work.
 REMOVED_SOURCES = {
     "WhoScored": (
-        "Every endpoint returned 404/406; no /api/v1 surface exists. "
-        "Module deleted 2026-08-05."
+        "The /api/v1 paths the old client called do not exist — 404/406. There "
+        "is no player-statistics API. Event data IS available at "
+        "/Matches/{id}/Live as a JavaScript object, but only through a headless "
+        "browser; soccerdata's WhoScored reader does this. Client deleted "
+        "2026-08-05; see ARCHITECTURE.md before re-adding."
     ),
     "WorldFootballElo": (
         "eloratings.net rates national teams, not clubs, so no club ever "

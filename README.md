@@ -276,7 +276,7 @@ claim are documented here as dead, because that is what they are.
 | **football-data.co.uk** | Match-level CSVs, 16 leagues | ✅ Live | "How do league playing styles compare?" |
 | **StatsBomb** | Shot maps, pass networks | ⚠️ Partial | Open data is mostly historical competitions — covered 1 of 4 sampled current players |
 | ~~**WorldFootballElo**~~ | — | 🗑️ Removed | eloratings.net rates **national teams**, not clubs. No club ever resolved. Module deleted |
-| ~~**WhoScored**~~ | — | 🗑️ Removed | Every endpoint returned 404/406; no `/api/v1` surface exists. Module deleted |
+| ~~**WhoScored**~~ | — | 🗑️ Removed | The `/api/v1` paths the client used don't exist. Event data *is* reachable at `/Matches/{id}/Live`, but only via a headless browser — see ARCHITECTURE.md |
 
 Global club coverage comes from **Opta**, not WorldFootballElo. The Opta data
 is embedded in [The Analyst's](https://dataviz.theanalyst.com/opta-power-rankings/)

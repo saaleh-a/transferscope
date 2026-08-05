@@ -239,17 +239,54 @@ age-curve guards exist to prevent.
 Not yet a model feature. Adding it changes `FEATURE_DIM` and needs a full
 matrix rebuild.
 
-### Removed sources — do not re-add
-Both were verified non-functional and deleted on 2026-08-05.
+### Removed sources — and what was actually true about them
 
-**WhoScored** — every endpoint returned 404/406. Verified 2026-08-04:
-`/api/v1/Search/Players/` → 406, `/api/v1/Players/{id}/Statistics`,
-`/MatchHistory` and `/Heatmap` → 404. WhoScored serves no `/api/v1` surface;
-its pages are rendered client-side and the `/StatisticsFeed/` endpoint behind
-its own tables also 406s for non-browser callers. Its 630 lines of tests passed
-only because they mocked the HTTP layer, asserting parsing against payloads
-WhoScored never returned. Reviving it would need a headless-browser scrape of
-the embedded `matchCentreData` blob, or a licensed Opta feed.
+**WhoScored** — the client was deleted on 2026-08-05, and that was correct, but
+the reasoning in the original commit was only half right.
+
+What was true: the `/api/v1/...` paths the client called do not exist and never
+did. `/api/v1/Search/Players/` → 406, `/api/v1/Players/{id}/Statistics`,
+`/MatchHistory` and `/Heatmap` → 404. There is no player-statistics API. Those
+404s were the site correctly rejecting invented paths, not bot detection.
+
+What was wrong: "WhoScored serves no usable data" overstated it. WhoScored
+event data **is** obtainable, just not from where the client was looking.
+Verified 2026-08-05:
+
+- `https://www.whoscored.com/Matches/{matchId}/Live` returns 200 with ~99 KB
+  and contains `require.config`, but **not** `matchCentreData` in the raw HTML.
+  The event object is populated by JavaScript, so a headless browser is
+  mandatory — `requests` and `curl_cffi` cannot reach it.
+- `https://www.whoscored.com/tournaments/{stageId}/data/?d=YYYYMM` returns real
+  fixture JSON over plain HTTP with no browser.
+
+The working extraction, from `soccerdata`:
+
+```python
+driver.get(f"https://www.whoscored.com/Matches/{match_id}/Live")
+data = driver.execute_script(
+    "return require.config.params['args'].matchCentreData"
+)
+```
+
+`soccerdata` (already a dependency) ships a `WhoScored` reader that does this,
+and `seleniumbase` 4.38.3 (already installed) is the driver it needs. So the
+capability is available without writing a scraper.
+
+What it would add over Sofascore: **event-level data**. Per-event x/y start and
+end coordinates, Opta event type ids, outcome flags, qualifiers, goal-mouth
+coordinates, and per-event player and team ids. Sofascore gives aggregated
+per-90 totals and a binned touch heatmap; WhoScored gives the individual
+actions those aggregates are built from.
+
+Why it is not wired in: it needs a browser per match, `soccerdata` rate-limits
+to 5 s + jitter per request, WhoScored runs Incapsula and has been serving
+CAPTCHAs through mid-2026, and the docs recommend a **visible** browser plus
+Tor to avoid blocks. That is a per-match cost against a project that currently
+fetches per-season aggregates, so it is a deliberate project of its own rather
+than an extra data source.
+
+`robots.txt` does not disallow `/Matches/`, `/Regions/` or `/Tournaments/`.
 
 **WorldFootballElo** — scraped eloratings.net for *club* Elo, but that site
 publishes ratings for **national teams**. `get_team_elo()` returned `None` for
