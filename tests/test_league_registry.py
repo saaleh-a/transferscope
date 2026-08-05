@@ -131,9 +131,11 @@ class TestExistingFunctionality:
         assert info is not None
         assert info.name == "Premier League"
 
-    def test_get_by_worldelo_slug(self):
-        info = league_registry.get_by_worldelo_slug("England")
-        assert info is not None
+    def test_worldelo_slug_field_is_gone(self):
+        """The field described a source that never returned club data."""
+        assert not hasattr(league_registry, "get_by_worldelo_slug")
+        info = league_registry.LEAGUES["ENG1"]
+        assert not hasattr(info, "worldelo_slug")
 
     def test_all_league_codes(self):
         codes = league_registry.all_league_codes()

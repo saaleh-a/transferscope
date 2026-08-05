@@ -72,11 +72,18 @@ class TestProbeAll(unittest.TestCase):
         for name, used_for, _fn in sh._PROBES:
             self.assertTrue(used_for, f"{name} has no 'used for' description")
 
-    def test_known_dead_sources_are_listed_as_such(self):
-        """The two dead sources must stay documented as providing nothing."""
-        used_for = {name: reason for name, reason, _ in sh._PROBES}
-        self.assertIn("Nothing", used_for["WhoScored"])
-        self.assertIn("Nothing", used_for["WorldFootballElo"])
+    def test_known_dead_sources_are_recorded_after_removal(self):
+        """The two dead sources are deleted, not silently forgotten."""
+        self.assertIn("WhoScored", sh.REMOVED_SOURCES)
+        self.assertIn("WorldFootballElo", sh.REMOVED_SOURCES)
+        for name, reason in sh.REMOVED_SOURCES.items():
+            self.assertTrue(reason, f"{name} has no removal reason")
+
+    def test_removed_sources_are_not_probed(self):
+        """Probing a deleted module would raise ImportError every run."""
+        probed = {name for name, _, _ in sh._PROBES}
+        for removed in sh.REMOVED_SOURCES:
+            self.assertNotIn(removed, probed)
 
 
 class TestSummarise(unittest.TestCase):
@@ -138,10 +145,11 @@ class TestIndividualProbeLogic(unittest.TestCase):
             self.assertTrue(sh._probe_statsbomb().startswith("!"))
 
     def test_worldelo_probe_is_dead_by_construction(self):
-        """eloratings.net serves national teams, so no club can resolve."""
-        with patch("backend.data.worldfootballelo_client.get_team_elo",
-                   return_value=None):
-            self.assertEqual(sh._probe_worldelo(), "")
+        """The removed clients must stay removed."""
+        with self.assertRaises(ImportError):
+            from backend.data import worldfootballelo_client  # noqa: F401
+        with self.assertRaises(ImportError):
+            from backend.data import whoscored_client  # noqa: F401
 
 
 if __name__ == "__main__":

@@ -33,18 +33,20 @@ class TestEloRouter(unittest.TestCase):
         mock_ce.assert_called_once()
 
     @patch("backend.data.clubelo_client.get_team_elo", return_value=None)
-    @patch("backend.data.worldfootballelo_client.get_team_elo", return_value=1834.0)
-    def test_non_european_uses_worldelo(self, mock_we, mock_ce):
-        elo = elo_router.get_team_elo("Flamengo")
-        self.assertAlmostEqual(elo, 1834.0)
+    def test_club_outside_clubelo_returns_none(self, mock_ce):
+        """Non-European clubs get no Elo here.
+
+        A WorldFootballElo fallback used to be asserted at this point. It was
+        removed because it scraped eloratings.net, a national-team rating site,
+        and returned None for every club. Global coverage comes from the
+        Opta-derived Elo in power_rankings, not from this router.
+        """
+        self.assertIsNone(elo_router.get_team_elo("Flamengo"))
         mock_ce.assert_called_once()
-        mock_we.assert_called_once()
 
     @patch("backend.data.clubelo_client.get_team_elo", return_value=None)
-    @patch("backend.data.worldfootballelo_client.get_team_elo", return_value=None)
-    def test_unknown_club_returns_none(self, mock_we, mock_ce):
-        elo = elo_router.get_team_elo("Unknown FC")
-        self.assertIsNone(elo)
+    def test_unknown_club_returns_none(self, mock_ce):
+        self.assertIsNone(elo_router.get_team_elo("Unknown FC"))
 
     @patch("backend.data.clubelo_client.get_team_elo", return_value=2050.0)
     def test_with_source_european(self, mock_ce):
@@ -53,14 +55,7 @@ class TestEloRouter(unittest.TestCase):
         self.assertAlmostEqual(elo, 2050.0)
 
     @patch("backend.data.clubelo_client.get_team_elo", return_value=None)
-    @patch("backend.data.worldfootballelo_client.get_team_elo", return_value=1834.0)
-    def test_with_source_worldelo(self, mock_we, mock_ce):
-        elo, source = elo_router.get_team_elo_with_source("Flamengo")
-        self.assertEqual(source, "worldelo")
-
-    @patch("backend.data.clubelo_client.get_team_elo", return_value=None)
-    @patch("backend.data.worldfootballelo_client.get_team_elo", return_value=None)
-    def test_with_source_none(self, mock_we, mock_ce):
+    def test_with_source_none(self, mock_ce):
         elo, source = elo_router.get_team_elo_with_source("Unknown")
         self.assertIsNone(elo)
         self.assertIsNone(source)
@@ -78,9 +73,13 @@ class TestEloRouter(unittest.TestCase):
         self.assertTrue(elo_router.is_covered("Arsenal"))
 
     @patch("backend.data.clubelo_client.is_covered", return_value=False)
-    @patch("backend.data.worldfootballelo_client.is_covered", return_value=True)
-    def test_is_covered_worldelo(self, mock_we, mock_ce):
-        self.assertTrue(elo_router.is_covered("Flamengo"))
+    def test_is_not_covered_outside_clubelo(self, mock_ce):
+        self.assertFalse(elo_router.is_covered("Flamengo"))
+
+    def test_dead_client_is_gone(self):
+        """The removed module must not come back by import."""
+        with self.assertRaises(ImportError):
+            from backend.data import worldfootballelo_client  # noqa: F401
 
 
 if __name__ == "__main__":

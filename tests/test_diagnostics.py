@@ -101,43 +101,72 @@ def test_feature_importance_handles_load_error(mock_load, mock_trained, mock_st)
     mock_st.warning.assert_called_once()
 
 
-# ── Test cache health: missing dir ───────────────────────────────────────────
+# ── Test cache health: unavailable cache ─────────────────────────────────────
 
 
 @patch("frontend.pages.diagnostics.st")
-@patch("frontend.pages.diagnostics.os.path.exists", return_value=False)
-def test_cache_health_missing_dir(mock_exists, mock_st):
-    """Cache health shows info when cache dir doesn't exist."""
+def test_cache_health_missing_dir(mock_st):
+    """Cache health degrades to an info box when the cache cannot be read.
+
+    The section used to walk the cache directory itself; it now asks the cache
+    module for stats, so this covers the module reporting an error rather than
+    a missing folder.
+    """
     from frontend.pages.diagnostics import _render_cache_health
 
-    _render_cache_health()
+    with patch("backend.data.cache.stats", return_value={"error": "unavailable"}):
+        _render_cache_health()
     mock_st.info.assert_called_once()
 
 
-# ── Test cache health: existing dir with files ───────────────────────────────
+# ── Test cache health: populated cache ───────────────────────────────────────
 
 
 @patch("frontend.pages.diagnostics.st")
-@patch("frontend.pages.diagnostics.os.path.exists", return_value=True)
-@patch(
-    "frontend.pages.diagnostics.os.walk",
-    return_value=[("/cache", [], ["file1.db", "file2.db"])],
-)
-@patch("frontend.pages.diagnostics.os.path.getsize", return_value=1024)
-def test_cache_health_existing_dir(mock_size, mock_walk, mock_exists, mock_st):
-    """Cache health renders size and file count cards."""
+def test_cache_health_existing_dir(mock_st):
+    """Cache health renders size, limit and namespace breakdown."""
     from frontend.pages.diagnostics import _render_cache_health
 
-    mock_cache_inst = MagicMock()
-    mock_cache_inst.__iter__ = MagicMock(
-        return_value=iter(["sofascore:key1", "clubelo:key2"])
-    )
-    with patch("diskcache.Cache", return_value=mock_cache_inst):
+    mock_st.button.return_value = False
+    stats = {
+        "entries": 1000,
+        "bytes": 500 * 1024 * 1024,
+        "mb": 500.0,
+        "limit_mb": 2048,
+        "pct_of_limit": 24.4,
+        "eviction_policy": "least-recently-used",
+    }
+    breakdown = {"sofascore": 800, "clubelo": 200}
+
+    with patch("backend.data.cache.stats", return_value=stats), \
+         patch("backend.data.cache.namespace_breakdown", return_value=breakdown):
         _render_cache_health()
 
     mock_st.markdown.assert_called()
     html_calls = [str(c) for c in mock_st.markdown.call_args_list]
     assert any("ts-stat-card" in h for h in html_calls)
+    mock_st.dataframe.assert_called_once()
+
+
+@patch("frontend.pages.diagnostics.st")
+def test_cache_health_warns_when_near_limit(mock_st):
+    """A cache about to start evicting must say so."""
+    from frontend.pages.diagnostics import _render_cache_health
+
+    mock_st.button.return_value = False
+    stats = {
+        "entries": 100_000,
+        "bytes": 1900 * 1024 * 1024,
+        "mb": 1900.0,
+        "limit_mb": 2048,
+        "pct_of_limit": 92.8,
+        "eviction_policy": "least-recently-used",
+    }
+    with patch("backend.data.cache.stats", return_value=stats), \
+         patch("backend.data.cache.namespace_breakdown", return_value={"sofascore": 1}):
+        _render_cache_health()
+
+    mock_st.warning.assert_called()
 
 
 # ── Test data source status ──────────────────────────────────────────────────

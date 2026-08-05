@@ -189,75 +189,78 @@ def _render_feature_importance():
 
 
 def _render_cache_health():
-    section_header("Cache Health", "diskcache storage and namespace breakdown")
+    section_header("Cache Health", "Size, limit, and namespace breakdown")
 
-    cache_dir = os.path.join(
-        os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        ),
-        "data",
-        "cache",
-    )
+    from backend.data import cache as cache_module
 
-    if not os.path.exists(cache_dir):
-        st.info("No cache directory found — cache has not been initialised yet.")
+    stats = cache_module.stats()
+    if "error" in stats:
+        st.info("Cache is not available.")
         return
 
-    # Total cache size
-    total_size = sum(
-        os.path.getsize(os.path.join(dp, f))
-        for dp, _dn, fn in os.walk(cache_dir)
-        for f in fn
-    )
-    file_count = sum(1 for dp, _dn, fn in os.walk(cache_dir) for _ in fn)
-
+    pct = stats["pct_of_limit"]
     cards = [
-        stat_card("Cache Size", f"{total_size / 1024 / 1024:.1f} MB"),
-        stat_card("Files", str(file_count)),
-        stat_card("Location", os.path.basename(cache_dir)),
+        stat_card("Cache Size", f"{stats['mb']:,.0f} MB"),
+        stat_card("Entries", f"{stats['entries']:,}"),
+        stat_card("Limit", f"{stats['limit_mb']:,} MB"),
+        stat_card("Used", f"{pct:.0f}%", delta_positive=pct < 80),
     ]
 
     st.markdown(
         '<div style="display:flex; gap:1rem; margin:0.8rem 0; flex-wrap:wrap;">'
         + "".join(
-            f'<div style="flex:1; min-width:160px;">{c}</div>' for c in cards
+            f'<div style="flex:1; min-width:150px;">{c}</div>' for c in cards
         )
         + "</div>",
         unsafe_allow_html=True,
     )
 
-    # Namespace breakdown — count keys per namespace via diskcache
-    try:
-        import diskcache
+    st.caption(
+        f"Eviction: {stats['eviction_policy']}. The cache used to be unbounded "
+        "and reached 1 GB with no way to reclaim space; it now evicts the "
+        "least-recently-used entries once the limit is reached."
+    )
 
-        cache = diskcache.Cache(cache_dir)
-        namespace_counts: Dict[str, int] = {}
-        for key in cache:
-            if isinstance(key, str) and ":" in key:
-                ns = key.split(":")[0]
-                namespace_counts[ns] = namespace_counts.get(ns, 0) + 1
-            else:
-                namespace_counts["(other)"] = namespace_counts.get("(other)", 0) + 1
-        cache.close()
+    if pct >= 80:
+        st.warning(
+            "Cache is near its limit. Entries will start being evicted, which "
+            "means more live API calls. Prune below, or raise "
+            "CACHE_SIZE_LIMIT_MB."
+        )
 
-        if namespace_counts:
-            import pandas as pd
+    breakdown = cache_module.namespace_breakdown()
+    if breakdown:
+        import pandas as pd
 
-            ns_rows = [
-                {"Namespace": ns, "Entries": count}
-                for ns, count in sorted(
-                    namespace_counts.items(), key=lambda x: x[1], reverse=True
-                )
-            ]
-            st.dataframe(
-                pd.DataFrame(ns_rows),
-                use_container_width=True,
-                hide_index=True,
+        total = sum(breakdown.values()) or 1
+        rows = [
+            {
+                "Namespace": ns,
+                "Entries": f"{count:,}",
+                "Share": f"{count / total:.0%}",
+            }
+            for ns, count in breakdown.items()
+        ]
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+        negative = breakdown.get("sofascore_neg", 0)
+        if negative > total * 0.2:
+            st.caption(
+                f"`sofascore_neg` holds {negative:,} entries ({negative / total:.0%}) "
+                "— endpoints that returned nothing. These are cheap to keep and "
+                "stop the same dead lookups repeating, but they are the first "
+                "thing worth pruning if space is tight."
             )
-        else:
-            st.info("Cache is empty — no entries found.")
-    except Exception as exc:
-        st.warning(f"Could not read cache entries: {exc}")
+    else:
+        st.info("Cache is empty.")
+
+    if st.button("Prune entries older than 7 days", key="diag_prune"):
+        removed = cache_module.prune_expired()
+        st.success(
+            f"Removed {removed:,} entries older than any TTL in use."
+            if removed
+            else "Nothing to prune — no entry is older than the longest TTL."
+        )
 
 
 # ── Section 4: Data Source Status ────────────────────────────────────────────

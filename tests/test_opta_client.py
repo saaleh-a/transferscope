@@ -375,10 +375,9 @@ class TestComputeDailyRankingsOptaPath(unittest.TestCase):
 
     @patch("backend.features.power_rankings._compute_rankings_from_opta")
     @patch("backend.features.power_rankings.clubelo_client")
-    @patch("backend.features.power_rankings.worldfootballelo_client")
     @patch("backend.features.power_rankings.cache")
     def test_today_falls_back_to_clubelo_when_opta_empty(
-        self, mock_cache, mock_welo, mock_ce, mock_opta_fn
+        self, mock_cache, mock_ce, mock_opta_fn
     ):
         """If Opta returns None, should proceed to ClubElo path."""
         from backend.features.power_rankings import compute_daily_rankings
@@ -389,7 +388,6 @@ class TestComputeDailyRankingsOptaPath(unittest.TestCase):
 
         # ClubElo also returns nothing (for simplicity)
         mock_ce.get_all_by_date.return_value = None
-        mock_welo.get_league_teams.return_value = []
 
         teams, leagues = compute_daily_rankings(date.today())
         # With no data from either source, should be empty
@@ -397,10 +395,9 @@ class TestComputeDailyRankingsOptaPath(unittest.TestCase):
 
     @patch("backend.features.power_rankings._compute_rankings_from_opta")
     @patch("backend.features.power_rankings.clubelo_client")
-    @patch("backend.features.power_rankings.worldfootballelo_client")
     @patch("backend.features.power_rankings.cache")
     def test_historical_date_skips_opta(
-        self, mock_cache, mock_welo, mock_ce, mock_opta_fn
+        self, mock_cache, mock_ce, mock_opta_fn
     ):
         """Historical dates should NOT try Opta."""
         from backend.features.power_rankings import compute_daily_rankings
@@ -408,7 +405,6 @@ class TestComputeDailyRankingsOptaPath(unittest.TestCase):
         mock_cache.make_key.return_value = "power_rankings:2023-01-01"
         mock_cache.get.return_value = None
         mock_ce.get_all_by_date.return_value = None
-        mock_welo.get_league_teams.return_value = []
 
         compute_daily_rankings(date(2023, 1, 1))
         mock_opta_fn.assert_not_called()
@@ -429,10 +425,9 @@ class TestOptaToggle(unittest.TestCase):
 
     @patch("backend.features.power_rankings._compute_rankings_from_opta")
     @patch("backend.features.power_rankings.clubelo_client")
-    @patch("backend.features.power_rankings.worldfootballelo_client")
     @patch("backend.features.power_rankings.cache")
     def test_toggle_off_skips_opta(
-        self, mock_cache, mock_welo, mock_ce, mock_opta_fn
+        self, mock_cache, mock_ce, mock_opta_fn
     ):
         import backend.features.power_rankings as pr
 
@@ -443,8 +438,7 @@ class TestOptaToggle(unittest.TestCase):
             mock_cache.make_key.return_value = "power_rankings:today"
             mock_cache.get.return_value = None
             mock_ce.get_all_by_date.return_value = None
-            mock_welo.get_league_teams.return_value = []
-
+    
             pr.compute_daily_rankings(date.today())
             mock_opta_fn.assert_not_called()
         finally:

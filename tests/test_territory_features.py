@@ -147,23 +147,20 @@ class TestTerritoryFeatures(unittest.TestCase):
             self.assertLessEqual(value, 1.0, key)
 
 
-class TestWhoScoredIsDocumentedAsDead(unittest.TestCase):
-    """The dead client must stay labelled, so nobody wires it back in."""
+class TestWhoScoredIsRemoved(unittest.TestCase):
+    """The dead client is deleted, not merely labelled."""
 
-    def test_module_docstring_warns(self):
-        from backend.data import whoscored_client
+    def test_module_is_gone(self):
+        with self.assertRaises(ImportError):
+            from backend.data import whoscored_client  # noqa: F401
 
-        doc = whoscored_client.__doc__ or ""
-        self.assertIn("NON-FUNCTIONAL", doc)
-        self.assertIn("compute_territory_features", doc)
-
-    def test_transfer_impact_no_longer_imports_it(self):
+    def test_transfer_impact_no_longer_references_it(self):
         import pathlib
 
         page = pathlib.Path("frontend/pages/transfer_impact.py").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("whoscored_client.compute_spatial_features", page)
+        self.assertNotIn("whoscored_client", page)
 
 
 if __name__ == "__main__":

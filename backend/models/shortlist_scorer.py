@@ -36,6 +36,81 @@ from backend.utils.constants import MIN_MINUTES_THRESHOLD
 # so the UI can warn users that the match quality is weak.
 _LOW_CONFIDENCE_THRESHOLD = 0.3
 
+# Minutes below which a per-90 figure is mostly noise. A player with 200
+# minutes can post a spectacular per-90 rate off two good cameos, and the
+# shortlist previously showed that at the same visual weight as a full season.
+_THIN_MINUTES = 900        # roughly ten full matches
+_SOLID_MINUTES = 1800      # roughly twenty
+
+
+def data_confidence(
+    minutes_played: Optional[int],
+    current_per90: Optional[Dict[str, float]],
+    metrics: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Describe how much real data sits behind a candidate's numbers.
+
+    Similarity alone says nothing about evidence: a 200-minute cameo and a
+    3,000-minute season are scored identically, and the shortlist gave no way
+    to tell them apart.
+
+    Returns a dict with:
+
+    - ``level``    — "high", "medium" or "low"
+    - ``label``    — short display string
+    - ``reason``   — why it was assigned, for the UI to show on hover
+    - ``coverage`` — fraction of requested metrics actually reported
+    - ``minutes``  — the minutes used, or None when unknown
+    """
+    from backend.data.sofascore_client import CORE_METRICS
+
+    metrics = metrics or list(CORE_METRICS)
+    per90 = current_per90 or {}
+    reported = sum(1 for m in metrics if per90.get(m) is not None)
+    coverage = reported / len(metrics) if metrics else 0.0
+
+    if minutes_played is None:
+        return {
+            "level": "low",
+            "label": "Unknown",
+            "reason": "No minutes reported, so per-90 figures cannot be weighted.",
+            "coverage": round(coverage, 3),
+            "minutes": None,
+        }
+
+    reasons = []
+    level = "high"
+
+    if minutes_played < _THIN_MINUTES:
+        level = "low"
+        reasons.append(
+            f"only {minutes_played:,} minutes — per-90 rates are unstable below "
+            f"{_THIN_MINUTES:,}"
+        )
+    elif minutes_played < _SOLID_MINUTES:
+        level = "medium"
+        reasons.append(f"{minutes_played:,} minutes — a partial season")
+
+    if coverage < 0.5:
+        level = "low"
+        reasons.append(f"only {reported}/{len(metrics)} metrics reported")
+    elif coverage < 0.8 and level == "high":
+        level = "medium"
+        reasons.append(f"{reported}/{len(metrics)} metrics reported")
+
+    if not reasons:
+        reasons.append(
+            f"{minutes_played:,} minutes and {reported}/{len(metrics)} metrics"
+        )
+
+    return {
+        "level": level,
+        "label": {"high": "Good", "medium": "Partial", "low": "Thin"}[level],
+        "reason": "; ".join(reasons),
+        "coverage": round(coverage, 3),
+        "minutes": minutes_played,
+    }
+
 
 @dataclass
 class Candidate:

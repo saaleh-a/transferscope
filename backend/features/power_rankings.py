@@ -28,7 +28,7 @@ _log = logging.getLogger(__name__)
 import numpy as np
 import pandas as pd
 
-from backend.data import cache, clubelo_client, elo_router, worldfootballelo_client
+from backend.data import cache, clubelo_client, elo_router
 from backend.utils.league_registry import LEAGUES, LeagueInfo
 
 # Prefer rapidfuzz for token_sort_ratio (faster, no GPL license issues).
@@ -1637,19 +1637,11 @@ def compute_daily_rankings(
     except Exception as exc:
         _log.exception("ClubElo data fetch failed: %s", exc)
 
-    # Non-European clubs from WorldFootballElo
-    for code, info in LEAGUES.items():
-        if info.clubelo_league is not None:
-            continue  # already covered by ClubElo
-        if info.worldelo_slug is None:
-            continue
-        try:
-            teams = worldfootballelo_client.get_league_teams(info.worldelo_slug)
-            for t in teams:
-                if t.get("elo") and t.get("name"):
-                    all_teams[t["name"]] = (t["elo"], code)
-        except Exception as exc:
-            _log.warning("WorldElo fetch failed for %s: %s", info.worldelo_slug, exc)
+    # Clubs outside ClubElo are not fetched here. A WorldFootballElo block used
+    # to sit at this point, but it scraped eloratings.net — a national-team
+    # rating site — so it contributed nothing for any club. Global coverage
+    # comes from the Opta path in _compute_rankings_from_opta(), which is tried
+    # first and only falls through to here when the Opta bundle is unavailable.
 
     if not all_teams:
         return {}, {}

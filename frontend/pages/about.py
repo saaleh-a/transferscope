@@ -214,9 +214,10 @@ silently drop valid candidates. Missing fields show as "—" in the results tabl
         st.markdown(f"**{continent}** ({len(leagues)} leagues)")
         rows = []
         for code, info in sorted(leagues, key=lambda x: x[1].name):
-            historical_source = "ClubElo" if info.clubelo_league else (
-                "WorldFootballElo" if info.worldelo_slug else "None"
-            )
+            # Historical Elo comes from ClubElo where it exists. Everywhere
+            # else the training path falls back to an Opta-derived Elo — it
+            # used to claim WorldFootballElo here, which supplied nothing.
+            historical_source = "ClubElo" if info.clubelo_league else "Opta (rescaled)"
             rows.append({
                 "Code": code,
                 "League": info.name,

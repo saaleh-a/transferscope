@@ -1,14 +1,19 @@
 """Live health probes for every external data source.
 
 The Diagnostics page used to report a source healthy if its Python module
-imported. That is not a health check: ``whoscored_client`` imports perfectly
-and every one of its endpoints returns 404/406, and ``worldfootballelo_client``
-imports while returning ``None`` for every club because eloratings.net serves
-national teams, not clubs. Both showed a green tick for months.
+imported. That is not a health check: ``whoscored_client`` imported perfectly
+while every one of its endpoints returned 404/406, and
+``worldfootballelo_client`` imported while returning ``None`` for every club,
+because eloratings.net serves national teams rather than clubs. Both showed a
+green tick for months, and both have since been deleted.
 
 Each probe here performs a real call with a known-good query and reports what
 came back. A probe never raises: a source that is down must not take the
 Diagnostics page with it.
+
+Two sources were removed entirely after probing proved them non-functional —
+see ``REMOVED_SOURCES``. They are recorded rather than silently dropped, so
+nobody re-adds them assuming they work.
 
 Statuses
 --------
@@ -136,22 +141,6 @@ def _probe_clubelo() -> str:
     return f"{len(df)} European clubs"
 
 
-def _probe_worldelo() -> str:
-    from backend.data import worldfootballelo_client
-
-    # eloratings.net covers national teams only, so no club will ever resolve.
-    for club in ("Flamengo", "Palmeiras", "Boca Juniors"):
-        if worldfootballelo_client.get_team_elo(club) is not None:
-            return f"resolved {club}"
-    return ""
-
-
-def _probe_whoscored() -> str:
-    from backend.data import whoscored_client
-
-    return "search returned results" if whoscored_client.search_player("Saka") else ""
-
-
 def _probe_statsbomb() -> str:
     from backend.data import statsbomb_client
 
@@ -193,9 +182,20 @@ _PROBES = [
     ("football-data.co.uk", "League style calibration", _probe_footballdata),
     ("REEP registry", "Club aliases, player height and DOB", _probe_reep),
     ("StatsBomb open data", "Shot maps, pass networks", _probe_statsbomb),
-    ("WorldFootballElo", "Nothing — national teams only, no club data", _probe_worldelo),
-    ("WhoScored", "Nothing — every endpoint returns 404/406", _probe_whoscored),
 ]
+
+# Sources removed from the project after being verified non-functional. Kept as
+# a record so nobody re-adds them expecting they work.
+REMOVED_SOURCES = {
+    "WhoScored": (
+        "Every endpoint returned 404/406; no /api/v1 surface exists. "
+        "Module deleted 2026-08-05."
+    ),
+    "WorldFootballElo": (
+        "eloratings.net rates national teams, not clubs, so no club ever "
+        "resolved. Module deleted 2026-08-05."
+    ),
+}
 
 
 def probe_all(include_slow: bool = True) -> List[SourceHealth]:

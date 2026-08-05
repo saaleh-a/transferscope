@@ -29,6 +29,7 @@ from backend.models.shortlist_scorer import (
     MIN_MINUTES_THRESHOLD,
     ShortlistFilters,
     compute_percentage_changes,
+    data_confidence,
     filter_candidates as _filter_candidates_fn,
     score_candidates,
 )
@@ -629,6 +630,10 @@ def render():
         )
         confidence = "⚠️ Low" if c.low_confidence else "✅ Good"
         vs = value_lookup.get(c.player_id)
+        # Similarity says nothing about how much data backs it — a 200-minute
+        # cameo and a full season score identically. Surface the evidence.
+        evidence = data_confidence(c.minutes_played, c.current_per90)
+        evidence_icon = {"high": "✅", "medium": "◐", "low": "⚠️"}[evidence["level"]]
         rows.append({
             "Rank": len(rows) + 1,
             "Player": c.name,
@@ -648,6 +653,10 @@ def render():
             ),
             "Why": ", ".join(vs.reasons) if vs is not None and vs.reasons else "—",
             "Rating": f"{c.rating:.2f}" if c.rating is not None else "—",
+            "Minutes": (
+                f"{c.minutes_played:,}" if c.minutes_played is not None else "—"
+            ),
+            "Evidence": f"{evidence_icon} {evidence['label']}",
             "Similarity": f"{c.score:.1%}",
             "Confidence": confidence,
             "Cluster": "✓ Same" if c.same_cluster_as_reference else ("○ Diff" if c.cluster >= 0 else "—"),
@@ -655,6 +664,25 @@ def render():
         })
 
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    # Explain the evidence column rather than leaving an unexplained icon.
+    thin = [
+        c for c in scored[:20]
+        if data_confidence(c.minutes_played, c.current_per90)["level"] == "low"
+    ]
+    st.caption(
+        "**Evidence** reflects how much data sits behind the per-90 figures — "
+        f"minutes played and metric coverage — not how good the player is. "
+        f"Below {900:,} minutes a per-90 rate can swing on a couple of "
+        "substitute appearances."
+    )
+    if thin:
+        names = ", ".join(c.name for c in thin[:5])
+        more = f" and {len(thin) - 5} more" if len(thin) > 5 else ""
+        st.warning(
+            f"⚠️ Thin evidence for {len(thin)} of {len(rows)} shown: {names}{more}. "
+            "Their similarity scores are computed from small samples."
+        )
 
     n_priced = sum(1 for c in scored[:20] if c.market_value is not None)
     if n_priced < len(rows):

@@ -109,7 +109,7 @@ transferscope/
 │   ├── data/                           # Talks to external data sources
 │   │   ├── sofascore_client.py         # Player stats, search, transfers, seasons, match logs
 │   │   ├── clubelo_client.py           # European club Elo ratings
-│   │   ├── worldfootballelo_client.py  # Global club Elo ratings (non-Europe)
+│   │   ├── statsbomb_client.py        # StatsBomb spatial data — shots, passes, heatmaps
 │   │   ├── elo_router.py              # Picks the right Elo source for each club
 │   │   ├── reep_registry.py           # REEP open data — ~45K team aliases for fuzzy matching
 │   │   ├── statsbomb_client.py        # StatsBomb spatial data — shots, passes, heatmaps
@@ -275,8 +275,8 @@ claim are documented here as dead, because that is what they are.
 | **REEP Register** | ~45K club aliases + player height/DOB | ✅ Live | "What other names does this club go by?" |
 | **football-data.co.uk** | Match-level CSVs, 16 leagues | ✅ Live | "How do league playing styles compare?" |
 | **StatsBomb** | Shot maps, pass networks | ⚠️ Partial | Open data is mostly historical competitions — covered 1 of 4 sampled current players |
-| **WorldFootballElo** | **Nothing** | ❌ Dead | eloratings.net rates **national teams**, not clubs. No club has ever resolved through it |
-| **WhoScored** | **Nothing** | ❌ Dead | Every endpoint returns 404/406; there is no `/api/v1` surface |
+| ~~**WorldFootballElo**~~ | — | 🗑️ Removed | eloratings.net rates **national teams**, not clubs. No club ever resolved. Module deleted |
+| ~~**WhoScored**~~ | — | 🗑️ Removed | Every endpoint returned 404/406; no `/api/v1` surface exists. Module deleted |
 
 Global club coverage comes from **Opta**, not WorldFootballElo. The Opta data
 is embedded in [The Analyst's](https://dataviz.theanalyst.com/opta-power-rankings/)

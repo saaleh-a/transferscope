@@ -14,7 +14,7 @@ Built for Arsenal scouting. Any player, any club, any league including South Ame
 |---|---|
 | Player stats | Sofascore REST API via `backend/data/sofascore_client.py` |
 | Power Rankings (Inference) | Opta Power Rankings via `curl_cffi` direct JSON extraction from JS bundle (`backend/data/opta_client.py`) |
-| Power Rankings (Training/Historical) | ClubElo via `soccerdata` + WorldFootballElo (`eloratings.net`) via direct HTTP scrape |
+| Power Rankings (Training/Historical) | ClubElo via `soccerdata` for Europe; Opta rescaled to Elo scale everywhere else |
 | Feature engineering | pandas rolling windows |
 | Adjustment models | sklearn LinearRegression + paper-aligned heuristic (`paper_heuristic_predict`) |
 | Prediction model | TensorFlow multi-head neural network (6 model groups) — heuristic fallback when untrained |
@@ -43,12 +43,10 @@ transferscope/
 │   ├── data/
 │   │   ├── sofascore_client.py         # Sofascore REST API — player stats, search, transfers, match logs
 │   │   ├── clubelo_client.py           # ClubElo wrapper via soccerdata (Europe)
-│   │   ├── worldfootballelo_client.py  # WorldFootballElo scraper (global fallback)
 │   │   ├── elo_router.py               # Routes club to correct Elo source, merges scores
 │   │   ├── opta_client.py              # Opta Power Rankings — curl_cffi + JSON extraction from JS bundle
 │   │   ├── reep_registry.py            # REEP register — dynamic team alias building (~45K clubs)
 │   │   ├── statsbomb_client.py         # StatsBomb open-data — shots, passes, heatmaps, spatial features
-│   │   ├── whoscored_client.py        # DEAD — every endpoint 404/406, kept for reference only
 │   │   ├── footballdata_client.py      # football-data.co.uk — match CSVs for coefficient calibration
 │   │   └── cache.py                    # diskcache layer — all external calls go through here
 │   ├── features/
@@ -98,7 +96,7 @@ then scaled 0-100 daily so best team globally = 100, worst = 0.
 ### Our implementation (faithful recreation)
 
 **Hybrid data source:** For inference (today's date), Opta Power Rankings are the
-primary source. For training (historical dates), ClubElo + WorldFootballElo are
+primary source. For training (historical dates), ClubElo and Opta are
 used since Opta has no historical API.
 
 **Step 1 — Get raw team Elo scores**
@@ -115,14 +113,14 @@ used since Opta has no historical API.
   rescale from Opta's 0-100 to ~1000-2100 range.
   League code resolution priority: Opta (domestic_league_name + country from team data) → ClubElo fallback → "UNK".
   Cached with 7-day TTL (Opta updates roughly weekly).
-- **Training (historical dates):** ClubElo + WorldFootballElo, same as before:
+- **Training (historical dates):** ClubElo where it covers the club, otherwise Opta:
   - European clubs: ClubElo via `soccerdata` (`sd.ClubElo().read_by_date(date)`)
     Returns rank, club, country, level, Elo, date range for all European clubs.
-  - Non-European clubs (South America, MLS, etc.): WorldFootballElo via HTTP scrape
-    Endpoint: `http://eloratings.net/{TeamName}` or date-based snapshot
-    Returns global Elo scores going back decades.
-  - `elo_router.py` checks which source covers the club and fetches accordingly.
-    If a club exists in both sources, ClubElo takes priority (more granular for Europe).
+  - Everywhere else: an Elo rescaled from the club's Opta Power Ranking.
+    A WorldFootballElo scrape used to sit here. It was deleted on 2026-08-05
+    because eloratings.net rates **national teams**, not clubs, so it returned
+    nothing for every club it was ever asked about.
+  - `elo_router.py` now only wraps ClubElo; global coverage is the Opta path.
 
 **Step 2 — Derive league Power Rankings dynamically**
 
@@ -194,18 +192,25 @@ Functions: `get_player_shots()`, `get_player_passes()`, `get_player_heatmap_data
 `compute_spatial_features()`. Rendered by `frontend/components/pitch_viz.py` using mplsoccer.
 Integrated into the Transfer Impact page for shot maps, pass networks, and heatmaps.
 
-### WhoScored (`backend/data/whoscored_client.py`) — DEAD, do not use
-Every endpoint this client calls returns 404/406. Verified 2026-08-04:
-`/api/v1/Search/Players/` → 406, `/api/v1/Players/{id}/Statistics`,
-`/MatchHistory` and `/Heatmap` → 404. WhoScored does not serve an `/api/v1`
-surface; its player and search pages are rendered client-side, and the
-`/StatisticsFeed/` endpoint behind the site's own tables also 406s for
-non-browser callers.
+### Removed sources — do not re-add
+Both were verified non-functional and deleted on 2026-08-05.
 
-The module's tests pass only because they mock the HTTP layer, so they assert
-parsing against payloads WhoScored never returns. The module is retained for
-reference with a warning in its docstring; reviving it would need a headless
-browser scrape of the embedded `matchCentreData` blob, or a licensed Opta feed.
+**WhoScored** — every endpoint returned 404/406. Verified 2026-08-04:
+`/api/v1/Search/Players/` → 406, `/api/v1/Players/{id}/Statistics`,
+`/MatchHistory` and `/Heatmap` → 404. WhoScored serves no `/api/v1` surface;
+its pages are rendered client-side and the `/StatisticsFeed/` endpoint behind
+its own tables also 406s for non-browser callers. Its 630 lines of tests passed
+only because they mocked the HTTP layer, asserting parsing against payloads
+WhoScored never returned. Reviving it would need a headless-browser scrape of
+the embedded `matchCentreData` blob, or a licensed Opta feed.
+
+**WorldFootballElo** — scraped eloratings.net for *club* Elo, but that site
+publishes ratings for **national teams**. `get_team_elo()` returned `None` for
+Flamengo, Palmeiras, Al Hilal, LA Galaxy and Boca Juniors. It could never have
+worked. Global club coverage comes from Opta.
+
+`backend/data/source_health.py` records both in `REMOVED_SOURCES` with the
+reason, so the removal is discoverable rather than silent.
 
 ### Positional data (`sofascore_client.compute_territory_features()`)
 The working source of spatial data. Derived from the Sofascore season heatmap
@@ -530,7 +535,7 @@ Available filters: age, market value, minutes played, position, league, club Pow
 ## Key decisions already made — do not revisit
 
 - Sofascore not FotMob: team search, transfer history, season selector, league-wide stats, team-position averages
-- ClubElo + WorldFootballElo not static tier table: dynamic, global, faithful to paper
+- ClubElo + Opta not static tier table: dynamic, global, faithful to paper
 - Dynamic league Elo from team mean: updates automatically, no manual maintenance (training/historical mode)
 - Opta Power Rankings for inference: primary source for today's date, 0-100 native scale, with ClubElo raw_elo overlay
 - `curl_cffi` over Selenium for Opta: direct JSON extraction from static JS bundle is faster, lighter, and more reliable than headless browser automation
