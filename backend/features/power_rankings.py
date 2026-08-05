@@ -1827,40 +1827,78 @@ def _get_opta_alias_map() -> Dict[str, str]:
         return _opta_alias_map
     try:
         from backend.data import opta_client
-        league_map = _get_opta_league_map()
-        _opta_alias_map = {}
-        _opta_team_league_map = {}
+        # Build into locals and publish atomically. Streamlit runs each rerun on
+        # a ScriptRunner worker thread, and these are plain module globals — a
+        # second thread reading the `is not None` guard mid-build would get a
+        # truncated dict and, being non-None, keep it for the life of the process.
+        alias_map: Dict[str, str] = {}
+        team_league_map: Dict[str, float] = {}
+        best_rank: Dict[str, int] = {}
         n_aliases = 0
         n_teams = 0
+        n_no_season_avg = 0
+
+        def _claim(key: str, rating: float, rank: int) -> None:
+            """Write ``key`` only if no better-ranked club has claimed it.
+
+            The Opta list is sorted rank-ascending and contains genuine
+            homonyms — Arsenal (England) and Arsenal (Guadeloupe), Barcelona
+            (Spain) and Barcelona (Ecuador). A plain assignment lets the
+            *worst*-ranked club in the world win, which is how Arsenal ended up
+            carrying the Division d'Honneur rating.  Mirrors the guard already
+            used in ``_compute_rankings_from_opta``.
+            """
+            k = key.lower()
+            if k not in best_rank or rank < best_rank[k]:
+                best_rank[k] = rank
+                team_league_map[k] = rating
+
         for t in opta_client.get_team_rankings():
             n_teams += 1
             canonical = t.team
             # ── alias map ────────────────────────────────────────────────────
             for alt in (t.short_name, t.club_name):
                 if alt and alt.lower() != canonical.lower():
-                    _opta_alias_map[alt.lower()] = canonical
+                    alias_map[alt.lower()] = canonical
                     n_aliases += 1
             # ── team → league rating flat index ──────────────────────────────
-            if t.domestic_league:
-                # Prefer country-qualified lookup when available, so that
-                # e.g. "Arsenal" (country="England", league="Premier League")
-                # gets England's rating (86) and not the generic highest-rated
-                # "Premier League" entry which might be from a different country.
-                country_map = _opta_league_country_map or {}
-                cq_key = (t.country.lower(), t.domestic_league.lower()) if t.country else None
-                rating = country_map.get(cq_key) if cq_key else None
-                if rating is None:
-                    rating = league_map.get(t.domestic_league.lower())
-                if rating is not None:
-                    _opta_team_league_map[canonical.lower()] = rating
-                    if t.short_name:
-                        _opta_team_league_map[t.short_name.lower()] = rating
-                    if t.club_name:
-                        _opta_team_league_map[t.club_name.lower()] = rating
+            # Opta ships each team's own league average on the team record as
+            # `seasonAverageRating`, present on 13,791/13,791 teams and equal to
+            # the published league-ranking figure (all 20 English Premier League
+            # clubs read 92.91, matching the league table exactly).
+            #
+            # Resolving instead via `domesticLeagueName` was wrong twice over:
+            # the team bundle uses short names ("Premier League") while
+            # league-meta uses long ones ("English Premier League"), so the
+            # country-qualified key missed for every Big-5 club and fell through
+            # to "highest-rated league of that bare name anywhere on earth" —
+            # Manchester City was trained on Bahrain's Premier League (65.50)
+            # instead of England's (92.91).
+            #
+            # Using the team's own figure also makes this agree with
+            # TeamRanking.league_mean_normalized, which is what inference serves.
+            if t.season_avg_rating and t.season_avg_rating > 0:
+                _claim(canonical, t.season_avg_rating, t.rank)
+                if t.short_name:
+                    _claim(t.short_name, t.season_avg_rating, t.rank)
+                if t.club_name:
+                    _claim(t.club_name, t.season_avg_rating, t.rank)
+            else:
+                n_no_season_avg += 1
+
+        if n_no_season_avg:
+            _log.warning(
+                "Opta: %d/%d teams had no seasonAverageRating — their league "
+                "ability will fall back to the league-code path",
+                n_no_season_avg, n_teams,
+            )
+
+        _opta_alias_map = alias_map
+        _opta_team_league_map = team_league_map
         _log.info(
             "Built Opta alias map: %d aliases from %d teams; "
             "%d team→league rating entries",
-            n_aliases, n_teams, len(_opta_team_league_map),
+            n_aliases, n_teams, len(team_league_map),
         )
     except Exception as exc:
         _log.warning("Failed to build Opta alias/league maps: %s — using empty dicts", exc)
@@ -1880,6 +1918,75 @@ def _get_opta_team_league_map() -> Dict[str, float]:
         return _opta_team_league_map
     _get_opta_alias_map()  # populates _opta_team_league_map as a side effect
     return _opta_team_league_map or {}
+
+
+_OPTA_COUNTRY_ALIASES: Dict[str, str] = {
+    "united states": "usa",
+    "ireland": "republic of ireland",
+    "czech republic": "czechia",
+    "south korea": "korea republic",
+    "turkey": "türkiye",
+}
+
+_opta_country_leagues: Optional[Dict[str, List[float]]] = None
+
+
+def _get_opta_country_leagues() -> Dict[str, List[float]]:
+    """Return ``{country_lower: [rating, ...]}`` sorted best-first."""
+    global _opta_country_leagues
+    if _opta_country_leagues is not None:
+        return _opta_country_leagues
+    try:
+        from backend.data import opta_client
+        grouped: Dict[str, List[float]] = {}
+        for lr in opta_client.get_league_rankings():
+            if lr.country:
+                grouped.setdefault(lr.country.lower(), []).append(lr.rating)
+        for ratings in grouped.values():
+            ratings.sort(reverse=True)
+        _opta_country_leagues = grouped
+    except Exception as exc:
+        _log.warning("Failed to build Opta country→league map: %s", exc)
+        _opta_country_leagues = {}
+    return _opta_country_leagues
+
+
+def _opta_rating_by_country_tier(
+    league_code: str, info: "LeagueInfo",
+) -> Optional[float]:
+    """Resolve a registry league to its Opta rating by country and tier.
+
+    Name matching cannot be used here. Opta and the registry disagree on
+    almost every league name — "Brazilian Serie A" vs "Brasileirao Serie A",
+    "Belgian Jupiler Pro League" vs "Belgian Pro League" — and fuzzy matching
+    across the full 333-league list is actively dangerous, because a top flight
+    and an amateur division of another country differ by one character:
+    "Bundesliga" scored 0.80 against "landesliga" (a German sixth tier) and
+    "Serie A" scored 0.86 against "serie d".
+
+    Country plus tier is unambiguous instead. The registry code carries the
+    tier as a trailing digit (``ENG1``, ``ENG2``, ``ESP2``) and Opta rates every
+    league in the world on one scale, so "the nth-best-rated league in country
+    X" is exactly what "X's nth tier" means. This resolves all 51 registry
+    leagues to the correct division.
+    """
+    country = info.country.lower()
+    grouped = _get_opta_country_leagues()
+    ratings = grouped.get(country)
+    if not ratings:
+        ratings = grouped.get(_OPTA_COUNTRY_ALIASES.get(country, ""))
+    if not ratings:
+        return None
+
+    match = re.search(r"(\d+)$", league_code)
+    tier = int(match.group(1)) if match else 1
+    if tier - 1 >= len(ratings):
+        _log.warning(
+            "Opta lists only %d league(s) for %s but %s implies tier %d",
+            len(ratings), info.country, league_code, tier,
+        )
+        return None
+    return ratings[tier - 1]
 
 
 def get_league_opta_rating(
@@ -1921,28 +2028,23 @@ def get_league_opta_rating(
         if rating is not None:
             return rating
 
-    # ── Priority 2: league_code → registry name → Opta league match ──────────
-    # Results are cached in _league_code_opta_rating_cache so the fuzzy
-    # SequenceMatcher loop only runs ONCE per league_code per process.
+    # ── Priority 2: league_code → registry country + tier → Opta league ──────
+    # Results are cached in _league_code_opta_rating_cache so the work only
+    # runs ONCE per league_code per process.
     if league_code:
         if league_code in _league_code_opta_rating_cache:
             return _league_code_opta_rating_cache[league_code]
         info = LEAGUES.get(league_code)
-        if info and info.name:
-            league_map = _get_opta_league_map()
-            # Exact match
-            rating = league_map.get(info.name.lower())
-            if rating is None:
-                # Fuzzy match — runs at most once per league_code
-                best_score = 0.0
-                for key, r in league_map.items():
-                    score = SequenceMatcher(None, info.name.lower(), key).ratio()
-                    if score > best_score and score >= 0.70:
-                        best_score = score
-                        rating = r
+        if info and info.country:
+            rating = _opta_rating_by_country_tier(league_code, info)
             if rating is not None:
                 _league_code_opta_rating_cache[league_code] = rating
                 return rating
+        _log.warning(
+            "No Opta league rating for league_code=%s — falling back to the "
+            "50.0 scale midpoint, which will read as a mid-table league",
+            league_code,
+        )
         # Cache the miss too so we don't re-run on every sample
         _league_code_opta_rating_cache[league_code] = 50.0
 

@@ -9,14 +9,21 @@ from typing import Dict
 
 import streamlit as st
 
-from frontend.theme import section_header, stat_card, COLORS, PLOTLY_LAYOUT
+from frontend.theme import (
+    section_header, stat_card, COLORS, PLOTLY_LAYOUT, page_header,
+    apply_plotly_theme,
+)
 
 _log = logging.getLogger(__name__)
 
 
 def render():
-    st.header("Diagnostics")
-    st.caption("Model status, feature importance, and system health")
+    page_header(
+        "Diagnostics",
+        "What the model is made of and whether every data source is still "
+        "answering.",
+        kicker="System",
+    )
 
     _render_model_status()
     _render_feature_importance()
@@ -120,7 +127,13 @@ def _render_feature_importance():
     if model._scaler is not None and hasattr(model._scaler, "mean_"):
         scaler_means = model._scaler.mean_
         key_to_mean = {k: float(scaler_means[i]) for i, k in enumerate(all_keys)}
-        sample_per90 = {m: key_to_mean.get(m, 0.5) for m in CORE_METRICS}
+        # key_to_mean is keyed by *feature* name ("player_expected_goals"), not
+        # by bare metric name, so `key_to_mean.get(m, 0.5)` missed on all 13 and
+        # evaluated the gradients at a point where a striker's xG was 5x the
+        # training mean (0.5 vs 0.1007) and box touches 6x below it (0.5 vs
+        # 3.14). The team_pos lines below already got this right, which is what
+        # made it easy to miss.
+        sample_per90 = {m: key_to_mean.get(f"player_{m}", 0.5) for m in CORE_METRICS}
         sample_fd = build_feature_dict(
             player_per90=sample_per90,
             team_ability_current=key_to_mean.get("team_ability_current", 60.0),
@@ -175,8 +188,8 @@ def _render_feature_importance():
                 marker_color=COLORS["accent_gold"],
             )
         )
-        fig.update_layout(
-            **PLOTLY_LAYOUT,
+        apply_plotly_theme(
+            fig,
             title=f"{group_name.title()} Group",
             height=max(200, 28 * len(names)),
             yaxis=dict(autorange="reversed"),

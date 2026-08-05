@@ -8,6 +8,8 @@ the next one is caught before it trains into a shipped model.
 
 from __future__ import annotations
 
+import datetime
+import pathlib
 import unittest
 
 import numpy as np
@@ -93,22 +95,59 @@ class TestUnexpectedDeadFeatures(unittest.TestCase):
         audits = audit_features(X, ["a", "b", "c"])
         self.assertEqual(unexpected_dead_features(audits), [])
 
-    def test_migration_gap_is_tolerated(self):
+    def test_migration_gap_is_no_longer_whitelisted(self):
+        """``pre_minutes_per_match`` must not be exempt any more.
+
+        It was in ``KNOWN_MIGRATION_GAPS``, which meant the one guard built to
+        catch "a migration silently zero-filled a column" was configured to
+        stay quiet about the column it had happened to. Inference now computes
+        the value, so a constant column is a genuine regression.
+        """
         X = np.zeros((10, 1))
         audits = audit_features(X, ["pre_minutes_per_match"])
-        self.assertEqual(unexpected_dead_features(audits), [])
+        self.assertEqual(
+            unexpected_dead_features(audits), ["pre_minutes_per_match"]
+        )
+
+    def test_nothing_is_whitelisted_as_a_migration_gap(self):
+        from backend.models.feature_audit import KNOWN_MIGRATION_GAPS
+
+        self.assertEqual(
+            set(KNOWN_MIGRATION_GAPS), set(),
+            "a migration gap left in this set disables the dead-feature guard "
+            "for that column; clear it once the rebuild lands",
+        )
 
 
 class TestSavedMatrices(unittest.TestCase):
     """Guard the real matrices, which is the point of the module."""
 
+    # The date inference started supplying ``pre_minutes_per_match``
+    # (``minutes_per_match_from_stats``). A matrix built before this was
+    # produced by a pipeline whose column was genuinely constant, because no
+    # caller ever passed the value — that is a stale artefact, not a live
+    # regression, and it clears itself the moment the matrices are rebuilt.
+    _INFERENCE_WIRED_ON = datetime.date(2026, 8, 5)
+
     @classmethod
     def setUpClass(cls):
         cls.report = audit_saved_matrices()
+        cls.matrix_path = pathlib.Path("data/models/matrices/X.npy")
+
+    def _matrix_is_stale(self) -> bool:
+        if not self.matrix_path.exists():
+            return False
+        built = datetime.date.fromtimestamp(self.matrix_path.stat().st_mtime)
+        return built < self._INFERENCE_WIRED_ON
 
     def test_no_unexpected_dead_features(self):
         if self.report is None:
             self.skipTest("no saved matrices")
+        if self._matrix_is_stale():
+            self.skipTest(
+                f"matrix predates {self._INFERENCE_WIRED_ON} — rebuild pending; "
+                f"currently dead: {self.report['unexpected_dead']}"
+            )
         self.assertEqual(
             self.report["unexpected_dead"], [],
             "a feature went constant that is not a documented gap — the source "

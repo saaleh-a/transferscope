@@ -226,3 +226,57 @@ of clubs compared against a global ~51. See the git history for the correction.
 4. Leave the Value Opportunity weights alone. They are honest judgement calls
    with no ground truth to fit against, and they are displayed with their
    reasoning.
+
+---
+
+## Appendix: parameters that were wrong, not just unvalidated
+
+Found in the 2026-08-05 review. Recorded because in each case the number
+looked deliberate and was not.
+
+**League ability (`power_rankings.get_league_opta_rating`).** Two stacked
+bugs meant no club got its own league's rating:
+
+| Lookup | Was | Should be |
+|---|---|---|
+| Manchester City | 65.50 (Bahrain Premier League) | 92.91 |
+| Arsenal | 60.43 (Guadeloupe Division d'Honneur) | 92.91 |
+| Paris Saint-Germain | 69.52 (Tunisia Ligue 1) | 86.24 |
+| `league_code='GER1'` | 45.02 (`landesliga`, a German sixth tier) | 87.14 |
+| `league_code='ITA1'` | 53.29 (`serie d`) | 87.02 |
+
+Opta's team records name leagues short ("Premier League") while league-meta
+names them long ("English Premier League"), so the country-qualified lookup
+missed for every Big-5 club and fell through to "highest-rated league of that
+bare name anywhere in the world". Separately, the team-name index was
+last-write-wins over a rank-ascending list, so for genuine homonyms the
+*worst*-ranked club on earth won the key. The fallback then fuzzy-matched
+league names across all 333 leagues at a 0.70 threshold, where a top flight
+and an amateur division differ by one character.
+
+Now resolved from `seasonAverageRating` on the team record — present on
+13,791/13,791 teams, equal to the published league figure, and the same source
+inference already served, so this also closed a 2-sigma train/serve skew. The
+fallback resolves by country and tier instead of by name: 51/51 registry
+leagues, zero fallbacks to the 50.0 midpoint.
+
+**Shortlist metric weights.** Applied before `StandardScaler`, where they
+cancel exactly — `(w·x − w·μ)/(w·σ) = (x − μ)/σ`. Measured difference between
+a uniform and a heavily skewed weight vector was 1.3e-15 and the candidate
+order was identical, so the sliders were an on/off switch while the UI said
+"1.0 means the metric is fully considered". Now standardised first, then
+weighted by `sqrt(w)` so a metric's contribution to the squared Euclidean
+distance scales linearly with its weight.
+
+**Diagnostics feature importance.** Evaluated gradients at `0.5` for all 13
+player metrics, because the lookup was keyed by feature name
+(`player_expected_goals`) and queried with the bare metric name. A striker's
+xG was 5× the training mean and box touches 6× below it, so the reported
+importances were not the ones that hold in the data.
+
+**`pre_minutes_per_match`.** No inference caller supplied it, so it was always
+0.0 while training computed a real value. Inert only by accident — the column
+was constant in the shipped matrix, so `StandardScaler` zero-variance handling
+neutralised it — and that accident would have ended at the next rebuild. Now
+computed at inference via `minutes_per_match_from_stats`, and removed from the
+audit whitelist that had been suppressing the one guard built to catch it.

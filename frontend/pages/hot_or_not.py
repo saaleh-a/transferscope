@@ -19,10 +19,12 @@ from backend.models.shortlist_scorer import compute_percentage_changes
 from backend.models.transfer_portal import (
     TransferPortalModel,
     build_feature_dict,
+    minutes_per_match_from_stats,
 )
+from frontend.prediction_inputs import source_and_target_league_means
 from frontend.theme import (
     section_header, confidence_badge, verdict_display, player_info_card, COLORS,
-    score_ring, tone_for_value,
+    score_ring, tone_for_value, page_header, empty_state,
 )
 
 from frontend.constants import METRIC_LABELS as _LABELS
@@ -85,8 +87,12 @@ def _verdict(
 
 
 def render():
-    st.header("Hot or Not")
-    st.caption("Quick rumour validator — is this transfer a good move?")
+    page_header(
+        "Hot or Not",
+        "A fast read on a transfer rumour: would the move raise or lower this "
+        "player's output?",
+        kicker="Rumour check",
+    )
 
     # ── Inputs ───────────────────────────────────────────────────────────
     col1, col2 = st.columns(2)
@@ -96,7 +102,21 @@ def render():
         target_club_query = st.text_input("Target club", placeholder="e.g. Arsenal", key="hon_club")
 
     if not player_query or not target_club_query:
-        st.info("Enter a player and target club to validate the rumour.")
+        empty_state(
+            "One verdict, weighted by position",
+            "Same engine as Transfer Impact, condensed to a single call. "
+            "Metrics are weighted by what the player is actually paid to do — "
+            "attacking output counts 1.5× for forwards, defensive output 1.5× "
+            "for defenders — so a striker isn't marked down for making fewer "
+            "clearances at a side that keeps the ball.",
+            examples=["Victor Osimhen → Arsenal", "Bruno Guimarães → Man City"],
+            footnote=(
+                "A verdict is a direction, not a promise. Check the confidence "
+                "badge: under roughly 900 minutes of pre-transfer football the "
+                "input is thin enough that the answer should be read as a "
+                "prompt to look closer, not a conclusion."
+            ),
+        )
         return
 
     # ── Player search + dropdown ─────────────────────────────────────────
@@ -264,13 +284,22 @@ def render():
     _raw_elo_current = source_ranking.raw_elo if source_ranking else 1500.0
     _raw_elo_target = target_ranking.raw_elo if target_ranking else 1500.0
 
+    # Minutes per appearance, and per-metric league means. Both were previously
+    # omitted here but supplied by Transfer Impact, so the two pages disagreed
+    # on 27 of the 94 features for the same player and the same move.
+    _pre_mpm = minutes_per_match_from_stats(player_stats)
+    _season_for_means = player_stats.get("season_id")
+    _source_league_means, _target_league_means = source_and_target_league_means(
+        tournament_id, target_team_id, _season_for_means,
+    )
+
     # Prediction — only use TF model if trained weights exist
     predicted = {}
     predicted_current = {}
     try:
         model = TransferPortalModel()
         model.load()
-        if model.fitted:
+        if model.is_trained():
             fd = build_feature_dict(
                 player_per90=current_per90_clean,
                 team_ability_current=source_norm,
@@ -284,6 +313,9 @@ def render():
                 player_height_cm=_player_height_cm,
                 player_age=_player_age,
                 position=position,
+                pre_minutes_per_match=_pre_mpm,
+                source_league_means=_source_league_means,
+                target_league_means=_target_league_means,
             )
             predicted = model.predict(fd)
             # Paper Section 4: dual simulation — predict at current club too
@@ -300,6 +332,9 @@ def render():
                 player_height_cm=_player_height_cm,
                 player_age=_player_age,
                 position=position,
+                pre_minutes_per_match=_pre_mpm,
+                source_league_means=_source_league_means,
+                target_league_means=_source_league_means,  # same league baseline
             )
             predicted_current = model.predict(fd_current)
     except Exception as e:

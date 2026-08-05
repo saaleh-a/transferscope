@@ -910,11 +910,17 @@ class TestTeamLeagueMapCountryAware(unittest.TestCase):
                 rank=1, team="Arsenal", rating=91.0,
                 ranking_change_7d="+1", opta_id="ars1",
                 domestic_league="Premier League", country="England",
+                # Opta ships each team's own league average on the team record,
+                # present on 13,791/13,791 teams. Resolving via
+                # domesticLeagueName instead sent every Big-5 club to the
+                # highest-rated league of that bare name anywhere on earth.
+                season_avg_rating=86.0,
             ),
             OptaTeamRanking(
                 rank=200, team="Shakhtar Donetsk", rating=60.0,
                 ranking_change_7d="0", opta_id="sd1",
                 domestic_league="Premier League", country="Ukraine",
+                season_avg_rating=53.0,
             ),
         ]
 

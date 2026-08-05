@@ -808,6 +808,16 @@ class TransferPortalModel:
 
         for group_name, targets in MODEL_GROUPS.items():
             if group_name not in self.models:
+                # Reachable only via a hand-built partial model, since load()
+                # now refuses to report a partial set as fitted. Say so rather
+                # than returning a dict that quietly omits these metrics — the
+                # caller re-anchors with .get(metric, 0.0), so a missing group
+                # renders as "no change" instead of "unavailable".
+                _log.warning(
+                    "predict(): no model for group %r — %s will be absent "
+                    "from the result",
+                    group_name, ", ".join(targets),
+                )
                 continue
             group_indices = [key_to_idx[k] for k in GROUP_FEATURE_SUBSETS[group_name]]
             X_group = full_X[:, group_indices]
@@ -1040,7 +1050,21 @@ class TransferPortalModel:
                 if os.path.exists(path):
                     self.models[group_name] = tf.keras.models.load_model(path)
 
-        self.fitted = bool(self.models)
+        # A partial load is not a trained model. `bool(self.models)` was true
+        # when a single group had loaded, which is exactly how the stale
+        # 4-group artefacts survived the 6-group split: the app reported itself
+        # as trained while the metrics belonging to the missing groups silently
+        # produced nothing. `is_trained()` was added to catch that, but the
+        # pages gate on `.fitted`, so the flag itself has to be strict.
+        self.fitted = len(self.models) == len(MODEL_GROUPS)
+        if self.models and not self.fitted:
+            _log.warning(
+                "Loaded only %d/%d model groups (%s missing) — reporting as "
+                "not fitted so callers fall back rather than returning "
+                "silently incomplete predictions",
+                len(self.models), len(MODEL_GROUPS),
+                ", ".join(sorted(set(MODEL_GROUPS) - set(self.models))),
+            )
 
         # Load feature scaler and per-group target scalers that live alongside
         # the model directory.  Without these, predict() would feed unscaled
@@ -1300,7 +1324,16 @@ def build_feature_dict(
     pre_minutes_per_match : float
         Average minutes played per match at the source club.
         Helps distinguish starters (~75+ min) from substitutes (~20 min).
-        0.0 when unavailable.
+
+        **Must be supplied.** Training computes this as
+        ``pre_minutes / n_matches``; if a caller leaves it at 0.0 while the
+        training matrix holds real values (~20-90), the feature arrives at the
+        network several sigma below anything it saw during training. It was
+        inert only by accident for a while — the shipped matrix had the column
+        constant, so ``StandardScaler`` zero-variance handling neutralised it —
+        and that accident ends the moment the matrices are rebuilt. Callers
+        that genuinely cannot supply it should pass 0.0 explicitly and accept
+        the skew, not rely on the default.
     """
     fd: Dict[str, float] = {}
 
@@ -1383,6 +1416,33 @@ _log.info("Feature vector dimension: %d", FEATURE_DIM)
 
 # Minimum minutes threshold for league mean computation (matches training pipeline)
 _MIN_MINUTES_THRESHOLD = 450
+
+
+def minutes_per_match_from_stats(stats: Optional[Dict[str, Any]]) -> float:
+    """Return ``minutes_played / appearances`` from a Sofascore stats dict.
+
+    One helper so inference computes this the same way ``training_pipeline``
+    does (``pre_minutes / n_matches``). Every UI call site previously omitted
+    the argument entirely and inherited the 0.0 default, which is a train/serve
+    skew waiting for the next matrix rebuild to activate.
+
+    Returns 0.0 when either field is missing, which is honest: the caller has
+    nothing to compute from.
+    """
+    if not stats:
+        return 0.0
+    minutes = stats.get("minutes_played") or 0
+    apps = stats.get("appearances") or 0
+    try:
+        minutes = float(minutes)
+        apps = float(apps)
+    except (TypeError, ValueError):
+        return 0.0
+    if apps <= 0 or minutes <= 0:
+        return 0.0
+    # A match is 90 minutes plus stoppage; anything above this means the
+    # appearance count is wrong, so don't feed the model an impossible value.
+    return min(minutes / apps, 120.0)
 
 
 def _compute_league_means_from_stats(

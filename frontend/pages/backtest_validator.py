@@ -32,6 +32,8 @@ from backend.models.transfer_portal import (
 from frontend.theme import (
     COLORS,
     PLOTLY_LAYOUT,
+    empty_state,
+    page_header,
     player_info_card,
     section_header,
 )
@@ -225,10 +227,11 @@ def _direction_icon(predicted_change: float, actual_change: float) -> str:
 
 
 def render():
-    st.header("Backtest Validator")
-    st.caption(
-        "Compare model predictions against actual post-transfer per-90 stats. "
-        "Search any player — stats are fetched live from Sofascore."
+    page_header(
+        "Backtest Validator",
+        "Check the model's homework: pick a player who has already moved and "
+        "compare what was predicted against what actually happened.",
+        kicker="Validation",
     )
 
     with st.expander("ℹ️ Data sources & limitations"):
@@ -256,7 +259,22 @@ def render():
     )
 
     if not player_query or len(player_query.strip()) < 2:
-        st.info("Enter a player name above to search.")
+        empty_state(
+            "One transfer at a time",
+            "Search a player who has already moved and the page fetches their "
+            "real post-transfer season from Sofascore, then shows it against "
+            "what the model would have said beforehand. Direction ✅/❌ "
+            "compares the change from the pre-transfer baseline, not the raw "
+            "level — getting the direction right is the harder test.",
+            examples=["Declan Rice", "Alexander Isak", "Kevin De Bruyne"],
+            footnote=(
+                "A single player proves nothing either way; the aggregate "
+                "result across 1,344 held-out transfers is on the About page. "
+                "Sofascore also reports season totals per tournament with no "
+                "per-club split, so a mid-season move mixes both clubs into "
+                "the actual figure."
+            ),
+        )
         return
 
     with st.spinner("Searching…"):
@@ -470,7 +488,7 @@ def render():
         try:
             model = TransferPortalModel()
             model.load()
-            if model.fitted:
+            if model.is_trained():
                 fd = build_feature_dict(
                     player_per90=pre_per90_clean,
                     team_ability_current=source_norm,

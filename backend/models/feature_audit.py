@@ -38,8 +38,13 @@ KNOWN_DEAD_FEATURES = frozenset({
     "player_xg_against_on_pitch",
 })
 
-# Populated only when the matrices predate the Phase 9 rebuild.
-KNOWN_MIGRATION_GAPS = frozenset({"pre_minutes_per_match"})
+# Was {"pre_minutes_per_match"}. That whitelisted the one column the audit was
+# built to catch: the feature was constant-zero in the shipped matrix because
+# no inference caller ever supplied it, and unioning it into `known` meant the
+# dead-feature guard stayed quiet about exactly the case it exists for.
+# Inference now computes it via `minutes_per_match_from_stats`, so a constant
+# column here is a real regression again and should fail.
+KNOWN_MIGRATION_GAPS: frozenset = frozenset()
 
 # Above this share of zeros a feature is too sparse to inform much.
 SPARSE_THRESHOLD = 0.95

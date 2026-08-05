@@ -16,12 +16,15 @@ from typing import Dict, Optional
 import streamlit as st
 
 from backend.utils.league_registry import LEAGUES
-from frontend.theme import section_header, COLORS
+from frontend.theme import section_header, COLORS, page_header
 
 
 def render():
-    st.header("About TransferScope")
-    st.caption("How it works, what leagues are covered, and known limitations")
+    page_header(
+        "About TransferScope",
+        "How it works, what it's measured at, and what it can't do.",
+        kicker="Methodology",
+    )
 
     # ── Quick overview ────────────────────────────────────────────────────
     section_header("Overview", "What this tool does")

@@ -18,14 +18,6 @@ from typing import Dict, List, Optional, Tuple
 import streamlit as st
 
 from backend.data import sofascore_client, elo_router
-
-
-@st.cache_data(ttl=86400)
-def _get_league_players_cached(tournament_id: int, season_id) -> list:
-    """Fetch league player stats once per day — shared across all sessions."""
-    return sofascore_client.get_league_player_stats(
-        tournament_id, season_id, limit=100
-    )
 from backend.data.sofascore_client import CORE_METRICS, OFFENSIVE_METRICS, DEFENSIVE_METRICS
 from backend.features import power_rankings, rolling_windows
 from backend.features.adjustment_models import paper_heuristic_predict
@@ -33,17 +25,29 @@ from backend.models.shortlist_scorer import compute_percentage_changes
 from backend.models.transfer_portal import (
     TransferPortalModel,
     build_feature_dict,
+    minutes_per_match_from_stats,
+)
+from frontend.prediction_inputs import (
+    get_league_players_cached,
+    source_and_target_league_means,
 )
 from backend.utils.league_registry import LEAGUES
 from frontend.components import metric_bar, power_ranking_chart, swarm_plot
-from frontend.theme import section_header, confidence_badge, player_info_card, COLORS
+from frontend.theme import (
+    section_header, confidence_badge, player_info_card, COLORS,
+    page_header, empty_state,
+)
 
 _log = logging.getLogger(__name__)
 
 
 def render():
-    st.header("Transfer Impact")
-    st.caption("Predict how a player's performance will change at a new club")
+    page_header(
+        "Transfer Impact",
+        "Predict how a player's per-90 numbers change at a new club, and how "
+        "much of that change is the team rather than the player.",
+        kicker="Prediction",
+    )
 
     # ── Inputs ───────────────────────────────────────────────────────────
     col1, col2 = st.columns(2)
@@ -54,7 +58,22 @@ def render():
         target_club_query = st.text_input("Target club", placeholder="e.g. Real Madrid")
 
     if not player_query or not target_club_query:
-        st.info("Enter a player name and target club to generate a transfer impact prediction.")
+        empty_state(
+            "Two predictions, side by side",
+            "The model predicts the player's next season twice — once staying "
+            "put, once at the target club — and reports the difference across "
+            "13 per-90 metrics. Running both through the same model cancels "
+            "out most of the shared error, so what's left is closer to the "
+            "effect of the move itself.",
+            examples=["Bukayo Saka → Real Madrid", "Alexander Isak → Liverpool"],
+            footnote=(
+                "Measured on 1,344 real transfers held out by date. Beats "
+                "regression-to-the-mean on 13 of 13 metrics, and the margin "
+                "clears a 95% bootstrap interval on 11 of them — passing "
+                "volume and pass completion are inconclusive. Treat those two "
+                "as unproven rather than as predictions."
+            ),
+        )
         return
 
     # Gate all search/prediction behind an explicit button click so that
@@ -312,6 +331,11 @@ def render():
     _raw_elo_current = source_ranking.raw_elo if source_ranking else 1500.0
     _raw_elo_target = target_ranking.raw_elo if target_ranking else 1500.0
 
+    # Minutes per appearance — starter vs squad player. Computed the same way
+    # the training pipeline does; omitting it sends a constant 0.0 into a
+    # feature the model saw at ~20-90.
+    _pre_mpm = minutes_per_match_from_stats(player_stats)
+
     # ── Build prediction ─────────────────────────────────────────────────
     # Replace None with 0.0 for model input; track which metrics have data
     current_per90_clean = {m: (current_per90.get(m) if current_per90.get(m) is not None else 0.0) for m in CORE_METRICS}
@@ -357,34 +381,10 @@ def render():
         target_pos_avg = current_per90_clean.copy()
 
     # ── League means for per-metric normalisation ─────────────────────────
-    _source_league_means: Optional[Dict[str, float]] = None
-    _target_league_means: Optional[Dict[str, float]] = None
     season_for_means = selected_season_id or player_stats.get("season_id")
-    if tournament_id and season_for_means:
-        try:
-            from backend.models.transfer_portal import _compute_league_means_from_stats
-            src_players = _get_league_players_cached(tournament_id, season_for_means)
-            if src_players:
-                _source_league_means = _compute_league_means_from_stats(src_players)
-        except Exception:
-            pass
-    # Target league means: resolve target team's tournament
-    _target_tournament_id = None
-    if target_team_id:
-        try:
-            _target_tournament_id = sofascore_client.discover_tournament_for_team(
-                target_team_id
-            )
-        except Exception:
-            pass
-    if _target_tournament_id and season_for_means:
-        try:
-            from backend.models.transfer_portal import _compute_league_means_from_stats
-            tgt_players = _get_league_players_cached(_target_tournament_id, season_for_means)
-            if tgt_players:
-                _target_league_means = _compute_league_means_from_stats(tgt_players)
-        except Exception:
-            pass
+    _source_league_means, _target_league_means = source_and_target_league_means(
+        tournament_id, target_team_id, season_for_means,
+    )
 
     # Only use the TF model if trained weights have been saved to disk.
     predicted_target = {}
@@ -392,7 +392,7 @@ def render():
     try:
         model = TransferPortalModel()
         model.load()  # load() sets self.fitted = True only if files exist
-        if model.fitted:
+        if model.is_trained():
             # Paper Section 4: simulate at TARGET club
             fd_target = build_feature_dict(
                 player_per90=current_per90_clean,
@@ -409,6 +409,7 @@ def render():
                 source_league_means=_source_league_means,
                 target_league_means=_target_league_means,
                 position=position,
+                pre_minutes_per_match=_pre_mpm,
             )
             predicted_target = model.predict(fd_target)
             # Paper Section 4: simulate at CURRENT club as baseline
@@ -429,6 +430,7 @@ def render():
                 source_league_means=_source_league_means,
                 target_league_means=_source_league_means,  # same league baseline
                 position=position,
+                pre_minutes_per_match=_pre_mpm,
             )
             predicted_current = model.predict(fd_current)
     except Exception as e:
@@ -484,7 +486,7 @@ def render():
     # ── Compute prediction confidence (Monte Carlo dropout) ──────────────
     prediction_confidence: Dict[str, float] = {}
     try:
-        if model.fitted and fd_target:  # type: ignore[possibly-undefined]
+        if model.is_trained() and fd_target:  # type: ignore[possibly-undefined]
             _, std_devs = model.predict_with_confidence(fd_target, current_per90_clean)
             if std_devs:
                 prediction_confidence = std_devs
@@ -834,7 +836,7 @@ def render():
     # Populate league-level data from Sofascore tournament stats
     if tournament_id:
         try:
-            league_players = _get_league_players_cached(
+            league_players = get_league_players_cached(
                 tournament_id, selected_season_id
             )
             for lp in league_players:

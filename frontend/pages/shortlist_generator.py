@@ -40,7 +40,9 @@ from backend.models.value_score import (
     composite_output,
     score_candidates as score_value_candidates,
 )
-from frontend.theme import section_header, player_info_card
+from frontend.theme import (
+    section_header, player_info_card, page_header, empty_state,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -274,8 +276,12 @@ def _collect_league_candidates(
 
 
 def render():
-    st.header("Shortlist Generator")
-    st.caption("Find replacement candidates ranked by weighted similarity across leagues")
+    page_header(
+        "Shortlist Generator",
+        "Find replacements for a player you're losing, ranked by how closely "
+        "they match the job rather than the raw numbers.",
+        kicker="Recruitment",
+    )
 
     # ── Player to replace ────────────────────────────────────────────────
     player_query = st.text_input(
@@ -285,7 +291,22 @@ def render():
     )
 
     if not player_query:
-        st.info("Enter a player name to generate a replacement shortlist.")
+        empty_state(
+            "Ranked on predicted output, not current form",
+            "Every candidate is run through the trained model as if they had "
+            "already signed, so the ranking compares what each would do in "
+            "your side — not what they're doing in theirs. Candidates are then "
+            "clustered by playing style, and anyone in the same cluster as the "
+            "player being replaced gets a bonus, which favours a like-for-like "
+            "profile over someone who happens to post similar totals.",
+            examples=["Bukayo Saka", "Martin Ødegaard", "William Saliba"],
+            footnote=(
+                "Check the Evidence column before trusting a row. It shows "
+                "minutes played and how many of the 13 metrics actually "
+                "returned data — a high score built on 400 minutes and 6 "
+                "metrics is a lead to check, not a recommendation."
+            ),
+        )
         return
 
     with st.spinner("Searching..."):

@@ -22,8 +22,8 @@ COLORS = {
     "border": "#30363D",
     "border_accent": "#D4A843",
     "text_primary": "#C9D1D9",
-    "text_secondary": "#8B949E",
-    "text_muted": "#484F58",
+    "text_secondary": "#A3ACB9",
+    "text_muted": "#828B96",
     "accent_gold": "#D4A843",
     "accent_amber": "#E3A507",
     "accent_crimson": "#F45B69",       # Warm coral-crimson (was #DA3633)
@@ -56,18 +56,18 @@ PLOTLY_LAYOUT = dict(
     xaxis=dict(
         gridcolor="#21262D",
         zerolinecolor="#30363D",
-        tickfont=dict(color="#8B949E", size=10),
-        title_font=dict(color="#8B949E", size=11),
+        tickfont=dict(color="#A3ACB9", size=10),
+        title_font=dict(color="#A3ACB9", size=11),
     ),
     yaxis=dict(
         gridcolor="#21262D",
         zerolinecolor="#30363D",
-        tickfont=dict(color="#8B949E", size=10),
-        title_font=dict(color="#8B949E", size=11),
+        tickfont=dict(color="#A3ACB9", size=10),
+        title_font=dict(color="#A3ACB9", size=11),
     ),
     legend=dict(
         bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#8B949E", size=11),
+        font=dict(color="#A3ACB9", size=11),
     ),
     margin=dict(l=10, r=10, t=50, b=30),
 )
@@ -113,6 +113,75 @@ def stat_card(label: str, value: str, delta: str = "", delta_positive: bool = Tr
     )
 
 
+def page_header(title: str, subtitle: str = "", kicker: str = "") -> None:
+    """Render the page masthead.
+
+    Three tiers, unmistakable in two seconds: a small uppercase ``kicker``
+    for category, the ``title`` as the single focal point, and a ``subtitle``
+    that says what the page does in one plain sentence.
+    """
+    html = ['<div class="ts-masthead">']
+    if kicker:
+        html.append(f'<div class="ts-masthead-kicker">{kicker}</div>')
+    html.append(f'<h1 class="ts-masthead-title">{title}</h1>')
+    if subtitle:
+        html.append(f'<p class="ts-masthead-sub">{subtitle}</p>')
+    html.append("</div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+
+def empty_state(
+    headline: str,
+    body: str,
+    examples: list[str] | None = None,
+    footnote: str = "",
+) -> None:
+    """Render the pre-query state.
+
+    Replaces a bare ``st.info`` restating the form labels.  An empty screen is
+    the first thing most users see, so it carries the load: what the page
+    gives back, a concrete example to copy, and an honest footnote about what
+    the number is worth.
+    """
+    html = [
+        '<div class="ts-empty">',
+        '<div class="ts-empty-mark"></div>',
+        f'<div class="ts-empty-headline">{headline}</div>',
+        f'<p class="ts-empty-body">{body}</p>',
+    ]
+    if examples:
+        html.append('<div class="ts-empty-examples">')
+        html.append('<span class="ts-empty-examples-label">Try</span>')
+        for ex in examples:
+            html.append(f'<span class="ts-empty-chip">{ex}</span>')
+        html.append("</div>")
+    if footnote:
+        html.append(f'<div class="ts-empty-footnote">{footnote}</div>')
+    html.append("</div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+
+def sidebar_status(ok: bool, label: str, detail: str = "") -> None:
+    """Render a compact model-status pill in the sidebar.
+
+    Kept out of the main column deliberately: a healthy system is not news,
+    and a green banner in the hero position steals the focal point from the
+    page title every single time.
+    """
+    color = COLORS["accent_green"] if ok else COLORS["accent_crimson"]
+    detail_html = (
+        f'<div class="ts-status-detail">{detail}</div>' if detail else ""
+    )
+    st.sidebar.markdown(
+        f'<div class="ts-status-pill">'
+        f'<span class="ts-status-dot" style="background:{color}; '
+        f'box-shadow:0 0 6px {color}66;"></span>'
+        f'<div><div class="ts-status-label">{label}</div>{detail_html}</div>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def confidence_badge(level: str, weight: float, minutes: int) -> None:
     """Render the RAG confidence indicator with the Tactical Noir style."""
     color_map = {
@@ -138,7 +207,7 @@ def confidence_badge(level: str, weight: float, minutes: int) -> None:
 def verdict_display(verdict: str, player: str, source: str, target: str) -> None:
     """Render the large Hot/Tepid/Not verdict block."""
     color_map = {"HOT": "#2DD4A8", "TEPID": "#E3A507", "NOT": "#F45B69"}
-    color = color_map.get(verdict, "#8B949E")
+    color = color_map.get(verdict, "#A3ACB9")
     st.markdown(
         f'<div class="ts-verdict-block">'
         f'<div class="ts-verdict-label" style="color:{color};">{verdict}</div>'
@@ -312,8 +381,8 @@ _CSS = """
     --border: #30363D;
     --border-accent: #D4A843;
     --text-primary: #C9D1D9;
-    --text-secondary: #8B949E;
-    --text-muted: #484F58;
+    --text-secondary: #A3ACB9;
+    --text-muted: #828B96;
     --accent-gold: #D4A843;
     --accent-amber: #E3A507;
     --accent-crimson: #F45B69;
@@ -398,6 +467,165 @@ h2, h3 {
     font-weight: 300 !important;
     color: var(--text-muted) !important;
     letter-spacing: 0.02em !important;
+}
+
+/* ── Masthead ─────────────────────────────────────────────────────────── */
+/* One focal point per page. The rule anchors the block to the grid; the
+   kicker gives category without competing for size. */
+.ts-masthead {
+    margin: 0 0 1.9rem 0;
+    padding-left: 1.1rem;
+    border-left: 3px solid var(--accent-gold);
+}
+
+.ts-masthead-kicker {
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent-gold);
+    margin-bottom: 0.5rem;
+}
+
+.ts-masthead-title {
+    font-family: 'Outfit', sans-serif !important;
+    font-size: 2.6rem !important;
+    font-weight: 700 !important;
+    letter-spacing: -0.035em !important;
+    line-height: 1.05 !important;
+    margin: 0 0 0.45rem 0 !important;
+    padding: 0 !important;
+    color: var(--text-primary) !important;
+    /* No gradient fill: the accent is the rule, not the letterforms. */
+    background: none !important;
+    -webkit-text-fill-color: var(--text-primary) !important;
+}
+
+.ts-masthead-sub {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.98rem;
+    font-weight: 400;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    margin: 0;
+    max-width: 62ch;
+}
+
+/* ── Empty state ──────────────────────────────────────────────────────── */
+/* The pre-query screen is most users' first impression. It teaches rather
+   than restating the form labels directly above it. */
+.ts-empty {
+    position: relative;
+    margin-top: 1.2rem;
+    padding: 2.2rem 2.4rem;
+    background: linear-gradient(160deg, var(--bg-secondary) 0%, var(--bg-primary) 100%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+}
+
+.ts-empty-mark {
+    position: absolute;
+    top: -60px;
+    right: -40px;
+    width: 220px;
+    height: 220px;
+    border: 1px solid var(--accent-gold);
+    border-radius: 50%;
+    opacity: 0.10;
+    pointer-events: none;
+}
+
+.ts-empty-headline {
+    font-family: 'Outfit', sans-serif;
+    font-size: 1.22rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+    margin-bottom: 0.6rem;
+}
+
+.ts-empty-body {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.95rem;
+    line-height: 1.65;
+    color: var(--text-secondary);
+    max-width: 68ch;
+    margin: 0 0 1.35rem 0;
+}
+
+.ts-empty-examples {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1.35rem;
+}
+
+.ts-empty-examples-label {
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-right: 0.3rem;
+}
+
+.ts-empty-chip {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.8rem;
+    color: var(--text-primary);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.3rem 0.85rem;
+}
+
+.ts-empty-footnote {
+    font-family: 'DM Sans', sans-serif;
+    font-size: 0.82rem;
+    line-height: 1.6;
+    color: var(--text-muted);
+    padding-top: 1.05rem;
+    border-top: 1px solid var(--border);
+    max-width: 74ch;
+}
+
+/* ── Sidebar status pill ──────────────────────────────────────────────── */
+.ts-status-pill {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    padding: 0.6rem 0.75rem;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 0.85rem;
+}
+
+.ts-status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    margin-top: 0.42rem;
+}
+
+.ts-status-label {
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--text-primary);
+}
+
+.ts-status-detail {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem;
+    color: var(--text-muted);
+    margin-top: 0.15rem;
 }
 
 /* ── Input elements ───────────────────────────────────────────────────── */

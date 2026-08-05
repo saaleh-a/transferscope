@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 import sys
 
 import pandas as pd
@@ -15,6 +15,7 @@ from backend.models.transfer_portal import MODEL_GROUPS, FEATURE_DIM
 
 
 @patch("frontend.pages.diagnostics.st")
+@patch("frontend.pages.diagnostics.page_header")
 @patch("frontend.pages.diagnostics._render_system_info")
 @patch("frontend.pages.diagnostics._render_data_source_status")
 @patch("frontend.pages.diagnostics._render_cache_health")
@@ -26,6 +27,7 @@ def test_render_calls_all_sections(
     mock_cache,
     mock_data_src,
     mock_sys_info,
+    mock_page_header,
     mock_st,
 ):
     """render() calls all five section renderers without error."""
@@ -38,7 +40,8 @@ def test_render_calls_all_sections(
     mock_cache.assert_called_once()
     mock_data_src.assert_called_once()
     mock_sys_info.assert_called_once()
-    mock_st.header.assert_called_once_with("Diagnostics")
+    mock_page_header.assert_called_once()
+    assert mock_page_header.call_args.args[0] == "Diagnostics"
 
 
 # ── Test model status: untrained ─────────────────────────────────────────────

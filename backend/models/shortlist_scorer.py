@@ -228,13 +228,24 @@ def _build_feature_matrix(
         v = reference_per90.get(m)
         raw[n, j] = float(v) if v is not None else 0.0
 
-    # Apply user weights before standardization so that heavily-weighted
-    # metrics dominate the distance/clustering.
-    w_arr = np.array([weights.get(m, 0.5) for m in active_metrics])
-    raw_weighted = raw * w_arr
-
+    # Standardise FIRST, then weight.
+    #
+    # Weighting before standardisation is a no-op: StandardScaler divides by
+    # the standard deviation of the column it is fitted on, and scaling a
+    # column by a positive constant w scales its mean and its std by w too, so
+    # (w·x − w·μ)/(w·σ) reduces exactly to (x − μ)/σ. The weights cancelled to
+    # floating-point noise (max difference 1.3e-15) and the sliders were a
+    # pure on/off switch, despite the UI telling the user that 1.0 means
+    # "fully considered" and 0.5 means "half".
+    #
+    # sqrt(w) is applied rather than w because these vectors feed a Euclidean
+    # distance, which squares each component — so sqrt(w) makes a metric's
+    # contribution to the squared distance scale linearly with its weight.
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(raw_weighted)
+    X_scaled = scaler.fit_transform(raw)
+
+    w_arr = np.array([weights.get(m, 0.5) for m in active_metrics], dtype=float)
+    X_scaled = X_scaled * np.sqrt(np.clip(w_arr, 0.0, None))
 
     ref_scaled = X_scaled[-1]       # reference player
     X_candidates = X_scaled[:-1]    # candidates only

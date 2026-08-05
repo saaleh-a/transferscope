@@ -19,7 +19,7 @@ st.set_page_config(
 )
 
 # Inject the Tactical Noir theme
-from frontend.theme import inject_css
+from frontend.theme import inject_css, sidebar_status
 inject_css()
 
 
@@ -37,19 +37,7 @@ if "cache_warmed" not in st.session_state:
     st.session_state["cache_warmed"] = True
 
 
-# ── Model status banner — read-only check, no training logic ─────────────────
-from backend.models.transfer_portal import TransferPortalModel
-
-_model_check = TransferPortalModel()
-if _model_check.is_trained():
-    st.success("✅ Trained model loaded.")
-else:
-    st.warning(
-        "⚠️ No trained model found. Predictions are using the heuristic fallback. "
-        "Run the training pipeline to enable ML predictions."
-    )
-
-# Sidebar brand + navigation
+# ── Sidebar brand + navigation ───────────────────────────────────────────────
 st.sidebar.markdown(
     '<div class="ts-brand">TransferScope</div>'
     '<div class="ts-brand-sub">Transfer Intelligence</div>',
@@ -64,6 +52,26 @@ page = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
+
+# ── Model status ─────────────────────────────────────────────────────────────
+# A healthy model is not news. It lives in the sidebar so the page title keeps
+# the focal point; only a broken model interrupts the main column.
+from backend.models.transfer_portal import TransferPortalModel
+
+_model_check = TransferPortalModel()
+_is_trained = _model_check.is_trained()
+
+if _is_trained:
+    sidebar_status(True, "Trained model", "6 groups · 94 features")
+else:
+    sidebar_status(False, "Heuristic fallback", "no trained weights")
+    st.warning(
+        "**No trained model found.** Predictions are falling back to the "
+        "hand-set heuristic, which is measurably worse than assuming no "
+        "change at all on all 13 metrics. Run the training pipeline before "
+        "trusting any number on this page — see `WEIGHTINGS.md`."
+    )
+
 st.sidebar.markdown(
     '<div style="font-family: \'DM Sans\', sans-serif; font-size: 0.72rem; '
     'color: #484F58; letter-spacing: 0.03em;">'

@@ -151,11 +151,11 @@ def render_pizza(
         if comp_values is not None and comp_normalized:
             compare_kwargs = dict(
                 compare_values=comp_normalized,
-                compare_colors=["#8B949E"] * len(ordered_metrics),
+                compare_colors=["#A3ACB9"] * len(ordered_metrics),
                 compare_value_colors=["#C9D1D9"] * len(ordered_metrics),
-                compare_value_bck_colors=["#484F58"] * len(ordered_metrics),
+                compare_value_bck_colors=["#3D444D"] * len(ordered_metrics),
                 kwargs_compare=dict(
-                    edgecolor="#484F58", zorder=1, linewidth=0.5,
+                    edgecolor="#3D444D", zorder=1, linewidth=0.5,
                 ),
                 kwargs_compare_values=dict(
                     color="#C9D1D9", fontsize=7,
@@ -205,7 +205,7 @@ def render_pizza(
         fig.text(
             0.515, 0.02, legend_text,
             size=9, ha="center", fontfamily="sans-serif",
-            color="#8B949E",
+            color="#A3ACB9",
         )
 
         # Render to buffer

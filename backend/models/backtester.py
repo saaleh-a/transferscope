@@ -314,6 +314,8 @@ def run_backtest(
     # Per-metric collectors
     trained_abs_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
     trained_pct_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
+    # (confidence, within-20% rate) for each test sample, paired at source.
+    confidence_accuracy_pairs: List[Tuple[float, float]] = []
     naive_abs_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
     naive_pct_errors: Dict[str, List[float]] = {m: [] for m in CORE_METRICS}
     # Mean-reversion baseline errors, and the paired model errors on exactly
@@ -370,6 +372,15 @@ def run_backtest(
         # display a meaningful score instead of the always-1.0 blend_weight.
         meta_test[i]["prediction_confidence"] = _prediction_confidence(X_test[i])
 
+        # Per-sample within-20% accuracy, accumulated here rather than joined
+        # by index afterwards. The per-metric error lists are dense — a sample
+        # is appended only when it clears the coverage guard above and only
+        # when |actual| > 0.001 — so each metric's list has its own length and
+        # position `i` in it is a different sample entirely. Calibrating
+        # against those lists fitted confidence to *other* samples' errors.
+        sample_within_20 = 0
+        sample_scored = 0
+
         for m in CORE_METRICS:
             actual = float(y_test[i, metric_to_idx[m]])
             t_pred = trained_pred.get(m, 0.0)
@@ -398,6 +409,10 @@ def run_backtest(
                 trained_pct_errors[m].append(t_pct)
                 naive_pct_errors[m].append(n_pct)
 
+                sample_scored += 1
+                if t_pct <= 20:
+                    sample_within_20 += 1
+
                 if t_pct <= 10:
                     trained_within_10[m] += 1
                 if t_pct <= 20:
@@ -411,6 +426,12 @@ def run_backtest(
                 if (actual_change > 0 and pred_change > 0) or \
                    (actual_change < 0 and pred_change < 0):
                     trained_direction[m] += 1
+
+        conf_i = meta_test[i].get("prediction_confidence")
+        if conf_i is not None and sample_scored > 0:
+            confidence_accuracy_pairs.append(
+                (float(conf_i), sample_within_20 / sample_scored)
+            )
 
     # Aggregate report
     report: Dict[str, Any] = {
@@ -570,7 +591,7 @@ def run_backtest(
     # accuracy (within-20% rate).  This gives users a calibrated score: if
     # the model says 0.7, roughly 70% of such predictions are within 20%.
     try:
-        _calibrate_confidence(meta_test, trained_pct_errors)
+        _calibrate_confidence(confidence_accuracy_pairs)
     except Exception as exc:
         _log.warning("Confidence calibration failed: %s", exc)
 
@@ -578,8 +599,7 @@ def run_backtest(
 
 
 def _calibrate_confidence(
-    meta_test: List[Dict[str, Any]],
-    trained_pct_errors: Dict[str, List[float]],
+    confidence_accuracy_pairs: List[Tuple[float, float]],
 ) -> None:
     """Fit an isotonic regression calibrator from raw confidence → accuracy.
 
@@ -591,25 +611,12 @@ def _calibrate_confidence(
     """
     import joblib
 
-    raw_confs = []
-    accuracies = []
-
-    # Compute per-sample accuracy: fraction of metrics within 20% of actual
-    for i, meta in enumerate(meta_test):
-        conf = meta.get("prediction_confidence")
-        if conf is None:
-            continue
-        # Collect per-metric accuracy for this sample
-        n_within = 0
-        n_total = 0
-        for m in CORE_METRICS:
-            if i < len(trained_pct_errors.get(m, [])):
-                n_total += 1
-                if trained_pct_errors[m][i] <= 20:
-                    n_within += 1
-        if n_total > 0:
-            raw_confs.append(conf)
-            accuracies.append(n_within / n_total)
+    # Pairs are built inside the backtest loop, where the sample index is in
+    # scope. Rebuilding them here from the per-metric error lists is what
+    # produced the desync: those lists are dense, so index i in
+    # trained_pct_errors[m] belongs to a different sample than meta_test[i].
+    raw_confs = [c for c, _ in confidence_accuracy_pairs]
+    accuracies = [a for _, a in confidence_accuracy_pairs]
 
     if len(raw_confs) < 10:
         _log.info(
