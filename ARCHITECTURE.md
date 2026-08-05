@@ -343,22 +343,35 @@ constant that is not one of these documented gaps, and runs in
 
 ### Unused Sofascore fields — the clearest expansion route
 
-Sofascore serves ~115 keys per player-season; the model consumes 23. The
-unused remainder includes signal no comparable public tool has, verified
-present and coherent across positions:
+Sofascore serves ~115 keys per player-season; the model consumes 23. Coverage
+was measured across 126 real Premier League players with minutes, and across
+six seasons, **before** committing any of it to a feature slot — three existing
+slots are dead precisely because that check was never done.
+
+**Usable — 18 fields, present in all six seasons checked, 100% player coverage:**
 
 | Group | Fields | Sanity check |
 |---|---|---|
-| **Physical** | `kilometersCovered`, `numberOfSprints`, `topSpeed` | Rice 372km / 633 sprints vs Alisson 5km / 1 sprint |
 | **Territorial passing** | `accurateFinalThirdPasses`, `accurateOppositionHalfPasses`, `accurateOwnHalfPasses` | Rodri 861 opp-half / 597 own-half; Alisson 59 / 585 |
 | **Defensive quality** | `tackles`, `tacklesWonPercentage`, `dribbledPast`, `blockedShots`, `errorLeadToGoal`, `errorLeadToShot` | — |
-| **Finishing quality** | `bigChancesCreated`, `bigChancesMissed`, `goalConversionPercentage`, `shotsFromInsideTheBox` vs `shotsFromOutsideTheBox` | Haaland 21.4% conversion vs Rodri 6.25% |
-| **Duels split** | `groundDuelsWon`, `aerialDuelsWon` separately, rather than one blended % | Haaland 73 aerial / 57 ground; Saka 22 / 145 |
+| **Finishing quality** | `bigChancesCreated`, `bigChancesMissed`, `goalConversionPercentage`, `shotsFromInsideTheBox`, `shotsFromOutsideTheBox` | Haaland 21.4% conversion vs Rodri 6.25% |
+| **Duels, split** | `groundDuelsWon`, `aerialDuelsWon` separately rather than one blended % | Haaland 73 aerial / 57 ground; Saka 22 / 145 |
+| **Workload** | `possessionLost`, `wasFouled` | — |
 
-Adding these changes `FEATURE_DIM` and therefore requires a full matrix
-rebuild plus retrain, so it is a deliberate phase rather than an incremental
-edit. The physical metrics are the most distinctive: distance covered and
-sprint counts are a workload signal absent from every comparable open project.
+**Not usable — physical metrics.** `kilometersCovered`, `numberOfSprints` and
+`topSpeed` are 98% populated for the *current* season and **absent from every
+earlier season**: Saka has them for 25/26 and not for 24/25, 23/24, 22/23,
+21/22 or 20/21.
+
+They were the most distinctive candidate — Rice 372km / 633 sprints against
+Alisson 5km / 1 sprint is a workload signal no comparable open project has —
+but as training features they would be constant-zero across nearly the whole
+sample. That is exactly the dead-feature failure `feature_audit.py` exists to
+catch. They are fine for *display* on a current-season player card; they are
+not model inputs until several seasons of history exist.
+
+Adding the 18 usable fields changes `FEATURE_DIM` and requires a full matrix
+rebuild plus retrain, so it is a deliberate phase.
 
 ---
 
