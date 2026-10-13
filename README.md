@@ -185,6 +185,75 @@ The app opens at `http://localhost:8501`. No API keys required — all data sour
 
 > **In plain English:** Clone the code, install dependencies, run one command, and a web app opens in your browser. No accounts or passwords needed.
 
+### Collect Data Without an Agent
+
+The standalone scraper reuses the application's data clients; it does not need
+Streamlit, model training, a browser, or an agent session. After installing the
+existing requirements, run:
+
+```bash
+python scripts/scrape_data.py
+```
+
+This collects the latest Sofascore player statistics for the Big 5 leagues,
+including available market values and contracts, plus current Opta team/league
+rankings and today's European ClubElo ratings. Default output is `data/scraped/`
+(gitignored); the application clients also populate their existing disk cache.
+Exports are independent snapshots, not model matrices, and are not automatically
+loaded by the UI.
+
+```bash
+# A small first run
+python scripts/scrape_data.py --sources sofascore --leagues ENG1 --limit 20
+
+# Three newest seasons, with optional player-level data
+python scripts/scrape_data.py --sources sofascore --leagues ENG1 ESP1 \
+  --seasons-back 3 --details transfers matches heatmaps
+
+# Historical European club ratings (Opta only supports current rankings)
+python scripts/scrape_data.py --sources clubelo --date 2024-08-01
+
+# Refresh exports on a recurring run; client cache TTLs still apply
+python scripts/scrape_data.py --overwrite
+```
+
+Use `--help` for league codes and other controls. `--no-profiles` skips squad
+profile enrichment; `--api-delay` sets the Sofascore base request delay (default
+1.5 seconds, minimum 0.5). Requests are sequential and use the existing client's
+TLS transport, retries, and adaptive backoff. Optional details can substantially
+increase request volume; respect source terms and avoid repeated runs while blocked.
+
+**Exports and resuming**
+
+- Sofascore: `data/scraped/sofascore/{league}/{season_id}/players.json`;
+  match logs and heatmaps under `players/{player_id}/`; transfer histories under
+  `data/scraped/sofascore/players/{player_id}/transfers.json`.
+- Opta: `data/scraped/opta/latest/{teams,leagues}.json`.
+- ClubElo: `data/scraped/clubelo/{date}/teams.json`.
+- Each JSON snapshot contains `records`, source URL, parameters, export time,
+  record count, and coverage warnings. Player snapshots also report per-metric
+  non-null counts. `exported_at` is the export time, **not** necessarily a live
+  fetch time: client caches retain their normal TTLs.
+- Valid matching exports are reused on rerun, even after interruption. Corrupt,
+  incompatible, or empty exports are retried; writes are atomic.
+  Use `--overwrite` when you want new snapshots, otherwise matching snapshots
+  remain unchanged indefinitely. It does **not** clear the shared app cache.
+- `manifest.json` reports collected, reused, and failed datasets for the latest
+  run. Exit codes: `0` success, `1` failed/unavailable datasets, `2` invalid CLI
+  arguments, `130` interrupted. Successful snapshots survive partial failures.
+  Do not run concurrent collectors into the same output directory.
+
+**Coverage is not completeness:** the player limit is a cap, and upstream batch
+results can be partial. Historical fallback uses current squads, so departed
+players may be missing; squad profiles and valuations reflect current data.
+Match logs use the client's pagination ceiling and minimum-three-match rule.
+Empty details may mean genuine absence or a failed request; they are reported
+as unavailable rather than saved as successful checkpoints. Missing metrics
+remain `null`, never invented zeros. Opta ratings and raw ClubElo values remain
+separate scales with separate provider IDs; exports do not guess cross-provider
+joins. StatsBomb's partial player coverage and browser-dependent WhoScored event
+collection are deliberately outside this recurring scraper.
+
 ### Run Tests
 
 ```bash
