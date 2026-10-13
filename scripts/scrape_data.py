@@ -193,6 +193,9 @@ def _collect_sofascore(collector: Collector, args: argparse.Namespace) -> None:
                     "Historical fallback uses current squads and can miss departed players.",
                     "Squad profile fields reflect current data, not historical valuations.",
                     "Null metrics mean unavailable, not zero.",
+                    "Canonical metrics inherit client proxies and estimates; "
+                    "touches_in_opposition_box may be estimated from touches/shots. "
+                    "Non-null coverage counts are not observed-only coverage.",
                 ),
             )
             if len(players) >= args.limit:

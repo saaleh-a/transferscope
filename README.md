@@ -248,8 +248,12 @@ results can be partial. Historical fallback uses current squads, so departed
 players may be missing; squad profiles and valuations reflect current data.
 Match logs use the client's pagination ceiling and minimum-three-match rule.
 Empty details may mean genuine absence or a failed request; they are reported
-as unavailable rather than saved as successful checkpoints. Missing metrics
-remain `null`, never invented zeros. Opta ratings and raw ClubElo values remain
+as unavailable rather than saved as successful checkpoints. The scraper preserves
+client-returned `null` values rather than replacing them with zeros. Canonical
+metrics retain existing client proxies and estimates: `touches_in_opposition_box`
+may be estimated from touches/shots, so non-null coverage counts do not prove
+observed-only coverage. Percentage metrics remain percentages, not per-90 totals.
+Opta ratings and raw ClubElo values remain
 separate scales with separate provider IDs; exports do not guess cross-provider
 joins. StatsBomb's partial player coverage and browser-dependent WhoScored event
 collection are deliberately outside this recurring scraper.

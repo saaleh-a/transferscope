@@ -45,6 +45,7 @@ def test_exports_schema_nulls_and_coverage(tmp_path, clients):
     assert saved["records"][0]["market_value"] is None
     assert saved["metric_non_null_counts"]["shots"] == 1
     assert saved["metric_non_null_counts"]["expected_goals"] == 0
+    assert any("may be estimated" in warning for warning in saved["warnings"])
     clients[1].assert_called_once_with(
         17, season_id=10, limit=1000, enrich_profiles=True,
     )
